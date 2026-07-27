@@ -53,7 +53,7 @@ local function integer(value, field, minimum, maximum, default)
     if not value:match("^%d+$") then return invalid(field) end
     value = tonumber(value)
   end
-  if type(value) ~= "number" or value ~= math.floor(value) or value < minimum or (maximum and value > maximum) then
+  if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge or value > 9007199254740991 or value ~= math.floor(value) or value < minimum or (maximum and value > maximum) then
     return invalid(field)
   end
   return value
@@ -70,12 +70,18 @@ local function canonical_lower(value, field, required)
   return result:lower()
 end
 
-local function copy_strings(input, output)
+local function copy_future_scalars(input, output)
   for key, value in pairs(input) do
-    if not known_fields[key] and type(value) == "string" then
-      local checked, err = checked_string(value, tostring(key), false)
-      if err then return nil, err end
-      output[key] = checked
+    if not known_fields[key] then
+      if type(value) == "string" then
+        local checked, err = checked_string(value, tostring(key), false)
+        if err then return nil, err end
+        output[key] = checked
+      elseif type(value) == "boolean" then
+        output[key] = value
+      elseif type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge then
+        output[key] = value
+      end
     end
   end
   return true
@@ -87,7 +93,7 @@ function M.normalize(input)
   for key, value in pairs(input) do
     if type(value) == "string" and has_controls(value) then return invalid(tostring(key)) end
   end
-  local ok, err = copy_strings(input, output)
+  local ok, err = copy_future_scalars(input, output)
   if not ok then return nil, err end
 
   local id = checked_string(input.id, "section", true)
@@ -109,6 +115,8 @@ function M.normalize(input)
   end
 
   if protocol == "raw" then
+    if input.server ~= nil then return invalid("server") end
+    if input.port ~= nil then return invalid("port") end
     if not output.raw_outbound or output.raw_outbound == "" then return invalid("raw_outbound") end
     if output.name == nil or output.name == "" then output.name = "raw" end
     return output
@@ -125,8 +133,8 @@ function M.normalize(input)
   if protocol == "socks" then
     if input.transport ~= nil then return invalid("transport") end
     if input.security ~= nil then return invalid("security") end
-    local user_present = output.user ~= nil and output.user ~= ""
-    local password_present = output.password ~= nil and output.password ~= ""
+    local user_present = input.user ~= nil
+    local password_present = input.password ~= nil
     if user_present ~= password_present then return invalid(user_present and "password" or "user") end
     return output
   end
