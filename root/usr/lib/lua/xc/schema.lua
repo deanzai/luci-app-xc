@@ -26,6 +26,9 @@ local known_fields = {
   enabled = true, flow = true, encryption = true, method = true,
   user = true, password = true, alter_id = true
 }
+local JSON_MAX_DEPTH = 32
+local JSON_MAX_LENGTH = 524288
+local canonical_json
 
 local function invalid(field)
   return nil, "invalid " .. field
@@ -118,6 +121,7 @@ function M.normalize(input)
     if input.server ~= nil then return invalid("server") end
     if input.port ~= nil then return invalid("port") end
     if not output.raw_outbound or output.raw_outbound == "" then return invalid("raw_outbound") end
+    if not canonical_json(output.raw_outbound) then return invalid("raw_outbound") end
     if output.name == nil or output.name == "" then output.name = "raw" end
     return output
   end
@@ -195,10 +199,7 @@ local function utf8_character(codepoint)
   return string.char(240 + math.floor(codepoint / 262144), 128 + math.floor(codepoint / 4096) % 64, 128 + math.floor(codepoint / 64) % 64, 128 + codepoint % 64)
 end
 
-local JSON_MAX_DEPTH = 32
-local JSON_MAX_LENGTH = 65536
-
-local function canonical_json(source)
+canonical_json = function(source)
   if #source > JSON_MAX_LENGTH then return nil end
   local position, length = 1, #source
   local function whitespace()
@@ -369,7 +370,7 @@ function M.fingerprint(node)
   elseif node.protocol == "socks" then
     identity[#identity + 1] = identity_piece(node.user)
   elseif node.protocol == "raw" then
-    identity[#identity + 1] = identity_piece(canonical_json(node.raw_outbound or "") or node.raw_outbound)
+    identity[#identity + 1] = identity_piece(canonical_json(node.raw_outbound or ""))
   end
   local hash = 0
   for index = 1, #identity do
