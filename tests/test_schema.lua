@@ -211,8 +211,8 @@ t.test("canonicalizes a bounded large numeric array", function()
     compact[#compact + 1] = tostring(index)
     spaced[#spaced + 1] = " " .. tostring(index) .. " "
   end
-  local a = assert(schema.normalize(node({ id = "n1", protocol = "raw", raw_outbound = "[" .. table.concat(compact, ",") .. "]" })))
-  local b = assert(schema.normalize(node({ id = "n2", protocol = "raw", raw_outbound = "[" .. table.concat(spaced, ",") .. "]" })))
+  local a = assert(schema.normalize(node({ id = "n1", protocol = "raw", raw_outbound = "{\"numbers\":[" .. table.concat(compact, ",") .. "]}" })))
+  local b = assert(schema.normalize(node({ id = "n2", protocol = "raw", raw_outbound = "{ \"numbers\" : [" .. table.concat(spaced, ",") .. "] }" })))
   t.eq(schema.fingerprint(a), schema.fingerprint(b))
 end)
 
@@ -237,4 +237,36 @@ end)
 t.test("rejects malformed raw JSON", function()
   local _, err = schema.normalize(node({ id = "bad", protocol = "raw", raw_outbound = "{\"unterminated\":" }))
   t.contains(err, "raw_outbound")
+end)
+
+t.test("requires raw JSON objects at the top level", function()
+  for _, raw_outbound in ipairs({ "[]", "\"text\"", "1", "true", "null" }) do
+    local _, err = schema.normalize(node({ id = "root", protocol = "raw", raw_outbound = raw_outbound }))
+    t.contains(err, "raw_outbound")
+  end
+end)
+
+t.test("validates unescaped UTF-8 in raw JSON strings", function()
+  local valid = {
+    string.char(0x24),
+    string.char(0xC2, 0xA2),
+    string.char(0xE2, 0x82, 0xAC),
+    string.char(0xF0, 0x9F, 0x98, 0x80)
+  }
+  for index, bytes in ipairs(valid) do
+    t.truthy(schema.normalize(node({ id = "utf" .. index, protocol = "raw", raw_outbound = "{\"x\":\"" .. bytes .. "\"}" })))
+  end
+  local invalid = {
+    string.char(0x80), string.char(0xC0, 0x80), string.char(0xE0, 0x80, 0x80),
+    string.char(0xED, 0xA0, 0x80), string.char(0xF0, 0x80, 0x80, 0x80),
+    string.char(0xF4, 0x90, 0x80, 0x80), string.char(0xF5, 0x80, 0x80, 0x80),
+    string.char(0xC2), string.char(0xE2, 0x82), string.char(0xF0, 0x90, 0x80)
+  }
+  for index, bytes in ipairs(invalid) do
+    local _, err = schema.normalize(node({ id = "badutf" .. index, protocol = "raw", raw_outbound = "{\"x\":\"" .. bytes .. "\"}" }))
+    t.contains(err, "raw_outbound")
+  end
+  local escaped = assert(schema.normalize(node({ id = "escape", protocol = "raw", raw_outbound = "{\"x\":\"\\uD83D\\uDE00\"}" })))
+  local literal = assert(schema.normalize(node({ id = "literal", protocol = "raw", raw_outbound = "{\"x\":\"" .. string.char(0xF0, 0x9F, 0x98, 0x80) .. "\"}" })))
+  t.eq(schema.fingerprint(escaped), schema.fingerprint(literal))
 end)

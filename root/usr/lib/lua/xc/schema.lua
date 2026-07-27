@@ -206,6 +206,18 @@ canonical_json = function(source)
     while position <= length and source:sub(position, position):match("%s") do position = position + 1 end
   end
   local parse_value
+  local function utf8_end(index)
+    local first = source:byte(index)
+    local second, third, fourth = source:byte(index + 1), source:byte(index + 2), source:byte(index + 3)
+    local function continuation(value) return value and value >= 128 and value <= 191 end
+    if first >= 194 and first <= 223 and continuation(second) then return index + 2 end
+    if first == 224 and second and second >= 160 and second <= 191 and continuation(third) then return index + 3 end
+    if ((first >= 225 and first <= 236) or (first >= 238 and first <= 239)) and continuation(second) and continuation(third) then return index + 3 end
+    if first == 237 and second and second >= 128 and second <= 159 and continuation(third) then return index + 3 end
+    if first == 240 and second and second >= 144 and second <= 191 and continuation(third) and continuation(fourth) then return index + 4 end
+    if first >= 241 and first <= 243 and continuation(second) and continuation(third) and continuation(fourth) then return index + 4 end
+    if first == 244 and second and second >= 128 and second <= 143 and continuation(third) and continuation(fourth) then return index + 4 end
+  end
   local function parse_string()
     position = position + 1
     local output = {}
@@ -242,8 +254,16 @@ canonical_json = function(source)
       elseif character:byte() < 32 then
         return nil
       else
-        output[#output + 1] = character
-        position = position + 1
+        local byte = character:byte()
+        if byte >= 128 then
+          local next_position = utf8_end(position)
+          if not next_position then return nil end
+          output[#output + 1] = source:sub(position, next_position - 1)
+          position = next_position
+        else
+          output[#output + 1] = character
+          position = position + 1
+        end
       end
     end
   end
@@ -323,7 +343,7 @@ canonical_json = function(source)
     return parse_number()
   end
   local value = parse_value(0); whitespace()
-  if not value or position <= length then return nil end
+  if not value or value.kind ~= "object" or position <= length then return nil end
   local function quote(value)
     return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
       local escapes = { ['\\'] = '\\\\', ['"'] = '\\"', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
