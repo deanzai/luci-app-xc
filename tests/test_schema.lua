@@ -193,3 +193,29 @@ t.test("fingerprint uses only protocol identity and canonical raw JSON", functio
   local raw_b = assert(schema.normalize(node({ id = "r2", protocol = "raw", raw_outbound = "{\"settings\":{\"b\":true,\"a\":1},\"protocol\":\"freedom\"}" })))
   t.eq(schema.fingerprint(raw_a), schema.fingerprint(raw_b))
 end)
+
+t.test("bounds raw JSON nesting without exposing secrets", function()
+  local function nested(depth, body)
+    return string.rep("{\"layer\":", depth) .. body .. string.rep("}", depth)
+  end
+  local below_a = assert(schema.normalize(node({ id = "d1", protocol = "raw", raw_outbound = nested(30, "{\"a\":1,\"b\":2}") })))
+  local below_b = assert(schema.normalize(node({ id = "d2", protocol = "raw", raw_outbound = nested(30, "{\"b\":2,\"a\":1}") })))
+  t.eq(schema.fingerprint(below_a), schema.fingerprint(below_b))
+  local above_a = assert(schema.normalize(node({ id = "d3", protocol = "raw", raw_outbound = nested(33, "{\"secret\":\"do-not-expose\",\"a\":1}") })))
+  local above_b = assert(schema.normalize(node({ id = "d4", protocol = "raw", raw_outbound = nested(33, "{\"a\":1,\"secret\":\"do-not-expose\"}") })))
+  local ok, fingerprint_a = pcall(schema.fingerprint, above_a)
+  t.truthy(ok)
+  t.truthy(fingerprint_a ~= schema.fingerprint(above_b))
+  t.truthy(not fingerprint_a:find("do-not-expose", 1, true))
+end)
+
+t.test("canonicalizes a bounded large numeric array", function()
+  local compact, spaced = {}, {}
+  for index = 1, 4096 do
+    compact[#compact + 1] = tostring(index)
+    spaced[#spaced + 1] = " " .. tostring(index) .. " "
+  end
+  local a = assert(schema.normalize(node({ id = "n1", protocol = "raw", raw_outbound = "[" .. table.concat(compact, ",") .. "]" })))
+  local b = assert(schema.normalize(node({ id = "n2", protocol = "raw", raw_outbound = "[" .. table.concat(spaced, ",") .. "]" })))
+  t.eq(schema.fingerprint(a), schema.fingerprint(b))
+end)

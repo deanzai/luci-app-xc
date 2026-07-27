@@ -195,7 +195,11 @@ local function utf8_character(codepoint)
   return string.char(240 + math.floor(codepoint / 262144), 128 + math.floor(codepoint / 4096) % 64, 128 + math.floor(codepoint / 64) % 64, 128 + codepoint % 64)
 end
 
+local JSON_MAX_DEPTH = 32
+local JSON_MAX_LENGTH = 65536
+
 local function canonical_json(source)
+  if #source > JSON_MAX_LENGTH then return nil end
   local position, length = 1, #source
   local function whitespace()
     while position <= length and source:sub(position, position):match("%s") do position = position + 1 end
@@ -243,20 +247,43 @@ local function canonical_json(source)
     end
   end
   local function parse_number()
-    local remaining = source:sub(position)
-    local value = remaining:match("^-?%d+%.%d+[eE][+-]?%d+") or remaining:match("^-?%d+[eE][+-]?%d+") or remaining:match("^-?%d+%.%d+") or remaining:match("^-?%d+")
-    if not value or value:match("^-?0%d") then return nil end
+    local start = position
+    if source:sub(position, position) == "-" then position = position + 1 end
+    local first = source:byte(position)
+    if first == 48 then
+      position = position + 1
+      if source:byte(position) and source:byte(position) >= 48 and source:byte(position) <= 57 then return nil end
+    elseif first and first >= 49 and first <= 57 then
+      repeat position = position + 1; first = source:byte(position) until not first or first < 48 or first > 57
+    else
+      return nil
+    end
+    if source:sub(position, position) == "." then
+      position = position + 1
+      local digit = source:byte(position)
+      if not digit or digit < 48 or digit > 57 then return nil end
+      repeat position = position + 1; digit = source:byte(position) until not digit or digit < 48 or digit > 57
+    end
+    local exponent = source:sub(position, position)
+    if exponent == "e" or exponent == "E" then
+      position = position + 1
+      local sign = source:sub(position, position)
+      if sign == "+" or sign == "-" then position = position + 1 end
+      local digit = source:byte(position)
+      if not digit or digit < 48 or digit > 57 then return nil end
+      repeat position = position + 1; digit = source:byte(position) until not digit or digit < 48 or digit > 57
+    end
+    local value = source:sub(start, position - 1)
     local number = tonumber(value)
     if not number or number ~= number or number == math.huge or number == -math.huge then return nil end
-    position = position + #value
     return { kind = "number", value = number }
   end
-  local function parse_array()
+  local function parse_array(depth)
     position = position + 1; whitespace()
     local values = {}
     if source:sub(position, position) == "]" then position = position + 1; return { kind = "array", values = values } end
     while true do
-      local value = parse_value()
+      local value = parse_value(depth + 1)
       if not value then return nil end
       values[#values + 1] = value; whitespace()
       local separator = source:sub(position, position)
@@ -265,7 +292,7 @@ local function canonical_json(source)
       position = position + 1; whitespace()
     end
   end
-  local function parse_object()
+  local function parse_object(depth)
     position = position + 1; whitespace()
     local values, keys, seen = {}, {}, {}
     if source:sub(position, position) == "}" then position = position + 1; return { kind = "object", values = values, keys = keys } end
@@ -275,7 +302,7 @@ local function canonical_json(source)
       seen[key] = true; whitespace()
       if source:sub(position, position) ~= ":" then return nil end
       position = position + 1
-      local value = parse_value(); if not value then return nil end
+      local value = parse_value(depth + 1); if not value then return nil end
       values[key] = value; keys[#keys + 1] = key; whitespace()
       local separator = source:sub(position, position)
       if separator == "}" then position = position + 1; return { kind = "object", values = values, keys = keys } end
@@ -283,18 +310,18 @@ local function canonical_json(source)
       position = position + 1; whitespace()
     end
   end
-  parse_value = function()
+  parse_value = function(depth)
     whitespace()
     local character = source:sub(position, position)
     if character == '"' then local value = parse_string(); return value and { kind = "string", value = value } end
-    if character == "{" then return parse_object() end
-    if character == "[" then return parse_array() end
+    if character == "{" then if depth >= JSON_MAX_DEPTH then return nil end; return parse_object(depth) end
+    if character == "[" then if depth >= JSON_MAX_DEPTH then return nil end; return parse_array(depth) end
     if source:sub(position, position + 3) == "true" then position = position + 4; return { kind = "boolean", value = true } end
     if source:sub(position, position + 4) == "false" then position = position + 5; return { kind = "boolean", value = false } end
     if source:sub(position, position + 3) == "null" then position = position + 4; return { kind = "null" } end
     return parse_number()
   end
-  local value = parse_value(); whitespace()
+  local value = parse_value(0); whitespace()
   if not value or position <= length then return nil end
   local function quote(value)
     return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
@@ -302,21 +329,31 @@ local function canonical_json(source)
       return escapes[character] or string.format("\\u%04x", character:byte())
     end) .. '"'
   end
-  local function encode(item)
+  local function encode(item, depth)
     if item.kind == "string" then return quote(item.value) end
     if item.kind == "number" then return string.format("%.17g", item.value) end
     if item.kind == "boolean" then return item.value and "true" or "false" end
     if item.kind == "null" then return "null" end
     local output = {}
     if item.kind == "array" then
-      for index, child in ipairs(item.values) do output[#output + 1] = encode(child) end
+      if depth >= JSON_MAX_DEPTH then return nil end
+      for index, child in ipairs(item.values) do
+        local encoded = encode(child, depth + 1)
+        if not encoded then return nil end
+        output[#output + 1] = encoded
+      end
       return "[" .. table.concat(output, ",") .. "]"
     end
+    if depth >= JSON_MAX_DEPTH then return nil end
     table.sort(item.keys)
-    for _, key in ipairs(item.keys) do output[#output + 1] = quote(key) .. ":" .. encode(item.values[key]) end
+    for _, key in ipairs(item.keys) do
+      local encoded = encode(item.values[key], depth + 1)
+      if not encoded then return nil end
+      output[#output + 1] = quote(key) .. ":" .. encoded
+    end
     return "{" .. table.concat(output, ",") .. "}"
   end
-  return encode(value)
+  return encode(value, 0)
 end
 
 function M.fingerprint(node)
