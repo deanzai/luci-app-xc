@@ -1,1 +1,6 @@
 .worktrees/
+.tools/
+bin/
+!root/usr/bin/
+*.ipk
+tests/tmp/

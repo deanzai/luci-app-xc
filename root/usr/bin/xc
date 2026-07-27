@@ -1,0 +1,3 @@
+#!/usr/bin/lua
+io.stderr:write("luci-app-xc backend is not implemented\n")
+os.exit(2)
