@@ -212,6 +212,7 @@ function action_import_commit()
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
 
+  local dirty, commit_started = false, false
   local called, result, code, revert_allowed = xpcall(function()
     local parsed = importer.parse(body, adapters.json)
     if type(parsed) ~= "table" then return nil, "validation_failed", true end
@@ -222,7 +223,9 @@ function action_import_commit()
       if not schema.validate(node) then return nil, "validation_failed", true end
     end
     if #nodes > 0 then
+      dirty = true
       if not adapters.uci.stage_nodes(nodes) then return nil, "import_failed", true end
+      commit_started = true
       local committed, outcome = adapters.uci.commit()
       if outcome == "committed_hardening_failed" then
         return nil, "committed_hardening_failed", false
@@ -236,9 +239,14 @@ function action_import_commit()
     return { imported = #nodes, nodes = public_nodes(nodes), warnings = warnings or {} }
   end, function() return "internal_error" end)
 
-  if not called or not result then
-    if called and revert_allowed then pcall(function() adapters.uci.revert() end) end
-    failure(called and code or "internal_error")
+  if not called then
+    if dirty and not commit_started then pcall(function() adapters.uci.revert() end) end
+    failure(commit_started and "commit_unknown" or "internal_error")
+    return
+  end
+  if not result then
+    if revert_allowed then pcall(function() adapters.uci.revert() end) end
+    failure(code or "internal_error")
     return
   end
   success(result)

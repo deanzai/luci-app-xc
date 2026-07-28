@@ -185,12 +185,16 @@ function M.new(injected)
       return true
     end,
     commit = function()
-      if nfs.chmod("/etc/config/xc", 600) ~= true then return false, "pre_commit_failed" end
+      local pre_called, pre_secured = pcall(nfs.chmod, "/etc/config/xc", 600)
+      if not pre_called or pre_secured ~= true then return false, "pre_commit_failed" end
       local called, result = pcall(cursor.commit, cursor, "xc")
-      local secured = nfs.chmod("/etc/config/xc", 600) == true
-      if not called then return false, "commit_unknown" end
+      if not called then
+        pcall(nfs.chmod, "/etc/config/xc", 600)
+        return false, "commit_unknown"
+      end
       if result ~= true and result ~= 0 then return false, "pre_commit_failed" end
-      if not secured then return true, "committed_hardening_failed" end
+      local post_called, post_secured = pcall(nfs.chmod, "/etc/config/xc", 600)
+      if not post_called or post_secured ~= true then return true, "committed_hardening_failed" end
       return true, "committed"
     end,
     revert = function() cursor:revert("xc"); return true end,

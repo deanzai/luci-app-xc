@@ -88,7 +88,10 @@ local function fixture(options)
   local staged
   local uci = {
     get_global = function() if options.global_throw then error("global-secret") end; return staged and staged.global or state.globals[1] end,
-    get_node = function(id) return (staged and staged.by_id or state.nodes)[id] end,
+    get_node = function(id)
+      local node = (staged and staged.by_id or state.nodes)[id]
+      return node, node and "ok" or "missing"
+    end,
     list_nodes = function()
       local values = {}
       for _, node in pairs(staged and staged.by_id or state.nodes) do values[#values + 1] = node end
@@ -119,9 +122,14 @@ local function fixture(options)
     commit = function()
       state.commits = state.commits + 1
       state.events[#state.events + 1] = "commit"
-      if options.commit_fail then return false end
+      if options.commit_throw then error("password=commit-secret") end
+      if options.commit_fail then return false, options.commit_outcome or "pre_commit_failed" end
+      if options.commit_outcome == "commit_unknown" then
+        if options.unknown_committed then state.globals, state.nodes, staged = { staged.global }, staged.by_id, nil end
+        return false, "commit_unknown"
+      end
       state.globals, state.nodes, staged = { staged.global }, staged.by_id, nil
-      return true, options.commit_outcome
+      return true, options.commit_outcome or "committed"
     end,
     revert = function() state.reverts = state.reverts + 1; staged = nil; return true end
   }
@@ -380,11 +388,58 @@ t.test("CLI keeps committed imports when post-commit hardening reports a warning
   t.eq(state.commits, 1)
   t.eq(state.reverts, 0)
   t.truthy(next(state.nodes))
+  t.contains(table.concat(state.output), '"commit_outcome":"committed_hardening_failed"')
 
   local migration = fixture({ commit_outcome = "committed_hardening_failed" })
   t.eq(load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, migration.deps), 0)
   t.eq(migration.commits, 1)
   t.eq(migration.reverts, 0)
+  t.contains(table.concat(migration.output), '"commit_outcome":"committed_hardening_failed"')
+end)
+
+t.test("CLI reverts only pre-commit failures and exposes uncertain commits", function()
+  local candidate = {
+    nodes = { one = { name = "SOCKS", protocol = "socks5", address = "127.0.0.1", port = 1080 } }
+  }
+  local precommit = fixture({ import_value = candidate, commit_fail = true })
+  t.eq(load_cli().main({ "import", "/tmp/import" }, precommit.deps), 1)
+  t.eq(precommit.reverts, 1)
+  t.contains(table.concat(precommit.output), '"code":"import_commit_failed"')
+
+  for _, options in ipairs({
+    { import_value = candidate, commit_outcome = "commit_unknown" },
+    { import_value = candidate, commit_throw = true }
+  }) do
+    local uncertain = fixture(options)
+    t.eq(load_cli().main({ "import", "/tmp/import" }, uncertain.deps), 1)
+    t.eq(uncertain.reverts, 0)
+    t.contains(table.concat(uncertain.output), '"code":"commit_unknown"')
+  end
+
+  for _, options in ipairs({
+    { commit_outcome = "commit_unknown" },
+    { commit_throw = true }
+  }) do
+    local uncertain = fixture(options)
+    t.eq(load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, uncertain.deps), 1)
+    t.eq(uncertain.reverts, 0)
+    t.contains(table.concat(uncertain.output), '"code":"commit_unknown"')
+    t.eq(uncertain.files[MIGRATION_MARKER], nil)
+  end
+end)
+
+t.test("migration retry adopts a commit that was previously reported unknown", function()
+  local state = fixture({ commit_outcome = "commit_unknown", unknown_committed = true })
+  local cli = load_cli()
+  t.eq(cli.main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 1)
+  t.eq(state.reverts, 0)
+  t.eq(state.files[MIGRATION_MARKER], nil)
+  t.truthy(next(state.nodes))
+
+  t.eq(cli.main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 0)
+  t.eq(state.commits, 1)
+  t.eq(state.reverts, 0)
+  t.contains(state.files[MIGRATION_MARKER], "xc-migration-v1\nlegacy-backup-1\n14\n")
 end)
 
 t.test("lifecycle files contain guarded recovery, takeover, and bounded backup contracts", function()

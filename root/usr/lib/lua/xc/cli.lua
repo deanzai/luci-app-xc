@@ -37,7 +37,7 @@ end
 local function safe_result(value)
   if type(value) ~= "table" then return response(false, "internal_error") end
   local output = { ok = value.ok == true, code = tostring(value.code or "internal_error"), message = tostring(value.message or "runtime operation failed") }
-  for _, key in ipairs({ "active_node", "active_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count" }) do
+  for _, key in ipairs({ "active_node", "active_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count", "commit_outcome" }) do
     if value[key] ~= nil then output[key] = value[key] end
   end
   if type(output.node) == "table" then output.node = safe_summary(output.node) end
@@ -54,6 +54,16 @@ local function safe_result(value)
     end
   end
   return output
+end
+
+local function commit_staged(uci)
+  local called, committed, outcome = pcall(uci.commit)
+  if not called then return false, "commit_unknown" end
+  if committed == true and (outcome == "committed" or outcome == "committed_hardening_failed") then
+    return true, outcome
+  end
+  if committed == false and outcome == "pre_commit_failed" then return false, outcome end
+  return false, "commit_unknown"
 end
 
 local function emit(deps, value)
@@ -110,8 +120,15 @@ local function import_commit(path, deps)
     if not recovered.ok then return recovered end
     local stage_call, staged = pcall(deps.uci.stage_nodes, unique)
     if not stage_call or not staged then pcall(deps.uci.revert); return response(false, "import_staged_failed") end
-    local commit_call, committed = pcall(deps.uci.commit)
-    if not commit_call or not committed then pcall(deps.uci.revert); return response(false, "import_commit_failed") end
+    local committed, outcome = commit_staged(deps.uci)
+    if not committed then
+      if outcome == "pre_commit_failed" then
+        pcall(deps.uci.revert)
+        return response(false, "import_commit_failed")
+      end
+      return response(false, "commit_unknown")
+    end
+    return response(true, "imported", { count = #unique, warnings = warnings or {}, commit_outcome = outcome })
   end
   return response(true, "imported", { count = #unique, warnings = warnings or {} })
 end
@@ -172,7 +189,7 @@ local function migrate_legacy(directory, deps)
   end
   if not active and #nodes == 1 then active = nodes[1].id end
   return deps.runtime:exclusive("migration", function(capability)
-    local committed, dirty = false, false
+    local committed, dirty, revert_allowed = false, false, true
     local operation_ok, value = xpcall(function()
       local completed, marker_error = deps.fs.read(MIGRATION_MARKER, 1024)
       if completed ~= nil then
@@ -205,15 +222,18 @@ local function migrate_legacy(directory, deps)
         { "/usr/bin/xray", "run", "-test", "-c", MIGRATION_CANDIDATE }, deps.now() + 30)
       if not test_call or not tested then return response(false, "validation_failed") end
 
-      local commit_call, commit_result = pcall(deps.uci.commit)
-      if not commit_call or not commit_result then return response(false, "migration_failed") end
+      local commit_result, commit_outcome = commit_staged(deps.uci)
+      if not commit_result then
+        if commit_outcome ~= "pre_commit_failed" then revert_allowed = false end
+        return response(false, commit_outcome == "pre_commit_failed" and "migration_failed" or "commit_unknown")
+      end
       committed = true
       local marker_call, marker_written = pcall(capability.write, MIGRATION_MARKER, marker_text)
       if not marker_call or not marker_written then return response(false, "migration_failed") end
-      return response(true, "migrated", { count = #nodes, active_node = active })
+      return response(true, "migrated", { count = #nodes, active_node = active, commit_outcome = commit_outcome })
     end, function() return response(false, "migration_failed") end)
     if not operation_ok or type(value) ~= "table" then value = response(false, "migration_failed") end
-    if not value.ok and dirty and not committed then pcall(deps.uci.revert) end
+    if not value.ok and dirty and not committed and revert_allowed then pcall(deps.uci.revert) end
     local cleanup_call, cleaned = pcall(deps.fs.remove, MIGRATION_CANDIDATE)
     if not cleanup_call or not cleaned then return response(false, "migration_failed") end
     return value

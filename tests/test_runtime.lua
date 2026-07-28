@@ -136,7 +136,13 @@ local function fixture(options)
   local uci = {
     get_global = function() event("uci:get_global"); return global end,
     list_nodes = function() event("uci:list_nodes"); return nodes end,
-    get_node = function(id) event("uci:get_node:" .. tostring(id)); return by_id[id] end,
+    get_node = function(id)
+      event("uci:get_node:" .. tostring(id))
+      local forced = options.get_node_outcome
+      if forced then return forced == "ok" and by_id[id] or nil, forced end
+      local value = by_id[id]
+      return value, value and "ok" or "missing"
+    end,
     set_active = function(id)
       event("uci:set_active:" .. tostring(id))
       if options.throw_set_active then error("password=adapter-secret") end
@@ -150,11 +156,13 @@ local function fixture(options)
     end,
     commit = function()
       event("uci:commit")
+      if options.throw_commit then error("password=commit-secret") end
       if (options.commit_failures or 0) > 0 then
         options.commit_failures = options.commit_failures - 1
-        return false
+        return false, "pre_commit_failed"
       end
-      return options.commit_ok ~= false, options.commit_outcome
+      if options.commit_ok == false then return false, options.commit_outcome or "pre_commit_failed" end
+      return true, options.commit_outcome or "committed"
     end,
     revert = function() event("uci:revert"); global.active_node = original_active; return true end
   }
@@ -359,8 +367,83 @@ t.test("runtime treats a committed hardening warning as committed state", functi
   })
   local result = state.runtime:switch("new")
   t.eq(result.ok, true)
+  t.eq(result.commit_outcome, "committed_hardening_failed")
   t.eq(state.global.active_node, "new")
   t.eq(event_index(state.events, "uci:revert"), nil)
+end)
+
+t.test("runtime reverts only a definitely uncommitted active-node commit", function()
+  local state = fixture({
+    commit_failures = 1,
+    files = { [RUNTIME] = "old-runtime" }
+  })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, false)
+  t.eq(result.code, "commit_failed")
+  t.truthy(event_index(state.events, "uci:revert"))
+  t.eq(state.global.active_node, "old")
+  t.eq(state.files[TRANSACTION], nil)
+end)
+
+t.test("runtime stops an uncertain commit and preserves transaction evidence", function()
+  for _, options in ipairs({
+    { commit_ok = false, commit_outcome = "commit_unknown" },
+    { throw_commit = true }
+  }) do
+    options.files = { [RUNTIME] = "old-runtime" }
+    local state = fixture(options)
+    local result = state.runtime:switch("new")
+    t.eq(result.ok, false)
+    t.eq(result.code, "commit_unknown")
+    t.eq(event_index(state.events, "uci:revert"), nil)
+    t.truthy(event_index(state.events, "exec:stop"))
+    t.truthy(type(state.files[TRANSACTION]) == "string")
+    t.contains(state.files[TRANSACTION], "\ncandidate_healthy\n")
+    t.eq(state.files[RUNTIME] == "old-runtime", false)
+  end
+
+  local rollback_files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old"))
+  local rollback = fixture({
+    commit_ok = false, commit_outcome = "commit_unknown", files = rollback_files,
+    global = { active_node = "new", socks_port = 7890, http_port = 10809 }
+  })
+  local rollback_result = rollback.runtime:rollback()
+  t.eq(rollback_result.ok, false)
+  t.eq(rollback_result.code, "commit_unknown")
+  t.eq(event_index(rollback.events, "uci:revert"), nil)
+  t.truthy(event_index(rollback.events, "exec:stop"))
+  t.contains(rollback.files[TRANSACTION], "\ncandidate_healthy\n")
+end)
+
+t.test("typed node read failures fail closed in load switch and status", function()
+  local loaded = fixture({ get_node_outcome = "read_failed" })
+  local _, _, load_error = loaded.runtime:_load("new")
+  t.eq(load_error.code, "internal_error")
+
+  local switched = fixture({
+    get_node_outcome = "read_failed",
+    files = { [RUNTIME] = "old-runtime" }
+  })
+  local switch_result = switched.runtime:switch("new")
+  t.eq(switch_result.ok, false)
+  t.eq(switch_result.code, "internal_error")
+  t.eq(event_index(switched.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME), nil)
+
+  local status_state = fixture({ get_node_outcome = "read_failed" })
+  local status_result = status_state.runtime:status()
+  t.eq(status_result.ok, false)
+  t.eq(status_result.code, "internal_error")
+end)
+
+t.test("runtime maps only typed missing nodes to missing_node", function()
+  local missing = fixture({ get_node_outcome = "missing" })
+  local _, _, missing_error = missing.runtime:_load("new")
+  t.eq(missing_error.code, "missing_node")
+  t.eq(missing.runtime:status().code, "missing_node")
+
+  local uncertain = fixture({ get_node_outcome = "future_outcome" })
+  local _, _, uncertain_error = uncertain.runtime:_load("new")
+  t.eq(uncertain_error.code, "internal_error")
 end)
 
 t.test("failed switch preserves the prior successful rollback generation", function()

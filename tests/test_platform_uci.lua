@@ -120,7 +120,7 @@ t.test("raw OpenWrt cursor creates named sections through overloaded set", funct
 end)
 
 t.test("credential commits enforce config mode before and after commit", function()
-  local function commit_fixture(fail_chmod, throw_commit)
+  local function commit_fixture(fail_chmod, throw_commit, commit_result, throw_chmod)
     local events, chmod_calls = {}, 0
     local state = { committed = false }
     local cursor = {
@@ -128,6 +128,7 @@ t.test("credential commits enforce config mode before and after commit", functio
       commit = function(_, config)
         events[#events + 1] = "commit:" .. config
         if throw_commit then error("commit-secret") end
+        if commit_result == false then return false end
         state.committed = true
         return true
       end
@@ -137,6 +138,7 @@ t.test("credential commits enforce config mode before and after commit", functio
       fs = { chmod = function(path, mode)
         chmod_calls = chmod_calls + 1
         events[#events + 1] = "chmod:" .. path .. ":" .. tostring(mode)
+        if chmod_calls == throw_chmod then error("password=chmod-secret") end
         return chmod_calls ~= fail_chmod
       end },
       jsonc = { parse = function() end, stringify = function() return "{}" end }
@@ -156,6 +158,19 @@ t.test("credential commits enforce config mode before and after commit", functio
   t.eq(outcome, "pre_commit_failed")
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600")
 
+  uci, events = commit_fixture(nil, false, nil, 1)
+  local called
+  called, committed, outcome = pcall(uci.commit)
+  t.eq(called, true)
+  t.eq(committed, false)
+  t.eq(outcome, "pre_commit_failed")
+  t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600")
+
+  uci, events = commit_fixture(nil, false, false)
+  committed, outcome = uci.commit()
+  t.eq(committed, false)
+  t.eq(outcome, "pre_commit_failed")
+
   local state
   uci, events, state = commit_fixture(2)
   committed, outcome = uci.commit()
@@ -164,8 +179,14 @@ t.test("credential commits enforce config mode before and after commit", functio
   t.eq(state.committed, true)
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
 
+  uci, events, state = commit_fixture(nil, false, nil, 2)
+  called, committed, outcome = pcall(uci.commit)
+  t.eq(called, true)
+  t.eq(committed, true)
+  t.eq(outcome, "committed_hardening_failed")
+  t.eq(state.committed, true)
+
   uci, events = commit_fixture(nil, true)
-  local called
   called, committed, outcome = pcall(uci.commit)
   t.eq(called, true)
   t.eq(committed, false)

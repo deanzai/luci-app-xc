@@ -27,9 +27,13 @@ local function controller_fixture(options)
     uci = {
       get_node = options.get_node or function() return node, "ok" end,
       list_nodes = function() return options.existing_nodes or {} end,
-      stage_nodes = function() return options.stage_ok ~= false end,
+      stage_nodes = function()
+        if options.stage_throw then error("password=stage-secret") end
+        return options.stage_ok ~= false
+      end,
       commit = function()
         state.commits = state.commits + 1
+        if options.commit_throw then error("password=commit-secret") end
         return options.commit_ok ~= false, options.commit_outcome or "committed"
       end,
       revert = function() state.reverts = state.reverts + 1; return true end
@@ -120,6 +124,18 @@ t.test("controller reverts only definitely uncommitted imports", function()
   controller.action_import_commit()
   t.eq(state.response.code, "import_failed")
   t.eq(state.reverts, 1)
+
+  controller, state = controller_fixture({ stage_throw = true })
+  local called = pcall(controller.action_import_commit)
+  t.eq(called, true)
+  t.eq(state.response.code, "internal_error")
+  t.eq(state.reverts, 1)
+
+  controller, state = controller_fixture({ commit_throw = true })
+  called = pcall(controller.action_import_commit)
+  t.eq(called, true)
+  t.eq(state.response.code, "commit_unknown")
+  t.eq(state.reverts, 0)
 end)
 
 t.test("controller failure envelopes use stable HTTP status codes", function()

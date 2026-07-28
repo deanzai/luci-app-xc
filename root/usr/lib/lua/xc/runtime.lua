@@ -110,6 +110,7 @@ local messages = {
   listener_failed = "Xray listeners did not become ready",
   health_failed = "proxy health checks failed",
   commit_failed = "active node could not be committed",
+  commit_unknown = "active node commit result is unknown",
   no_rollback_state = "no rollback state is available",
   missing_runtime = "runtime configuration is missing",
   test_passed = "runtime configuration is valid",
@@ -136,6 +137,13 @@ end
 
 local function enabled(value)
   return value == true or value == 1 or value == "1"
+end
+
+local function read_node(uci, section_id)
+  local node, outcome = uci.get_node(section_id)
+  if outcome == "ok" and type(node) == "table" then return node end
+  if outcome == "missing" and node == nil then return nil, "missing_node" end
+  return nil, "internal_error"
 end
 
 local function active_marker(active)
@@ -250,8 +258,8 @@ function Runtime:_load(section_id)
     end
   end
   if not schema.safe_section_id(selected) then return nil, nil, result(false, "invalid_node") end
-  local node = self.uci.get_node(selected)
-  if type(node) ~= "table" then return nil, nil, result(false, "missing_node") end
+  local node, node_error = read_node(self.uci, selected)
+  if not node then return nil, nil, result(false, node_error) end
   if not enabled(node.enabled) then return nil, nil, result(false, "disabled_node") end
   local normalized_input = shallow_copy(node)
   normalized_input.enabled = true
@@ -341,12 +349,25 @@ function Runtime:exclusive(operation, callback)
 end
 
 function Runtime:_apply_active(active)
-  local changed
-  if active == nil then changed = self.uci.clear_active()
-  elseif not schema.safe_section_id(active) then return false
-  else changed = self.uci.set_active(active) end
-  if not action_ok(changed) or not action_ok(self.uci.commit()) then return false end
-  return true
+  local mutation_call, changed = pcall(function()
+    if active == nil then return self.uci.clear_active() end
+    if not schema.safe_section_id(active) then return false end
+    return self.uci.set_active(active)
+  end)
+  if not mutation_call or not action_ok(changed) then
+    pcall(self.uci.revert)
+    return false, "pre_commit_failed"
+  end
+  local commit_call, committed, outcome = pcall(self.uci.commit)
+  if not commit_call then return false, "commit_unknown" end
+  if committed == true and (outcome == "committed" or outcome == "committed_hardening_failed") then
+    return true, outcome
+  end
+  if committed == false and outcome == "pre_commit_failed" then
+    pcall(self.uci.revert)
+    return false, outcome
+  end
+  return false, "commit_unknown"
 end
 
 function Runtime:_readiness(global)
@@ -597,15 +618,20 @@ function Runtime:_switch_locked(section_id)
     local readiness_error = self:_readiness(global)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
-    if not self:_apply_active(node_id) then return self:_abort_transaction(context, "commit_failed") end
+    local committed, commit_outcome = self:_apply_active(node_id)
+    if not committed then
+      if commit_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
+      self:_safe_stop()
+      return result(false, "commit_unknown")
+    end
     self:_write_transaction(context, "uci_committed")
     local transaction = assert(parse_transaction(self:_read_optional(TRANSACTION_PATH, 1024)))
     transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
     local old = assert(self:_read_generation(transaction))
     if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
-    return result(true, "switched", { node = node_id })
+    return result(true, "switched", { node = node_id, commit_outcome = commit_outcome })
   end, function() return result(false, "internal_error") end)
-  if not ok or not value.ok and self.fs.exists(TRANSACTION_PATH) then
+  if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
     local recovered = self:_recover_pending_locked()
     if not recovered.ok then return result(false, "recovery_failed") end
   end
@@ -651,15 +677,21 @@ function Runtime:_rollback_locked()
     local readiness_error = self:_readiness(global)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
-    if not self:_apply_active(node_id) then return self:_abort_transaction(context, "commit_failed") end
+    local committed, commit_outcome = self:_apply_active(node_id)
+    if not committed then
+      if commit_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
+      self:_safe_stop()
+      return result(false, "commit_unknown")
+    end
     self:_write_transaction(context, "uci_committed")
     local record = self:_read_optional(TRANSACTION_PATH, 1024)
     local transaction = assert(parse_transaction(record)); transaction._text = record
     if not self:_complete_rollback(transaction) then return result(false, "recovery_failed") end
     local extra = {}; if node_id then extra.node = node_id else extra.active_node_unset = true end
+    extra.commit_outcome = commit_outcome
     return result(true, "rolled_back", extra)
   end, function() return result(false, "internal_error") end)
-  if not ok or not value.ok and self.fs.exists(TRANSACTION_PATH) then
+  if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
     local recovered = self:_recover_pending_locked()
     if not recovered.ok then return result(false, "recovery_failed") end
   end
@@ -707,15 +739,14 @@ function Runtime:status()
       last_error = shared_error
     })
     if safe_active then
-      local node = self.uci.get_node(safe_active)
-      if type(node) == "table" then
-        output.node = {
-          id = safe_active,
-          name = sanitize_text(node.name or "", 128),
-          protocol = schema.supported_protocols[node.protocol] and node.protocol or nil,
-          enabled = enabled(node.enabled)
-        }
-      end
+      local node, node_error = read_node(self.uci, safe_active)
+      if not node then return result(false, node_error) end
+      output.node = {
+        id = safe_active,
+        name = sanitize_text(node.name or "", 128),
+        protocol = schema.supported_protocols[node.protocol] and node.protocol or nil,
+        enabled = enabled(node.enabled)
+      }
     end
     return output
   end, function() return result(false, "internal_error") end)
