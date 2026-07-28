@@ -1,0 +1,27 @@
+{
+  "reality_uk_id": "legacy_reality",
+  "nodes": {
+    "legacy_reality": {
+      "name": "Synthetic Reality",
+      "protocol": "vless",
+      "address": "reality.invalid",
+      "port": 443,
+      "uuid": "11111111-1111-1111-1111-111111111111",
+      "security": "reality",
+      "serverName": "cover.invalid",
+      "publicKey": "synthetic-public-key",
+      "shortId": "a1b2c3d4",
+      "fingerprint": "chrome",
+      "flow": "xtls-rprx-vision",
+      "network": "tcp"
+    },
+    "legacy_socks": {
+      "name": "Synthetic NaiveProxy",
+      "protocol": "socks5",
+      "address": "127.0.0.1",
+      "port": 1080,
+      "username": "synthetic-user",
+      "password": "synthetic-password"
+    }
+  }
+}
