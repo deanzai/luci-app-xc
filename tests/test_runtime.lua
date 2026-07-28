@@ -17,6 +17,39 @@ local function checksum(value)
   return string.format("%08x", hash)
 end
 
+local function valid_utf8(value)
+  local index = 1
+  local function continuation(position)
+    local byte = value:byte(position)
+    return byte ~= nil and byte >= 128 and byte <= 191
+  end
+  while index <= #value do
+    local first = value:byte(index)
+    if first <= 127 then
+      index = index + 1
+    elseif first >= 194 and first <= 223 and continuation(index + 1) then
+      index = index + 2
+    elseif first >= 224 and first <= 239 then
+      local second = value:byte(index + 1)
+      if not second or not continuation(index + 2)
+        or (first == 224 and (second < 160 or second > 191))
+        or (first == 237 and (second < 128 or second > 159))
+        or (first ~= 224 and first ~= 237 and (second < 128 or second > 191)) then return false end
+      index = index + 3
+    elseif first >= 240 and first <= 244 then
+      local second = value:byte(index + 1)
+      if not second or not continuation(index + 2) or not continuation(index + 3)
+        or (first == 240 and (second < 144 or second > 191))
+        or (first == 244 and (second < 128 or second > 143))
+        or (first ~= 240 and first ~= 244 and (second < 128 or second > 191)) then return false end
+      index = index + 4
+    else
+      return false
+    end
+  end
+  return true
+end
+
 local function journal(config, active, generation)
   generation = generation or "100-1"
   local prefix = "/etc/xc/rollback/generation-" .. generation
@@ -675,7 +708,7 @@ t.test("logging never truncates a UTF-8 sequence", function()
   local state = fixture()
   t.eq(state.runtime:log(string.rep("a", 511) .. "中", {}).ok, true)
   local value = state.files["/var/log/xc.log"]
-  t.truthy(utf8.len(value))
+  t.truthy(valid_utf8(value))
 end)
 
 t.test("phase recovery converges across instances before and after UCI commit", function()
