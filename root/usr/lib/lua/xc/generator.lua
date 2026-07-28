@@ -1,7 +1,9 @@
-local M = {}
+local schema = require "xc.schema"
 
-local RAW_MAX_DEPTH = 32
-local RAW_MAX_MEMBERS = 8192
+local M = {}
+local RAW_FRAGMENT = {}
+local ENCODE_MAX_DEPTH = 64
+local ENCODE_MAX_MEMBERS = 16384
 
 local PRIVATE_CIDRS = {
   "0.0.0.0/8",
@@ -26,6 +28,28 @@ local structured_protocols = {
 
 local transports = { tcp = true, ws = true, grpc = true }
 local securities = { none = true, tls = true, reality = true }
+local fingerprints = {
+  chrome = true, firefox = true, safari = true, ios = true, android = true,
+  edge = true, ["360"] = true, qq = true, random = true, randomized = true
+}
+local vmess_securities = {
+  auto = true, ["aes-128-gcm"] = true, ["chacha20-poly1305"] = true
+}
+local shadowsocks_methods = {
+  ["aes-128-gcm"] = true,
+  ["aead_aes_128_gcm"] = true,
+  ["aes-256-gcm"] = true,
+  ["aead_aes_256_gcm"] = true,
+  ["chacha20-poly1305"] = true,
+  ["aead_chacha20_poly1305"] = true,
+  ["chacha20-ietf-poly1305"] = true,
+  ["xchacha20-poly1305"] = true,
+  ["aead_xchacha20_poly1305"] = true,
+  ["xchacha20-ietf-poly1305"] = true,
+  ["2022-blake3-aes-128-gcm"] = true,
+  ["2022-blake3-aes-256-gcm"] = true,
+  ["2022-blake3-chacha20-poly1305"] = true
+}
 
 local function copy_array(value)
   local output = {}
@@ -62,63 +86,68 @@ local function valid_ipv4(value)
   local a, b, c, d = value:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
   if not a then return false end
   for _, octet in ipairs({ a, b, c, d }) do
-    if #octet > 3 or tonumber(octet) > 255 then return false end
+    if #octet > 3 or (#octet > 1 and octet:sub(1, 1) == "0") or tonumber(octet) > 255 then return false end
   end
   return true
+end
+
+local function valid_ipv6(value)
+  local compressed_at = value:find("::", 1, true)
+  if compressed_at and value:find("::", compressed_at + 2, true) then return false end
+  local left, right
+  if compressed_at then
+    left = value:sub(1, compressed_at - 1)
+    right = value:sub(compressed_at + 2)
+    if left:find(":", 1, true) == 1 or left:sub(-1) == ":"
+      or right:find(":", 1, true) == 1 or right:sub(-1) == ":" then
+      return false
+    end
+  else
+    left, right = value, ""
+  end
+
+  local parts = {}
+  local function append(side)
+    if side == "" then return true end
+    local start = 1
+    while true do
+      local separator = side:find(":", start, true)
+      local part = separator and side:sub(start, separator - 1) or side:sub(start)
+      if part == "" then return false end
+      parts[#parts + 1] = part
+      if not separator then return true end
+      start = separator + 1
+    end
+  end
+  if not append(left) or not append(right) then return false end
+
+  local units = 0
+  for index, part in ipairs(parts) do
+    if part:find(".", 1, true) then
+      if index ~= #parts or not valid_ipv4(part) then return false end
+      units = units + 2
+    else
+      if #part < 1 or #part > 4 or not part:match("^%x+$") then return false end
+      units = units + 1
+    end
+  end
+  if compressed_at then return units < 8 end
+  return units == 8
 end
 
 local function valid_listen_address(value)
   if not safe_string(value, false) or #value > 64 then return false end
   if valid_ipv4(value) then return true end
-  return value:find(":", 1, true) ~= nil
-    and value:match("^[%x:%.]+$") ~= nil
-    and value:find(":::", 1, true) == nil
-end
-
-local function clone_raw(value, depth, state)
-  local kind = type(value)
-  if kind == "string" or kind == "boolean" then return value end
-  if kind == "number" then
-    if value ~= value or value == math.huge or value == -math.huge then return nil end
-    return value
-  end
-  if kind ~= "table" or depth > RAW_MAX_DEPTH or getmetatable(value) ~= nil then return nil end
-  if state.seen[value] then return nil end
-  state.seen[value] = true
-
-  local output = {}
-  for key, item in pairs(value) do
-    state.members = state.members + 1
-    if state.members > RAW_MAX_MEMBERS then return nil end
-    local key_kind = type(key)
-    if key_kind ~= "string" and key_kind ~= "number" then return nil end
-    if key_kind == "number" and (key ~= key or key == math.huge or key == -math.huge or key ~= math.floor(key) or key < 1) then
-      return nil
-    end
-    local copy = clone_raw(item, depth + 1, state)
-    if copy == nil and item ~= nil then return nil end
-    output[key] = copy
-  end
-
-  state.seen[value] = nil
-  return output
+  return value:find(":", 1, true) ~= nil and valid_ipv6(value)
 end
 
 local function raw_outbound(node, tag)
-  local source
-  if node.raw_outbound_table ~= nil then
-    source = node.raw_outbound_table
-  elseif type(node.raw_outbound) == "table" then
-    source = node.raw_outbound
-  else
-    return nil, "invalid raw outbound; decoded table required"
+  if type(node.raw_outbound) ~= "string" or node.raw_outbound_table ~= nil then
+    return nil, "invalid raw outbound"
   end
-  if type(source) ~= "table" then return nil, "invalid raw outbound; decoded table required" end
-
-  local output = clone_raw(source, 0, { seen = {}, members = 0 })
-  if not output or not safe_string(output.protocol, false) then return nil, "invalid raw outbound" end
-  output.tag = tag
-  return output
+  local fragment = schema.raw_outbound_with_tag(node.raw_outbound, tag)
+  if not fragment then return nil, "invalid raw outbound" end
+  return { tag = tag, [RAW_FRAGMENT] = fragment }
 end
 
 local function structured_error()
@@ -144,7 +173,7 @@ local function stream_settings(node)
     return unsupported_error()
   end
   if node.flow ~= nil and node.flow ~= ""
-    and ((node.protocol ~= "vless" and node.protocol ~= "trojan") or transport ~= "tcp") then
+    and (node.protocol ~= "vless" or transport ~= "tcp") then
     return unsupported_error()
   end
   if not optional_safe_string(node.fingerprint)
@@ -153,16 +182,18 @@ local function stream_settings(node)
     or not optional_safe_string(node.grpc_service_name) then
     return structured_error()
   end
+  if node.fingerprint and node.fingerprint ~= "" and not fingerprints[node.fingerprint] then
+    return unsupported_error()
+  end
 
   local output = { network = transport, security = security }
   if transport == "tcp" then
     output.tcpSettings = { header = { type = "none" } }
   elseif transport == "ws" then
     output.wsSettings = {
-      path = node.ws_path and node.ws_path ~= "" and node.ws_path or "/",
-      headers = {}
+      path = node.ws_path and node.ws_path ~= "" and node.ws_path or "/"
     }
-    if node.ws_host and node.ws_host ~= "" then output.wsSettings.headers.Host = node.ws_host end
+    if node.ws_host and node.ws_host ~= "" then output.wsSettings.headers = { Host = node.ws_host } end
   else
     output.grpcSettings = { serviceName = node.grpc_service_name or "" }
   end
@@ -180,6 +211,13 @@ local function stream_settings(node)
       or not optional_safe_string(node.short_id) then
       return structured_error()
     end
+    if #node.public_key ~= 43 or not node.public_key:match("^[A-Za-z0-9_-]+$") then
+      return structured_error()
+    end
+    if node.short_id ~= nil
+      and (#node.short_id > 16 or #node.short_id % 2 ~= 0 or not node.short_id:match("^%x*$")) then
+      return structured_error()
+    end
     output.realitySettings = {
       serverName = node.sni,
       publicKey = node.public_key
@@ -195,7 +233,9 @@ local function vnext_outbound(node, tag)
   local user = { id = node.uuid }
   if node.protocol == "vless" then
     if not optional_safe_string(node.encryption) or not optional_safe_string(node.flow) then return structured_error() end
-    user.encryption = node.encryption or "none"
+    local encryption = node.encryption or "none"
+    if encryption ~= "none" then return unsupported_error() end
+    user.encryption = encryption
     if node.flow and node.flow ~= "" then user.flow = node.flow end
   else
     local alter_id = node.alter_id == nil and 0 or node.alter_id
@@ -213,8 +253,10 @@ local function vnext_outbound(node, tag)
       return structured_error()
     end
     if not optional_safe_string(node.encryption) then return structured_error() end
+    local encryption = node.encryption or "auto"
+    if not vmess_securities[encryption] then return unsupported_error() end
     user.alterId = alter_id
-    user.security = node.encryption or "auto"
+    user.security = encryption
   end
 
   local stream, err = stream_settings(node)
@@ -236,9 +278,9 @@ local function server_outbound(node, tag)
   if node.protocol == "trojan" then
     if not safe_string(node.password, false) or not optional_safe_string(node.flow) then return structured_error() end
     server.password = node.password
-    if node.flow and node.flow ~= "" then server.flow = node.flow end
   else
     if not safe_string(node.method, false) or not safe_string(node.password, false) then return structured_error() end
+    if not shadowsocks_methods[node.method] then return unsupported_error() end
     server.method = node.method
     server.password = node.password
   end
@@ -276,6 +318,88 @@ function M.build_outbound(node, tag)
   return server_outbound(node, tag)
 end
 
+local function collect_encode_strings(value, depth, state)
+  local kind = type(value)
+  if kind == "string" then
+    state.bytes = state.bytes + #value
+    if state.bytes > 1048576 then return false end
+    state.strings[value] = true
+    return true
+  end
+  if kind == "number" then
+    return value == value and value ~= math.huge and value ~= -math.huge
+  end
+  if kind == "boolean" then return true end
+  if kind ~= "table" or depth > ENCODE_MAX_DEPTH or getmetatable(value) ~= nil then return false end
+
+  local fragment = rawget(value, RAW_FRAGMENT)
+  if fragment ~= nil then
+    if type(fragment) ~= "string" or not safe_string(rawget(value, "tag"), false) then return false end
+    state.raw_count = state.raw_count + 1
+    state.bytes = state.bytes + #fragment
+    return state.raw_count <= 1 and state.bytes <= 1048576
+  end
+  if state.seen[value] then return false end
+  state.seen[value] = true
+  for key, item in pairs(value) do
+    state.members = state.members + 1
+    if state.members > ENCODE_MAX_MEMBERS then return false end
+    local key_kind = type(key)
+    if key_kind == "string" then
+      state.bytes = state.bytes + #key
+      state.strings[key] = true
+    elseif key_kind ~= "number" or key ~= math.floor(key) or key < 1 then
+      return false
+    end
+    if state.bytes > 1048576 or not collect_encode_strings(item, depth + 1, state) then return false end
+  end
+  state.seen[value] = nil
+  return true
+end
+
+local function prepare_encode_value(value, marker, state)
+  if type(value) ~= "table" then return value end
+  local fragment = rawget(value, RAW_FRAGMENT)
+  if fragment ~= nil then
+    state.fragment = fragment
+    return marker
+  end
+  local output = {}
+  for key, item in pairs(value) do
+    output[key] = prepare_encode_value(item, marker, state)
+  end
+  return output
+end
+
+function M.encode(config, json_adapter)
+  if type(config) ~= "table" or type(json_adapter) ~= "table" then
+    return nil, "invalid JSON encoding input"
+  end
+  local stringify = json_adapter.stringify or json_adapter.encode
+  if type(stringify) ~= "function" then return nil, "invalid JSON encoding adapter" end
+
+  local scan = { strings = {}, seen = {}, members = 0, bytes = 0, raw_count = 0 }
+  if not collect_encode_strings(config, 0, scan) then return nil, "invalid JSON encoding input" end
+  local marker_index, marker = 1
+  repeat
+    marker = "__XC_RAW_OUTBOUND_" .. marker_index .. "__"
+    marker_index = marker_index + 1
+  until not scan.strings[marker]
+
+  local prepared_state = {}
+  local prepared = prepare_encode_value(config, marker, prepared_state)
+  local ok, encoded = pcall(stringify, prepared)
+  if not ok or type(encoded) ~= "string" then return nil, "invalid JSON encoding" end
+  if scan.raw_count == 0 then return encoded end
+
+  local quoted_marker = '"' .. marker .. '"'
+  local first = encoded:find(quoted_marker, 1, true)
+  if not first or encoded:find(quoted_marker, first + #quoted_marker, true) then
+    return nil, "invalid JSON encoding"
+  end
+  return encoded:sub(1, first - 1) .. prepared_state.fragment .. encoded:sub(first + #quoted_marker)
+end
+
 local function sniffing()
   return {
     enabled = true,
@@ -308,13 +432,12 @@ function M.build(global, node)
         listen = global.listen_address,
         port = http_port,
         protocol = "http",
-        settings = {},
         sniffing = sniffing()
       }
     },
     outbounds = {
       selected,
-      { tag = "direct", protocol = "freedom", settings = {} },
+      { tag = "direct", protocol = "freedom" },
       { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
     },
     routing = {

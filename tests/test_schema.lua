@@ -325,3 +325,37 @@ t.test("validates unescaped UTF-8 in raw JSON strings", function()
   local literal = assert(schema.normalize(node({ id = "literal", protocol = "raw", raw_outbound = "{\"x\":\"" .. string.char(0xF0, 0x9F, 0x98, 0x80) .. "\"}" })))
   t.eq(schema.fingerprint(escaped), schema.fingerprint(literal))
 end)
+
+t.test("canonically replaces only the top-level raw outbound tag losslessly", function()
+  local source = '{"protocol":"freedom","tag":"old","settings":{"object":{},"array":[],"missing":null,"large":9007199254740993,"text":"tag old"}}'
+  local tagged = assert(schema.raw_outbound_with_tag(source, "proxy-selected"))
+  t.eq(tagged, '{"protocol":"freedom","settings":{"array":[],"large":9007199254740993,"missing":null,"object":{},"text":"tag old"},"tag":"proxy-selected"}')
+  t.eq(source:find('"tag":"old"', 1, true) ~= nil, true)
+
+  local secret = "do-not-echo-raw-schema-secret"
+  local value, err = schema.raw_outbound_with_tag('{"secret":"' .. secret .. '"', "proxy-selected")
+  t.eq(value, nil)
+  t.contains(err, "raw_outbound")
+  t.eq(err:find(secret, 1, true), nil)
+
+  for _, source_without_protocol in ipairs({ '{}', '{"protocol":null}', '{"protocol":""}' }) do
+    local invalid, protocol_err = schema.raw_outbound_with_tag(source_without_protocol, "proxy-selected")
+    t.eq(invalid, nil)
+    t.contains(protocol_err, "raw_outbound")
+  end
+end)
+
+t.test("bounds the semantic units added by a missing raw outbound tag", function()
+  local values = {}
+  for index = 1, 8189 do values[index] = "0" end
+  local source = '{"items":[' .. table.concat(values, ",") .. "]}"
+  local tagged, err = schema.raw_outbound_with_tag(source, "proxy-selected")
+  t.eq(tagged, nil)
+  t.contains(err, "raw_outbound")
+
+  local boundary = '{"data":"' .. string.rep("x", 524277) .. '"}'
+  t.eq(#boundary, 524288)
+  local oversized, oversized_err = schema.raw_outbound_with_tag(boundary, "proxy-selected")
+  t.truthy(oversized == nil, "expected tagged raw output length to remain bounded")
+  t.contains(oversized_err, "raw_outbound")
+end)

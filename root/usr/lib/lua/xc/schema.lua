@@ -252,7 +252,7 @@ local function add_signed_decimal(sign, magnitude, offset)
   return offset_sign, subtract_decimal_magnitudes(offset_magnitude, magnitude)
 end
 
-canonical_json = function(source)
+canonical_json = function(source, top_level_tag)
   if #source > JSON_MAX_LENGTH then return nil end
   local position, length, units = 1, #source, 0
   local function consume_unit()
@@ -436,6 +436,22 @@ canonical_json = function(source)
   end
   local value = parse_value(0); whitespace()
   if not value or value.kind ~= "object" or position <= length then return nil end
+  if top_level_tag ~= nil then
+    local protocol = value.values.protocol
+    if not protocol
+      or protocol.kind ~= "string"
+      or protocol.value == ""
+      or #protocol.value > 128
+      or has_controls(protocol.value)
+      or not protocol.value:match("^[A-Za-z0-9_.-]+$") then
+      return nil
+    end
+    if value.values.tag == nil then
+      if units + 2 > JSON_MAX_UNITS then return nil end
+      value.keys[#value.keys + 1] = "tag"
+    end
+    value.values.tag = { kind = "string", value = top_level_tag }
+  end
   local quote_escapes = { ['\\'] = '\\\\', ['"'] = '\\"', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
   local function quote(value)
     return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
@@ -467,6 +483,15 @@ canonical_json = function(source)
     return "{" .. table.concat(output, ",") .. "}"
   end
   return encode(value, 0)
+end
+
+function M.raw_outbound_with_tag(source, tag)
+  local checked_source, source_err = checked_string(source, "raw_outbound", true)
+  local checked_tag, tag_err = checked_string(tag, "tag", true)
+  if source_err or tag_err or #checked_tag > 128 then return invalid("raw_outbound") end
+  local canonical = canonical_json(checked_source, checked_tag)
+  if not canonical or #canonical > JSON_MAX_LENGTH then return invalid("raw_outbound") end
+  return canonical
 end
 
 local function identity_parts(node)

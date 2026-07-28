@@ -2,6 +2,7 @@ local t = require "testlib"
 local generator = require "xc.generator"
 
 local UUID_ONE = "11111111-1111-1111-1111-111111111111"
+local REALITY_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 local PRIVATE_CIDRS = {
   "0.0.0.0/8",
   "10.0.0.0/8",
@@ -41,6 +42,54 @@ local function has_key(value, sought, seen)
   return false
 end
 
+local function json_quote(value)
+  local escapes = { ['\\'] = '\\\\', ['"'] = '\\"', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+  return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
+    return escapes[character] or string.format("\\u%04x", character:byte())
+  end) .. '"'
+end
+
+-- luci.jsonc represents an empty Lua table as a JSON array. This intentionally
+-- reproduces that boundary instead of pretending Lua has distinct object/array types.
+local function luci_compatible_stringify(value)
+  local kind = type(value)
+  if kind == "nil" then return "null" end
+  if kind == "boolean" then return value and "true" or "false" end
+  if kind == "number" then return tostring(value) end
+  if kind == "string" then return json_quote(value) end
+  if kind ~= "table" then error("unsupported test JSON value") end
+
+  local count, maximum, array = 0, 0, true
+  for key in pairs(value) do
+    count = count + 1
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
+      array = false
+    elseif key > maximum then
+      maximum = key
+    end
+  end
+  if count == 0 then return "[]" end
+  if array and maximum == count then
+    local output = {}
+    for index = 1, maximum do output[index] = luci_compatible_stringify(value[index]) end
+    return "[" .. table.concat(output, ",") .. "]"
+  end
+
+  local keys = {}
+  for key in pairs(value) do
+    if type(key) ~= "string" then error("mixed test JSON table") end
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  local output = {}
+  for _, key in ipairs(keys) do
+    output[#output + 1] = json_quote(key) .. ":" .. luci_compatible_stringify(value[key])
+  end
+  return "{" .. table.concat(output, ",") .. "}"
+end
+
+local luci_json = { stringify = luci_compatible_stringify }
+
 t.test("builds compatible unauthenticated SOCKS and HTTP inbounds", function()
   local cfg = assert(generator.build(global(), {
     protocol = "vless", server = "vless.invalid", port = 443,
@@ -59,7 +108,7 @@ t.test("builds compatible unauthenticated SOCKS and HTTP inbounds", function()
   t.eq(cfg.inbounds[2].listen, "192.168.6.1")
   t.eq(cfg.inbounds[2].port, 10809)
   t.eq(cfg.inbounds[2].protocol, "http")
-  t.eq(cfg.inbounds[2].settings.accounts, nil)
+  t.eq(cfg.inbounds[2].settings, nil)
 
   for _, inbound in ipairs(cfg.inbounds) do
     t.eq(inbound.sniffing.enabled, true)
@@ -78,6 +127,7 @@ t.test("puts the selected outbound first and routes only exact literal CIDRs dir
   t.eq(cfg.outbounds[1].tag, "proxy-selected")
   t.eq(cfg.outbounds[2].tag, "direct")
   t.eq(cfg.outbounds[2].protocol, "freedom")
+  t.eq(cfg.outbounds[2].settings, nil)
   t.eq(cfg.outbounds[3].tag, "block")
   t.eq(cfg.outbounds[3].protocol, "blackhole")
   t.eq(cfg.routing.domainStrategy, "AsIs")
@@ -102,7 +152,7 @@ t.test("returns independent deterministic routing tables", function()
 end)
 
 t.test("maps VLESS Reality over TCP without changing credential bytes", function()
-  local public_key = "PUB+/CaseSensitive=="
+  local public_key = REALITY_PUBLIC_KEY
   local outbound = assert(generator.build_outbound({
     protocol = "vless", server = "reality.invalid", port = 443,
     uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
@@ -166,14 +216,14 @@ t.test("maps Xray 24 and 26 compatible VLESS Reality over gRPC", function()
     protocol = "vless", server = "reality-grpc.invalid", port = 443,
     uuid = UUID_ONE, encryption = "none", transport = "grpc",
     grpc_service_name = "reality-service", security = "reality",
-    sni = "cover.invalid", public_key = "PublicKey+/Bytes", short_id = "a1b2",
+    sni = "cover.invalid", public_key = REALITY_PUBLIC_KEY, short_id = "a1b2",
     fingerprint = "chrome"
   }, "proxy-selected"))
 
   t.eq(outbound.streamSettings.network, "grpc")
   t.eq(outbound.streamSettings.grpcSettings.serviceName, "reality-service")
   t.eq(outbound.streamSettings.security, "reality")
-  t.eq(outbound.streamSettings.realitySettings.publicKey, "PublicKey+/Bytes")
+  t.eq(outbound.streamSettings.realitySettings.publicKey, REALITY_PUBLIC_KEY)
 end)
 
 t.test("maps Trojan and Shadowsocks server records", function()
@@ -219,56 +269,98 @@ t.test("maps authenticated and unauthenticated SOCKS outbounds", function()
   t.eq(anonymous.streamSettings, nil)
 end)
 
-t.test("clones a decoded raw outbound and authoritatively overrides its tag", function()
-  local raw = {
-    protocol = "wireguard",
-    tag = "do-not-keep",
-    settings = { secretKey = "RawSecret+/", peers = { { endpoint = "peer.invalid:51820" } } }
-  }
-  local node = { protocol = "raw", raw_outbound_table = raw }
-  local outbound = assert(generator.build_outbound(node, "proxy-selected"))
+t.test("losslessly splices an authoritative raw outbound with a replaced tag", function()
+  local raw = '{"protocol":"freedom","tag":"do-not-keep","settings":{"object":{},"array":[],"missing":null,"large":9007199254740993,"text":"__XC_RAW_OUTBOUND_1__"}}'
+  local node = { protocol = "raw", raw_outbound = raw }
+  local cfg = assert(generator.build(global(), node))
+  t.eq(cfg.outbounds[1].tag, "proxy-selected")
+  t.eq(node.raw_outbound, raw)
 
-  t.eq(outbound.protocol, "wireguard")
-  t.eq(outbound.tag, "proxy-selected")
-  t.eq(outbound.settings.secretKey, "RawSecret+/")
-  t.eq(outbound.settings.peers[1].endpoint, "peer.invalid:51820")
-  t.truthy(outbound ~= raw)
-  t.truthy(outbound.settings ~= raw.settings)
-  t.eq(raw.tag, "do-not-keep")
-  t.eq(node.raw_outbound_table, raw)
-
-  local table_valued = assert(generator.build_outbound({
-    protocol = "raw", raw_outbound = { protocol = "freedom", tag = "old" }
-  }, "replacement"))
-  t.eq(table_valued.protocol, "freedom")
-  t.eq(table_valued.tag, "replacement")
+  -- A caller-controlled surrounding string that resembles the internal marker
+  -- must survive unchanged and must not consume the raw replacement.
+  cfg.note = "__XC_RAW_OUTBOUND_1__"
+  local encoded = assert(generator.encode(cfg, luci_json))
+  t.contains(encoded, '"array":[]')
+  t.contains(encoded, '"object":{}')
+  t.contains(encoded, '"missing":null')
+  t.contains(encoded, '"large":9007199254740993')
+  t.contains(encoded, '"tag":"proxy-selected"')
+  t.contains(encoded, '"text":"__XC_RAW_OUTBOUND_1__"')
+  t.contains(encoded, '"note":"__XC_RAW_OUTBOUND_1__"')
+  t.eq(encoded:find("do-not-keep", 1, true), nil)
 end)
 
-t.test("documents the raw JSON adapter boundary and safely rejects unsafe raw tables", function()
+t.test("rejects all untyped raw tables and keeps raw errors secret-safe", function()
   local secret = "do-not-echo-this-raw-secret"
   local value, err = generator.build_outbound({
-    protocol = "raw", raw_outbound = '{"password":"' .. secret .. '"}'
+    protocol = "raw", raw_outbound = '{"password":"' .. secret .. '"'
   }, "proxy-selected")
   t.eq(value, nil)
   t.contains(err, "raw outbound")
   t.eq(err:find(secret, 1, true), nil)
 
-  local cyclic = { protocol = "freedom", password = secret }
-  cyclic.settings = cyclic
-  local _, cycle_err = generator.build_outbound({ protocol = "raw", raw_outbound_table = cyclic }, "proxy-selected")
-  t.contains(cycle_err, "raw outbound")
-  t.eq(cycle_err:find(secret, 1, true), nil)
+  for _, node in ipairs({
+    { protocol = "raw", raw_outbound = { protocol = "freedom", password = secret } },
+    { protocol = "raw", raw_outbound_table = { protocol = "freedom", password = secret } }
+  }) do
+    local table_value, table_err = generator.build_outbound(node, "proxy-selected")
+    t.eq(table_value, nil)
+    t.contains(table_err, "raw outbound")
+    t.eq(table_err:find(secret, 1, true), nil)
+  end
+end)
 
-  local nested = { protocol = "freedom" }
-  local cursor = nested
-  for _ = 1, 33 do cursor.child = {}; cursor = cursor.child end
-  local _, depth_err = generator.build_outbound({ protocol = "raw", raw_outbound_table = nested }, "proxy-selected")
-  t.contains(depth_err, "raw outbound")
+t.test("omits empty objects before LuCI-compatible serialization", function()
+  local cfg = assert(generator.build(global(), {
+    protocol = "vless", server = "ws.invalid", port = 80,
+    uuid = UUID_ONE, transport = "ws", security = "none"
+  }))
+  t.eq(cfg.inbounds[2].settings, nil)
+  t.eq(cfg.outbounds[2].settings, nil)
+  t.eq(cfg.outbounds[1].streamSettings.wsSettings.headers, nil)
+  local encoded = assert(generator.encode(cfg, luci_json))
+  t.eq(encoded:find('"settings":[]', 1, true), nil)
+  t.eq(encoded:find('"headers":[]', 1, true), nil)
+end)
 
-  local too_many = { protocol = "freedom" }
-  for index = 1, 8192 do too_many["member" .. index] = index end
-  local _, member_err = generator.build_outbound({ protocol = "raw", raw_outbound_table = too_many }, "proxy-selected")
-  t.contains(member_err, "raw outbound")
+t.test("rejects an encoder that does not emit exactly one private raw marker", function()
+  local secret = "do-not-echo-encoder-secret"
+  local cfg = assert(generator.build(global(), {
+    protocol = "raw", raw_outbound = '{"protocol":"freedom","password":"' .. secret .. '"}'
+  }))
+  local encoded, err = generator.encode(cfg, { stringify = function() return "{}" end })
+  t.eq(encoded, nil)
+  t.truthy(err)
+  t.eq(err:find(secret, 1, true), nil)
+end)
+
+t.test("emits representative configs accepted by Xray when available", function()
+  local xray = os.getenv("XRAY_BIN")
+  if not xray or xray == "" then
+    if os.execute("command -v xray >/dev/null 2>&1") ~= 0 then return end
+    xray = "xray"
+  end
+  local cases = {
+    assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+      protocol = "vless", server = "reality.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
+      transport = "tcp", security = "reality", sni = "cover.invalid",
+      public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
+    })),
+    assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+      protocol = "raw", raw_outbound = '{"protocol":"freedom","tag":"old","settings":{"domainStrategy":"UseIP"}}'
+    }))
+  }
+  for index, cfg in ipairs(cases) do
+    local encoded = assert(generator.encode(cfg, luci_json))
+    local path = "tests/tmp/generator-xray-" .. index .. ".json"
+    local handle = assert(io.open(path, "wb"))
+    assert(handle:write(encoded))
+    handle:close()
+    local status = os.execute("'" .. xray:gsub("'", "'\\''") .. "' run -test -c " .. path .. " >/dev/null 2>&1")
+    os.remove(path)
+    t.eq(status, 0)
+  end
 end)
 
 t.test("rejects unsafe globals without mutating caller input", function()
@@ -292,6 +384,98 @@ t.test("rejects unsafe globals without mutating caller input", function()
     local value, err = generator.build(invalid, node)
     t.eq(value, nil)
     t.truthy(err)
+  end
+end)
+
+t.test("accepts only syntactically valid IPv4 and IPv6 listen addresses", function()
+  local node = { protocol = "socks", server = "127.0.0.1", port = 1080 }
+  for _, address in ipairs({
+    "0.0.0.0", "192.168.6.1", "::", "::1", "2001:db8::1",
+    "2001:0db8:0000:0000:0000:ff00:0042:8329", "::ffff:192.0.2.1"
+  }) do
+    t.truthy(generator.build(global({ listen_address = address }), node))
+  end
+  for _, address in ipairs({
+    "256.0.0.1", "01.2.3.4", "1:2:3", "1::2::3", "2001:db8:::1",
+    "2001:db8:0:0:0:0:0:0:1", "[::1]", "gggg::1", "host.invalid"
+  }) do
+    local value, err = generator.build(global({ listen_address = address }), node)
+    t.eq(value, nil)
+    t.contains(err, "listen")
+  end
+end)
+
+t.test("validates Reality public keys short IDs and fingerprints", function()
+  local function reality(fields)
+    local node = {
+      protocol = "vless", server = "reality.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "reality",
+      sni = "cover.invalid", public_key = REALITY_PUBLIC_KEY,
+      short_id = "a1b2", fingerprint = "chrome"
+    }
+    for key, value in pairs(fields) do node[key] = value end
+    return node
+  end
+  for _, fields in ipairs({
+    { public_key = string.rep("A", 42) },
+    { public_key = string.rep("A", 42) .. "+" },
+    { public_key = string.rep("A", 44) },
+    { short_id = "abc" },
+    { short_id = "zz" },
+    { short_id = "001122334455667788" },
+    { fingerprint = "unsafe" }
+  }) do
+    local value, err = generator.build_outbound(reality(fields), "proxy-selected")
+    t.eq(value, nil)
+    t.truthy(err)
+    t.eq(err:find(fields.public_key or fields.short_id or fields.fingerprint, 1, true), nil)
+  end
+end)
+
+t.test("uses only Xray 24 and 26 common structured allowlists", function()
+  for _, method in ipairs({ "aes-128-gcm", "aes-256-gcm", "chacha20-poly1305", "xchacha20-poly1305" }) do
+    t.truthy(generator.build_outbound({
+      protocol = "shadowsocks", server = "ss.invalid", port = 8388,
+      method = method, password = "secret", transport = "tcp", security = "none"
+    }, "proxy-selected"))
+  end
+  for _, security in ipairs({ "auto", "aes-128-gcm", "chacha20-poly1305" }) do
+    t.truthy(generator.build_outbound({
+      protocol = "vmess", server = "vmess.invalid", port = 443, uuid = UUID_ONE,
+      encryption = security, transport = "tcp", security = "none"
+    }, "proxy-selected"))
+  end
+  for _, fingerprint in ipairs({ "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized" }) do
+    t.truthy(generator.build_outbound({
+      protocol = "vless", server = "tls.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "none", transport = "tcp", security = "tls",
+      sni = "tls.invalid", fingerprint = fingerprint
+    }, "proxy-selected"))
+  end
+
+  local unsupported = {
+    {
+      protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "auto", transport = "tcp", security = "none"
+    },
+    {
+      protocol = "vmess", server = "vmess.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "none", transport = "tcp", security = "none"
+    },
+    {
+      protocol = "shadowsocks", server = "ss.invalid", port = 8388,
+      method = "none", password = "secret", transport = "tcp", security = "none"
+    },
+    {
+      protocol = "trojan", server = "trojan.invalid", port = 443,
+      password = "secret", flow = "xtls-rprx-vision",
+      transport = "tcp", security = "tls", sni = "trojan.invalid"
+    }
+  }
+  for _, node in ipairs(unsupported) do
+    local value, err = generator.build_outbound(node, "proxy-selected")
+    t.eq(value, nil)
+    t.contains(err, "protocol=raw")
   end
 end)
 
