@@ -5,6 +5,7 @@ local schema = require "xc.schema"
 local platform = require "xc.platform"
 local runtime_module = require "xc.runtime"
 local importer = require "xc.importer"
+local probe_module = require "xc.probe"
 
 local REQUEST_BODY_MAX = 512 * 1024
 local LOG_READ_MAX = 256 * 1024
@@ -16,6 +17,7 @@ local messages = {
   commit_failed = "The configuration could not be saved.",
   import_failed = "The import could not be completed.",
   internal_error = "The request could not be completed.",
+  disabled_node = "The selected node is disabled.",
   invalid_node = "The selected node is invalid.",
   method_not_allowed = "This action requires POST.",
   missing_runtime = "No active runtime configuration is available.",
@@ -24,20 +26,21 @@ local messages = {
   no_rollback_state = "No rollback state is available.",
   request_too_large = "The request body is too large.",
   test_failed = "The current node health test failed.",
+  unsupported_node = "The selected node cannot be probed safely.",
   validation_failed = "The request did not pass validation."
 }
 
 local failure_status = {
   validation_failed = 400, invalid_node = 400,
   missing_node = 404, no_rollback_state = 404,
-  method_not_allowed = 405, busy = 409,
+  method_not_allowed = 405, busy = 409, disabled_node = 409,
   request_too_large = 413, not_implemented = 501,
-  missing_runtime = 404, test_failed = 502
+  unsupported_node = 422, missing_runtime = 404, test_failed = 502
 }
 
 local status_text = {
   [400] = "Bad Request", [404] = "Not Found", [405] = "Method Not Allowed",
-  [409] = "Conflict", [413] = "Content Too Large", [500] = "Internal Server Error",
+  [409] = "Conflict", [413] = "Content Too Large", [422] = "Unprocessable Content", [500] = "Internal Server Error",
   [501] = "Not Implemented", [502] = "Bad Gateway"
 }
 
@@ -120,7 +123,7 @@ local function requested_node(adapters, body)
   if not read_ok then return nil, "internal_error" end
   if node == nil and outcome == "missing" then return nil, "missing_node" end
   if type(node) ~= "table" or outcome ~= "ok" then return nil, "internal_error" end
-  return { section_id = section_id, node = node }
+  return { section_id = section_id, node = node, request = value }
 end
 
 local function runtime_response(result)
@@ -186,7 +189,22 @@ function action_probe()
   if not adapters then failure("internal_error"); return end
   local selected, code = requested_node(adapters, body)
   if not selected then failure(code); return end
-  failure("not_implemented")
+  if selected.node.enabled ~= true and selected.node.enabled ~= 1 and selected.node.enabled ~= "1" then failure("disabled_node"); return end
+  if selected.node.protocol == "raw" or not schema.supported_protocols[selected.node.protocol]
+    or type(selected.node.server) ~= "string" or not tonumber(selected.node.port) then failure("unsupported_node"); return end
+  local timeout = tonumber(selected.request.timeout)
+  if not timeout then
+    local global_ok, global = pcall(adapters.uci.get_global)
+    if global_ok and type(global) == "table" then timeout = tonumber(global.probe_timeout) end
+  end
+  timeout = math.floor(timeout or 3)
+  if timeout < 1 then timeout = 1 elseif timeout > 10 then timeout = 10 end
+  local probe_ok, probe_instance = pcall(probe_module.new, adapters)
+  if not probe_ok or type(probe_instance) ~= "table" then failure("internal_error"); return end
+  local called, result = pcall(function() return probe_instance:run(selected.section_id, selected.node, timeout) end)
+  if not called or type(result) ~= "table" or (result.socket ~= "ok" and result.socket ~= "fail")
+    or type(result.ping) ~= "number" or type(result.time) ~= "number" then failure("internal_error"); return end
+  success({ socket = result.socket, ping = result.ping, time = result.time, outcome = result.outcome })
 end
 
 function action_switch()

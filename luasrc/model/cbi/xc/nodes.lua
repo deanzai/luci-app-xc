@@ -8,8 +8,25 @@ local m = Map("xc", translate("Nodes"),
 local nodes = m:section(TypedSection, "node", translate("Configured nodes"))
 nodes.anonymous = true
 nodes.addremove = true
-nodes.template = "cbi/tblsection"
+nodes.template = "xc/node_table"
 nodes.extedit = dispatcher.build_url("admin", "services", "xc", "node", "%s")
+
+local page_cursor = uci_model.cursor()
+local configured_concurrency = tonumber(page_cursor:get("xc", "global", "probe_concurrency")) or 3
+configured_concurrency = math.floor(configured_concurrency)
+if configured_concurrency < 1 then configured_concurrency = 1 elseif configured_concurrency > 5 then configured_concurrency = 5 end
+nodes.probe_concurrency = configured_concurrency
+
+local probe_reader
+local adapters_ok, platform = pcall(require, "xc.platform")
+local probe_ok, probe_module = pcall(require, "xc.probe")
+if adapters_ok and probe_ok then
+  local made, adapters = pcall(platform.new)
+  if made and adapters then
+    local reader_ok, reader = pcall(probe_module.new, adapters)
+    if reader_ok then probe_reader = reader end
+  end
+end
 
 function nodes.create(self)
   local section = TypedSection.create(self)
@@ -66,5 +83,18 @@ server.default = "-"
 local port = nodes:option(DummyValue, "port", translate("Port"))
 port.datatype = "port"
 port.default = "-"
+
+local probe = nodes:option(DummyValue, "_probe", translate("Probe"))
+probe.template = "xc/ping"
+function probe.cfgvalue(self, section)
+  if not probe_reader then return nil end
+  local ok, cached = pcall(probe_reader.cached, probe_reader, section)
+  return ok and cached or nil
+end
+
+if SimpleSection then
+  local import = m:section(SimpleSection)
+  import.template = "xc/import"
+end
 
 return m

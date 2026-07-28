@@ -61,7 +61,13 @@ local function controller_fixture(options)
     ["xc.schema"] = real_schema,
     ["xc.platform"] = { new = function() return adapters end },
     ["xc.runtime"] = { new = function() return runtime_instance end, paths = { log = "/var/log/xc.log" } },
-    ["xc.importer"] = importer
+    ["xc.importer"] = importer,
+    ["xc.probe"] = options.probe_module or { new = function()
+      return { run = function(_, section, selected, timeout)
+        state.probe = { section = section, node = selected, timeout = timeout }
+        return options.probe_result or { socket = "ok", ping = 12, time = 12, outcome = "tcp" }
+      end }
+    end }
   }
   local saved = {}
   for name, replacement in pairs(replacements) do saved[name], package.loaded[name] = package.loaded[name], replacement end
@@ -94,12 +100,25 @@ t.test("controller distinguishes missing nodes from uncertain and throwing UCI r
   t.eq(state.response.message:find("read%-secret"), nil)
 end)
 
-t.test("controller never reports a fabricated probe result before probe support exists", function()
+t.test("controller returns a sanitized real probe result", function()
   local controller, state = controller_fixture()
   controller.action_probe()
-  t.eq(state.response.ok, false)
-  t.eq(state.response.code, "not_implemented")
-  t.eq(state.status, 501)
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.socket, "ok")
+  t.eq(state.response.data.ping, 12)
+  t.eq(state.probe.section, "safe_node")
+end)
+
+t.test("controller rejects disabled and unsupported probe nodes", function()
+  local controller, state = controller_fixture({ get_node = function()
+    return { id = "safe_node", enabled = false, protocol = "socks", server = "127.0.0.1", port = 1080 }, "ok"
+  end })
+  controller.action_probe(); t.eq(state.response.code, "disabled_node"); t.eq(state.status, 409)
+
+  controller, state = controller_fixture({ get_node = function()
+    return { id = "safe_node", enabled = true, protocol = "raw", raw_outbound = "secret" }, "ok"
+  end })
+  controller.action_probe(); t.eq(state.response.code, "unsupported_node"); t.eq(state.status, 422)
 end)
 
 t.test("authenticated current-node health action reports stable success and failure envelopes", function()

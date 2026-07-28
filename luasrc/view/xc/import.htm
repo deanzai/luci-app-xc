@@ -1,0 +1,112 @@
+<%
+local dispatcher = require "luci.dispatcher"
+-%>
+<fieldset class="cbi-section">
+  <legend><%:Local import%></legend>
+  <p><%:Choose a local file or paste node links. Nothing is sent until Preview is pressed.%></p>
+  <input id="xc-import-file" type="file" accept=".txt,.json" />
+  <textarea id="xc-import-paste" rows="8" class="cbi-input-textarea"></textarea>
+  <div>
+    <input id="xc-import-preview" type="button" class="cbi-button cbi-button-apply" value="<%:Preview%>" />
+    <input id="xc-import-commit" type="button" class="cbi-button cbi-button-positive" value="<%:Confirm import%>" disabled="disabled" />
+    <span id="xc-import-state"></span>
+  </div>
+  <div id="xc-import-warnings"></div>
+  <table class="table">
+    <thead><tr><th><%:Name%></th><th><%:Protocol%></th><th><%:Server%></th><th><%:Port%></th></tr></thead>
+    <tbody id="xc-import-preview-body"></tbody>
+  </table>
+</fieldset>
+<script type="text/javascript">
+(function() {
+  "use strict";
+  var previewUrl = '<%=dispatcher.build_url("admin", "services", "xc", "import-preview")%>?token=<%=token%>';
+  var commitUrl = '<%=dispatcher.build_url("admin", "services", "xc", "import-commit")%>?token=<%=token%>';
+  var fileText = "", previewSource = "", previewReady = false;
+  var file, paste, previewButton, commitButton, state, warnings, body;
+
+  function clearChildren(element) {
+    while (element.children && element.children.length) element.removeChild(element.children[0]);
+    while (element.firstChild) element.removeChild(element.firstChild);
+  }
+
+  function setState(message, failed) {
+    state.textContent = message || ""; state.style.color = failed ? "red" : "";
+  }
+
+  function send(url, source, callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      callback(payload);
+    };
+    xhr.send(source);
+  }
+
+  function addCell(row, value) {
+    var cell = document.createElement("td");
+    cell.textContent = value === null || value === undefined ? "" : String(value);
+    row.appendChild(cell);
+  }
+
+  function render(data) {
+    clearChildren(body); clearChildren(warnings);
+    var nodes = data.nodes || [];
+    for (var index = 0; index < nodes.length; index++) {
+      var node = nodes[index], row = document.createElement("tr");
+      addCell(row, node.name); addCell(row, node.protocol); addCell(row, node.server); addCell(row, node.port);
+      body.appendChild(row);
+    }
+    var items = data.warnings || [];
+    for (var warningIndex = 0; warningIndex < items.length; warningIndex++) {
+      var item = document.createElement("div"); item.textContent = String(items[warningIndex]); warnings.appendChild(item);
+    }
+  }
+
+  function initialize() {
+    file = document.getElementById("xc-import-file"); paste = document.getElementById("xc-import-paste");
+    previewButton = document.getElementById("xc-import-preview"); commitButton = document.getElementById("xc-import-commit");
+    state = document.getElementById("xc-import-state"); warnings = document.getElementById("xc-import-warnings");
+    body = document.getElementById("xc-import-preview-body");
+    file.onchange = function() {
+      fileText = ""; previewReady = false; commitButton.disabled = true;
+      if (!file.files || !file.files[0]) return;
+      var reader = new FileReader();
+      reader.onload = function() { fileText = typeof reader.result === "string" ? reader.result : ""; };
+      reader.onerror = function() { setState("file error", true); };
+      reader.readAsText(file.files[0]);
+    };
+    previewButton.onclick = function() {
+      var source = paste.value || fileText;
+      if (!source) { setState("empty", true); return; }
+      previewButton.disabled = true; setState("previewing", false);
+      send(previewUrl, source, function(payload) {
+        previewButton.disabled = false;
+        if (!payload || payload.ok !== true || !payload.data) {
+          previewReady = false; commitButton.disabled = true;
+          setState(payload && payload.message ? payload.message : "preview failed", true); return;
+        }
+        previewSource = source; previewReady = true; commitButton.disabled = false;
+        render(payload.data); setState("ready", false);
+      });
+    };
+    commitButton.onclick = function() {
+      if (!previewReady || !confirm("Confirm import?")) return;
+      commitButton.disabled = true; setState("importing", false);
+      send(commitUrl, previewSource, function(payload) {
+        if (!payload || payload.ok !== true) {
+          commitButton.disabled = false; setState(payload && payload.message ? payload.message : "import failed", true); return;
+        }
+        paste.value = ""; file.value = ""; fileText = ""; previewSource = ""; previewReady = false;
+        clearChildren(body); clearChildren(warnings); setState("imported", false);
+      });
+    };
+  }
+  if (document.addEventListener) document.addEventListener("DOMContentLoaded", initialize);
+  else window.onload = initialize;
+})();
+</script>

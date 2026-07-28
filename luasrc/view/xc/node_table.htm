@@ -1,0 +1,108 @@
+<%
+local dispatcher = require "luci.dispatcher"
+local probe_concurrency = self.probe_concurrency or 3
+-%>
+<%+cbi/tblsection%>
+<div class="cbi-section-create">
+  <input id="xc-probe-all" class="cbi-button cbi-button-apply" type="button" value="<%:Test all%>" />
+  <input id="xc-probe-stop" class="cbi-button cbi-button-reset" type="button" value="<%:Stop probing%>" />
+  <span id="xc-probe-state"></span>
+</div>
+<script type="text/javascript">
+(function() {
+  "use strict";
+  var endpoint = '<%=dispatcher.build_url("admin", "services", "xc", "probe")%>?token=<%=token%>';
+  var configured = Number("<%=probe_concurrency%>");
+  var concurrency = isFinite(configured) ? Math.min(5, Math.max(1, Math.floor(configured))) : 3;
+  var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
+  var allButton, stopButton, state;
+
+  function color(milliseconds) {
+    if (milliseconds < 100) return "green";
+    if (milliseconds < 200) return "#b7791f";
+    if (milliseconds < 300) return "#dd6b20";
+    return "red";
+  }
+
+  function finish(id) {
+    if (id !== runId) return;
+    inFlight--;
+    pump(id);
+    if (queue.length === 0 && inFlight === 0) {
+      running = false;
+      allButton.disabled = false;
+      state.textContent = "";
+    }
+  }
+
+  function render(row, payload) {
+    var latency = row.querySelector(".xc-latency");
+    var socket = row.querySelector(".xc-socket");
+    if (!payload || payload.ok !== true || !payload.data) {
+      latency.textContent = "error"; latency.style.color = "red";
+      socket.textContent = "fail"; socket.style.color = "red"; return;
+    }
+    var data = payload.data;
+    var milliseconds = Number(data.ping);
+    if (data.outcome === "timeout") latency.textContent = "timeout";
+    else if (!isFinite(milliseconds) || milliseconds <= 0) latency.textContent = data.outcome || "error";
+    else latency.textContent = Math.floor(milliseconds) + " ms";
+    latency.style.color = color(isFinite(milliseconds) ? milliseconds : 10000);
+    socket.textContent = data.socket === "ok" ? "ok" : "fail";
+    socket.style.color = data.socket === "ok" ? "green" : "red";
+  }
+
+  function request(row, id) {
+    var xhr = new XMLHttpRequest();
+    var section = row.getAttribute("data-xc-section");
+    xhr.open("POST", endpoint, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (id === runId) {
+        var payload = null;
+        try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+        render(row, payload);
+      }
+      finish(id);
+    };
+    xhr.send(JSON.stringify({ section: section }));
+  }
+
+  function pump(id) {
+    if (!running || id !== runId) return;
+    while (inFlight < concurrency && queue.length > 0) {
+      var row = queue.shift(); inFlight++; request(row, id);
+    }
+  }
+
+  function start(selected) {
+    if (running) return false;
+    runId++; running = true; queue = selected.slice(0); inFlight = 0;
+    allButton.disabled = true; state.textContent = "testing";
+    pump(runId); return true;
+  }
+
+  function stop() {
+    runId++; queue = []; inFlight = 0; running = false;
+    allButton.disabled = false; state.textContent = "stopped";
+  }
+
+  function initialize() {
+    var found = document.querySelectorAll(".xc-probe-row");
+    for (var index = 0; index < found.length; index++) rows.push(found[index]);
+    allButton = document.getElementById("xc-probe-all");
+    stopButton = document.getElementById("xc-probe-stop");
+    state = document.getElementById("xc-probe-state");
+    allButton.onclick = function() { start(rows); };
+    stopButton.onclick = stop;
+    for (var index = 0; index < rows.length; index++) (function(row) {
+      row.querySelector(".xc-probe-one").onclick = function() { start([row]); };
+    })(rows[index]);
+  }
+
+  window.XCProbeQueue = { start: start, stop: stop };
+  if (document.addEventListener) document.addEventListener("DOMContentLoaded", initialize);
+  else window.onload = initialize;
+})();
+</script>
