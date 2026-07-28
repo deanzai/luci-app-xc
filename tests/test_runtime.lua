@@ -9,6 +9,7 @@ local PENDING_ROLLBACK = ROLLBACK .. ".pending"
 local PENDING_ROLLBACK_NODE = ROLLBACK_NODE .. ".pending"
 local UNSET_ACTIVE = "!xc-active-unset!"
 local MANIFEST = "/etc/xc/rollback/current"
+local TRANSACTION = "/etc/xc/rollback/transaction"
 
 local function checksum(value)
   local hash = 5381
@@ -21,6 +22,17 @@ local function journal(config, active, generation)
   local prefix = "/etc/xc/rollback/generation-" .. generation
   local manifest = table.concat({ "xc-rollback-v1", generation, tostring(#config), checksum(config), tostring(#active), checksum(active), "" }, "\n")
   return { [MANIFEST] = manifest, [prefix .. ".config"] = config, [prefix .. ".active"] = active }
+end
+
+local function transaction(phase, old_config, old_active, new_config, new_active, kind, generation, target, old_service, prior)
+  generation, kind = generation or "123-1", kind or "switch"
+  old_config, old_active = old_config or "", old_active or UNSET_ACTIVE
+  return table.concat({
+    "xc-transaction-v2", generation, kind, phase, generation, target or "-",
+    old_config == "" and "0" or "1", tostring(#old_config), checksum(old_config),
+    tostring(#old_active), checksum(old_active), tostring(#new_config), checksum(new_config),
+    tostring(#new_active), checksum(new_active), old_service or "running", prior or "-", ""
+  }, "\n")
 end
 
 local function merge(left, right)
@@ -76,7 +88,7 @@ end
 
 local function fixture(options)
   options = options or {}
-  local events, files = {}, {}
+  local events, files = options.events or {}, options.shared_files or {}
   for path, content in pairs(options.files or {}) do files[path] = content end
   local global = options.global or { active_node = "old", socks_port = 7890, http_port = 10809 }
   global.health_url = global.health_url or "https://health.invalid/generate_204"
@@ -85,7 +97,7 @@ local function fixture(options)
   local by_id = {}
   for _, value in ipairs(nodes) do by_id[value.id] = value end
   local original_active = global.active_node
-  local state = { events = events, files = files, global = global }
+  local state = { events = events, files = files, global = global, writes = {} }
   local generation_count = 0
   local function event(value) events[#events + 1] = value end
   local uci = {
@@ -126,7 +138,26 @@ local function fixture(options)
       generation_count = generation_count + 1
       return options.generation or ("123-" .. generation_count)
     end,
-    list_generation_files = function() return {} end,
+    list_generation_files = function() return options.generation_files or {} end,
+    trash_generation = function(directory, generation)
+      event("fs:trash_generation:" .. generation)
+      if options.trash_ok == false then return nil end
+      local token = generation
+      if files[directory .. "/generation-" .. generation .. ".config"] ~= nil then
+        files[directory .. "/.trash-" .. token .. ".config"] = files[directory .. "/generation-" .. generation .. ".config"]
+        files[directory .. "/.trash-" .. token .. ".active"] = files[directory .. "/generation-" .. generation .. ".active"]
+      end
+      files[directory .. "/generation-" .. generation .. ".config"] = nil
+      files[directory .. "/generation-" .. generation .. ".active"] = nil
+      return token
+    end,
+    delete_trashed_generation = function(directory, token)
+      event("fs:delete_trashed_generation:" .. token)
+      if options.delete_trash_ok == false then return false end
+      files[directory .. "/.trash-" .. token .. ".config"] = nil
+      files[directory .. "/.trash-" .. token .. ".active"] = nil
+      return true
+    end,
     remove_generation = function(directory, generation)
       event("fs:remove_generation:" .. generation)
       files[directory .. "/generation-" .. generation .. ".config"] = nil
@@ -135,6 +166,7 @@ local function fixture(options)
     end,
     read = function(path, maximum)
       event("fs:read:" .. path)
+      if options.read_errors and options.read_errors[path] then return nil, options.read_errors[path] end
       if files[path] == nil then return nil, "missing" end
       if maximum and #files[path] > maximum then return nil, "too_large" end
       return files[path]
@@ -143,6 +175,7 @@ local function fixture(options)
     write_temp = function(path, content)
       local temporary = path .. ".tmp.123"
       event("fs:write_temp:" .. temporary)
+      state.writes[#state.writes + 1] = { path = path, content = content }
       files[temporary] = content
       return { path = temporary }
     end,
@@ -201,8 +234,8 @@ local function fixture(options)
   state.runtime = assert(runtime.new({
     uci = uci, fs = fs, exec = exec, json = { stringify = stringify },
     network = function() return "192.168.6.1" end,
-    now = function() return 123 end,
-    sleep = function() event("sleep") end
+    now = options.now or function() return 123 end,
+    sleep = function() event("sleep"); if options.sleep_hook then options.sleep_hook() end end
   }))
   return state
 end
@@ -281,7 +314,7 @@ end)
 
 t.test("failed switch preserves the prior successful rollback generation", function()
   local state = fixture({
-    health_fail = "http",
+    health_failures = { http = 1 },
     files = merge({ [RUNTIME] = "runtime-B" }, journal("runtime-A", "A")),
     global = { active_node = "B", socks_port = 7890, http_port = 10809 },
     nodes = { node("A", true), node("B", true), node("C", true) }
@@ -313,9 +346,9 @@ t.test("failed Xray validation never restarts and releases the lock", function()
 end)
 
 t.test("listener and health failures restore the previous config and active node", function()
-  for failure, code in pairs({ listener_fail = "listener_failed", health_fail = "health_failed" }) do
+  for failure, code in pairs({ listener_failures = "listener_failed", health_failures = "health_failed" }) do
     local options = { files = { [RUNTIME] = "old-runtime" } }
-    options[failure] = failure == "listener_fail" and "http" or "socks"
+    options[failure] = failure == "listener_failures" and { http = 10 } or { socks = 1 }
     local state = fixture(options)
     local result = state.runtime:switch("new")
     t.eq(result.ok, false)
@@ -333,7 +366,7 @@ t.test("listener readiness waits and both health entries are always checked", fu
   t.eq(result.ok, true)
   t.truthy(event_index(state.events, "sleep"))
 
-  local failed = fixture({ health_fail = "socks", files = { [RUNTIME] = "old-runtime" } })
+  local failed = fixture({ health_failures = { socks = 1 }, files = { [RUNTIME] = "old-runtime" } })
   result = failed.runtime:switch("new")
   t.eq(result.code, "health_failed")
   t.truthy(event_index(failed.events, "exec:health:socks:192.168.6.1:7890"))
@@ -341,7 +374,7 @@ t.test("listener readiness waits and both health entries are always checked", fu
 end)
 
 t.test("a failed first switch stops service when no old runtime exists", function()
-  local state = fixture({ health_fail = "http" })
+  local state = fixture({ health_failures = { http = 1 } })
   local result = state.runtime:switch("new")
   t.eq(result.ok, false)
   t.eq(result.code, "health_failed_no_previous_config")
@@ -411,7 +444,7 @@ t.test("rollback reports no snapshot and restores a one-generation snapshot", fu
   t.eq(state.files[RUNTIME], "old-runtime")
   t.eq(state.global.active_node, "old")
   t.eq(state.files[MANIFEST], nil)
-  t.truthy(event_index(state.events, "fs:chmod:" .. RUNTIME .. ".tmp.123:0600") < event_index(state.events, "exec:restart"))
+  t.truthy(event_index(state.events, "fs:chmod:" .. RUNTIME .. ".candidate.tmp.123:0600") < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, "exec:restart") < event_index(state.events, "uci:commit"))
   t.truthy(event_index(state.events, "exec:listener:http:192.168.6.1:10809"))
   t.truthy(event_index(state.events, "exec:health:socks:192.168.6.1:7890"))
@@ -526,6 +559,239 @@ t.test("logging enforces the total cap and fsyncs the log directory", function()
   t.truthy(#state.files["/var/log/xc.log"] <= 262144)
   t.truthy(event_index(state.events, "fs:chmod:/var/log/xc.log.tmp.123:0600"))
   t.truthy(event_index(state.events, "fs:fsync_dir:/var/log"))
+end)
+
+t.test("switch durably records install intent before replacing runtime", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  t.eq(state.runtime:switch("new").ok, true)
+  local intent, replace
+  for index, write in ipairs(state.writes) do
+    if write.path == TRANSACTION and write.content:find("\ninstall_intent\n", 1, true) then intent = index end
+  end
+  replace = event_index(state.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME)
+  local intent_rename = event_index(state.events, "fs:rename:" .. TRANSACTION .. ".tmp.123:" .. TRANSACTION)
+  t.truthy(intent)
+  t.truthy(intent_rename < replace)
+  t.truthy(event_index(state.events, "fs:fsync_dir:/etc/xc/rollback") < replace)
+end)
+
+t.test("recover_pending restores a checksum-validated pre-UCI transaction idempotently", function()
+  local files = {
+    [RUNTIME] = "candidate-runtime",
+    ["/etc/xc/rollback/generation-123-1.config"] = "old-runtime",
+    ["/etc/xc/rollback/generation-123-1.active"] = "old",
+    [TRANSACTION] = transaction("install_intent", "old-runtime", "old", "candidate-runtime", "new")
+  }
+  local state = fixture({ shared_files = files, global = { active_node = "old", socks_port = 7890, http_port = 10809 } })
+  local first = state.runtime:recover_pending()
+  t.eq(first.ok, true)
+  t.eq(files[RUNTIME], "old-runtime")
+  local validation = "exec:run:/usr/bin/xray|run|-test|-c|/etc/xc/rollback/generation-123-1.config"
+  t.truthy(event_index(state.events, validation) < event_index(state.events, "fs:write_temp:" .. RUNTIME .. ".tmp.123"))
+  t.eq(files[TRANSACTION], nil)
+  t.eq(state.runtime:recover_pending().ok, true)
+  t.eq(files[RUNTIME], "old-runtime")
+end)
+
+t.test("automatic preflight recovers before render mutates its output", function()
+  local files = {
+    [RUNTIME] = "candidate-runtime",
+    ["/etc/xc/rollback/generation-123-1.config"] = "old-runtime",
+    ["/etc/xc/rollback/generation-123-1.active"] = "old",
+    [TRANSACTION] = transaction("install_intent", "old-runtime", "old", "candidate-runtime", "new")
+  }
+  local state = fixture({ shared_files = files })
+  local rendered = state.runtime:render("new", "/tmp/render.json")
+  t.eq(rendered.ok, true)
+  t.eq(files[RUNTIME], "old-runtime")
+  t.truthy(event_index(state.events, "exec:restart") < event_index(state.events, "fs:write_temp:/tmp/render.json.tmp.123"))
+end)
+
+t.test("typed read failures abort switch and rollback before installation", function()
+  local switched = fixture({ files = { [RUNTIME] = "old-runtime" }, read_errors = { [RUNTIME] = "io_error" } })
+  local value = switched.runtime:switch("new")
+  t.eq(value.ok, false)
+  t.eq(switched.files[RUNTIME], "old-runtime")
+  t.eq(switched.files[RUNTIME .. ".candidate"], nil)
+  t.eq(event_index(switched.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME), nil)
+
+  local files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old"))
+  local rolled = fixture({ files = files, read_errors = { [MANIFEST] = "too_large" } })
+  value = rolled.runtime:rollback()
+  t.eq(value.ok, false)
+  t.eq(rolled.files[RUNTIME], "new-runtime")
+  t.eq(event_index(rolled.events, "exec:restart"), nil)
+end)
+
+t.test("finalize and recovery_done converge after evidence was already removed", function()
+  for _, phase in ipairs({ "finalize", "recovery_done" }) do
+    local files = {
+      [RUNTIME] = phase == "finalize" and "candidate-runtime" or nil,
+      [TRANSACTION] = transaction(phase, "", UNSET_ACTIVE, "candidate-runtime", "new", "switch")
+    }
+    local state = fixture({ shared_files = files })
+    t.eq(state.runtime:recover_pending().ok, true)
+    t.eq(files[TRANSACTION], nil)
+    t.eq(state.runtime:recover_pending().ok, true)
+  end
+end)
+
+t.test("log rotation is serialized and retains only complete newline records", function()
+  local old = string.rep("z", 262130) .. "\ncomplete\n"
+  local state = fixture({ files = { ["/var/log/xc.log"] = old } })
+  t.eq(state.runtime:log("next", {}).ok, true)
+  t.eq(state.events[1], "fs:lock:/var/lock/xc-log.lock")
+  t.eq(state.events[#state.events], "fs:unlock")
+  local value = state.files["/var/log/xc.log"]
+  t.truthy(#value <= 262144)
+  t.eq(value:sub(1, 1), "c")
+  t.eq(value:find("z", 1, true), nil)
+  t.eq(value:sub(-1), "\n")
+end)
+
+t.test("rollback rejects a preservation generation collision before overwriting evidence", function()
+  local files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old"))
+  local state = fixture({ files = files, generation = "100-1", global = { active_node = "new", socks_port = 7890, http_port = 10809 } })
+  local value = state.runtime:rollback()
+  t.eq(value.ok, false)
+  t.eq(state.files["/etc/xc/rollback/generation-100-1.config"], "old-runtime")
+  t.truthy(state.files[MANIFEST])
+  t.eq(state.files[RUNTIME], "new-runtime")
+end)
+
+t.test("scavenge refuses an invalid manifest rather than deleting possibly referenced evidence", function()
+  local files = {
+    [MANIFEST] = "corrupt-but-present\n",
+    ["/etc/xc/rollback/generation-safe.config"] = "evidence",
+    ["/etc/xc/rollback/generation-safe.active"] = "old"
+  }
+  local state = fixture({ shared_files = files, generation_files = { "generation-safe.config", "generation-safe.active" } })
+  t.eq(state.runtime:recover_pending().ok, false)
+  t.eq(files["/etc/xc/rollback/generation-safe.config"], "evidence")
+  t.eq(event_index(state.events, "fs:trash_generation:safe"), nil)
+end)
+
+t.test("logging never truncates a UTF-8 sequence", function()
+  local state = fixture()
+  t.eq(state.runtime:log(string.rep("a", 511) .. "中", {}).ok, true)
+  local value = state.files["/var/log/xc.log"]
+  t.truthy(utf8.len(value))
+end)
+
+t.test("phase recovery converges across instances before and after UCI commit", function()
+  for _, phase in ipairs({ "install_intent", "candidate_healthy", "recovery_intent", "uci_committed", "cleanup_pending" }) do
+    local files = {
+      [RUNTIME] = "candidate-runtime",
+      ["/etc/xc/rollback/generation-123-1.config"] = "old-runtime",
+      ["/etc/xc/rollback/generation-123-1.active"] = "old",
+      [TRANSACTION] = transaction(phase, "old-runtime", "old", "candidate-runtime", "new")
+    }
+    if phase == "cleanup_pending" then
+      files[MANIFEST] = journal("old-runtime", "old", "123-1")[MANIFEST]
+    end
+    local committed = phase == "uci_committed" or phase == "cleanup_pending"
+    local global = { active_node = committed and "new" or "old", socks_port = 7890, http_port = 10809 }
+    local first = fixture({ shared_files = files, global = global })
+    t.eq(first.runtime:recover_pending().ok, true, phase)
+    t.eq(files[RUNTIME], committed and "candidate-runtime" or "old-runtime", phase)
+    local second = fixture({ shared_files = files, global = global })
+    t.eq(second.runtime:recover_pending().ok, true, phase)
+    t.eq(files[TRANSACTION], nil, phase)
+  end
+end)
+
+t.test("cleanup interruption leaves a valid new manifest and retryable cleanup_pending", function()
+  local files = merge({ [RUNTIME] = "runtime-B" }, journal("runtime-A", "A"))
+  local global = { active_node = "B", socks_port = 7890, http_port = 10809 }
+  local first = fixture({
+    shared_files = files, global = global, delete_trash_ok = false,
+    nodes = { node("A", true), node("B", true), node("C", true) }
+  })
+  t.eq(first.runtime:switch("C").ok, false)
+  t.truthy(files[MANIFEST])
+  t.contains(files[TRANSACTION], "\ncleanup_pending\n")
+  t.eq(files["/etc/xc/rollback/generation-123-1.config"], "runtime-B")
+
+  local second = fixture({ shared_files = files, global = global })
+  t.eq(second.runtime:recover_pending().ok, true)
+  t.eq(files[TRANSACTION], nil)
+  t.truthy(files[MANIFEST])
+  t.eq(files["/etc/xc/rollback/generation-123-1.config"], "runtime-B")
+  t.eq(files["/etc/xc/rollback/generation-100-1.config"], nil)
+end)
+
+t.test("readiness checks the deadline after sleep and after final health success", function()
+  local clock = 0
+  local state = fixture({
+    files = { [RUNTIME] = "old-runtime" }, listener_failures = { socks = 1 },
+    now = function() return clock end,
+    sleep_hook = function() clock = 6 end
+  })
+  local value = state.runtime:switch("new")
+  t.eq(value.code, "health_failed")
+  t.eq(event_index(state.events, "uci:set_active:new"), nil)
+end)
+
+t.test("status constrains lock state and marks stale operation with a transaction as interrupted", function()
+  local files = {
+    ["/var/run/xc-status"] = "operation=switch\ntime=1\n",
+    [TRANSACTION] = transaction("install_intent", "old-runtime", "old", "candidate-runtime", "new")
+  }
+  local state = fixture({ shared_files = files })
+  local status = state.runtime:status()
+  t.eq(status.lock, "unlocked")
+  t.eq(status.operation, "interrupted")
+  t.eq(status.recovery_required, true)
+end)
+
+t.test("status reports a pending transaction even when shared operation is idle", function()
+  local files = {
+    ["/var/run/xc-status"] = "operation=idle\nlast_error=recovery_failed\n",
+    [TRANSACTION] = transaction("recovery_intent", "old-runtime", "old", "candidate-runtime", "new")
+  }
+  local status = fixture({ shared_files = files }).runtime:status()
+  t.eq(status.operation, "interrupted")
+  t.eq(status.recovery_required, true)
+end)
+
+t.test("recovery typed-read failures stop the uncertain candidate service", function()
+  local files = { [RUNTIME] = "candidate-runtime", [TRANSACTION] = "opaque" }
+  local state = fixture({ shared_files = files, read_errors = { [TRANSACTION] = "io_error" } })
+  t.eq(state.runtime:recover_pending().code, "recovery_failed")
+  t.truthy(event_index(state.events, "exec:stop"))
+end)
+
+t.test("switch records cleanup_pending before publishing the new manifest", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  t.eq(state.runtime:switch("new").ok, true)
+  local cleanup_write, manifest_write
+  for index, write in ipairs(state.writes) do
+    if write.path == TRANSACTION and write.content:find("\ncleanup_pending\n", 1, true) then cleanup_write = index end
+    if write.path == MANIFEST then manifest_write = index end
+  end
+  t.truthy(cleanup_write < manifest_write)
+end)
+
+t.test("phase transitions cannot confuse a generation token with the phase field", function()
+  local files = {
+    [RUNTIME] = "candidate-runtime",
+    ["/etc/xc/rollback/generation-install_intent.config"] = "old-runtime",
+    ["/etc/xc/rollback/generation-install_intent.active"] = "old",
+    [TRANSACTION] = transaction("install_intent", "old-runtime", "old", "candidate-runtime", "new", "switch", "install_intent")
+  }
+  local state = fixture({ shared_files = files })
+  t.eq(state.runtime:recover_pending().ok, true)
+  local recovery_write
+  for _, write in ipairs(state.writes) do
+    if write.path == TRANSACTION and write.content:find("recovery_intent", 1, true) then recovery_write = write.content; break end
+  end
+  local version, token, kind, phase = recovery_write:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)\n")
+  t.eq(version, "xc-transaction-v2")
+  t.eq(token, "install_intent")
+  t.eq(kind, "switch")
+  t.eq(phase, "recovery_intent")
+  t.eq(files[TRANSACTION], nil)
+  t.eq(files[RUNTIME], "old-runtime")
 end)
 
 return true

@@ -15,6 +15,7 @@ local STATUS_PATH = "/var/run/xc-status"
 local TRANSACTION_PATH = "/etc/xc/rollback/transaction"
 local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
+local LOG_LOCK_PATH = "/var/lock/xc-log.lock"
 local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
 local sanitize_text
 
@@ -38,6 +39,54 @@ local function parse_manifest(value)
   local version, generation, config_size, config_hash, active_size, active_hash = value:match("^([^\n]+)\n([^\n]+)\n(%d+)\n(%x+)\n(%d+)\n(%x+)\n$")
   if version ~= "xc-rollback-v1" or #generation > 64 or not generation:match("^[0-9A-Za-z_-]+$") then return nil end
   return { generation = generation, config_size = tonumber(config_size), config_hash = config_hash, active_size = tonumber(active_size), active_hash = active_hash }
+end
+
+local function valid_token(value)
+  return type(value) == "string" and #value > 0 and #value <= 64 and value:match("^[0-9A-Za-z_-]+$") ~= nil
+end
+
+local TRANSACTION_PHASES = {
+  install_intent = true, candidate_healthy = true, uci_committed = true,
+  cleanup_pending = true, recovery_intent = true, recovery_done = true, finalize = true
+}
+
+local function parse_transaction(value)
+  if type(value) ~= "string" or #value > 1024 or value:sub(-1) ~= "\n" then return nil end
+  local fields = {}
+  for line in value:gmatch("([^\n]*)\n") do fields[#fields + 1] = line end
+  if #fields ~= 17 or fields[1] ~= "xc-transaction-v2" or not valid_token(fields[2])
+    or not valid_token(fields[5]) or fields[2] ~= fields[5]
+    or (fields[3] ~= "switch" and fields[3] ~= "rollback") or not TRANSACTION_PHASES[fields[4]]
+    or (fields[6] ~= "-" and not valid_token(fields[6]))
+    or (fields[17] ~= "-" and not valid_token(fields[17]))
+    or (fields[7] ~= "0" and fields[7] ~= "1")
+    or not fields[9]:match("^%x%x%x%x%x%x%x%x$") or not fields[11]:match("^%x%x%x%x%x%x%x%x$")
+    or not fields[13]:match("^%x%x%x%x%x%x%x%x$") or not fields[15]:match("^%x%x%x%x%x%x%x%x$")
+    or (fields[16] ~= "running" and fields[16] ~= "stopped" and fields[16] ~= "unknown") then return nil end
+  local numbers = {}
+  for _, index in ipairs({ 8, 10, 12, 14 }) do
+    numbers[index] = tonumber(fields[index])
+    local maximum = (index == 8 or index == 12) and 1048576 or 256
+    if not numbers[index] or numbers[index] < 0 or numbers[index] > maximum then return nil end
+  end
+  return {
+    token = fields[2], kind = fields[3], phase = fields[4], generation = fields[5],
+    target_generation = fields[6] ~= "-" and fields[6] or nil, old_present = fields[7] == "1",
+    old_size = numbers[8], old_hash = fields[9], old_active_size = numbers[10], old_active_hash = fields[11],
+    new_size = numbers[12], new_hash = fields[13], new_active_size = numbers[14], new_active_hash = fields[15],
+    old_service = fields[16], prior_generation = fields[17] ~= "-" and fields[17] or nil
+  }
+end
+
+local function transaction_text(context, phase)
+  return table.concat({
+    "xc-transaction-v2", context.generation, context.kind, phase, context.generation,
+    context.target_generation or "-", context.old_config ~= nil and "1" or "0",
+    tostring(#(context.old_config or "")), checksum(context.old_config or ""),
+    tostring(#context.old_marker), checksum(context.old_marker), tostring(#context.new_config), checksum(context.new_config),
+    tostring(#context.new_marker), checksum(context.new_marker), context.old_service or "unknown",
+    context.prior_generation or "-", ""
+  }, "\n")
 end
 
 local messages = {
@@ -137,6 +186,34 @@ function Runtime:_checked_remove(path)
   return action_ok(self.fs.fsync_dir(path:match("^(.+)/[^/]+$")))
 end
 
+function Runtime:_trash_generation(generation)
+  if not generation then return true end
+  local trash = self.fs.trash_generation("/etc/xc/rollback", generation)
+  -- The adapter contract makes the generation token the stable trash token.
+  if trash ~= generation then return false end
+  if not action_ok(self.fs.fsync_dir("/etc/xc/rollback")) then return false end
+  if not action_ok(self.fs.delete_trashed_generation("/etc/xc/rollback", trash)) then return false end
+  return action_ok(self.fs.fsync_dir("/etc/xc/rollback"))
+end
+
+function Runtime:_write_transaction(context, phase)
+  self:_atomic_write(TRANSACTION_PATH, transaction_text(context, phase))
+  context.phase = phase
+end
+
+function Runtime:_read_generation(transaction)
+  local config_path, active_path = generation_paths(transaction.generation)
+  local config = self:_read_optional(config_path, 1048576)
+  local marker = self:_read_optional(active_path, 256)
+  if type(config) ~= "string" or type(marker) ~= "string"
+    or #config ~= transaction.old_size or checksum(config) ~= transaction.old_hash
+    or #marker ~= transaction.old_active_size or checksum(marker) ~= transaction.old_active_hash then return nil end
+  if transaction.old_present == false and config ~= "" then return nil end
+  local active, valid = decode_active_marker(marker)
+  if not valid then return nil end
+  return { config = transaction.old_present and config or nil, marker = marker, active = active }
+end
+
 function Runtime:_read_optional(path, maximum)
   local value, read_error = self.fs.read(path, maximum)
   if value == nil and read_error ~= "missing" then error("bounded read failed", 0) end
@@ -195,7 +272,7 @@ function Runtime:_encode(section_id)
 end
 
 function Runtime:render(section_id, output_path)
-  if not valid_output_path(output_path) then return result(false, "invalid_output") end
+  if not valid_output_path(output_path) then self.last_error = "invalid_output"; return result(false, "invalid_output") end
   local function render_operation()
     local encoded, node_id, encode_error = self:_encode(section_id)
     if encode_error then return encode_error end
@@ -208,11 +285,26 @@ end
 function Runtime:_with_lock(operation, fn)
   local acquired, lock = pcall(self.fs.acquire_lock, LOCK_PATH)
   if not acquired then self.last_error = "lock_error"; return result(false, "internal_error") end
-  if not lock then return result(false, "busy") end
+  if not lock then self.last_error = "busy"; return result(false, "busy") end
+  if operation ~= "recover" then
+    local recovered_ok, recovered = xpcall(function() return self:_recover_pending_locked() end, function()
+      self:_safe_stop()
+      return result(false, "recovery_failed")
+    end)
+    if not recovered_ok or not recovered.ok then
+      self.last_error = "recovery_failed"
+      pcall(self.fs.release_lock, lock)
+      return result(false, "recovery_failed")
+    end
+  end
   self.operation = operation
   local status_started = pcall(function() self:_atomic_write(STATUS_PATH, "operation=" .. operation .. "\ntime=" .. tostring(self.now()) .. "\n") end)
-  if not status_started then pcall(self.fs.release_lock, lock); self.operation = nil; return result(false, "internal_error") end
-  local ok, value = xpcall(fn, function() return result(false, "internal_error") end)
+  if not status_started then self.last_error = "internal_error"; pcall(self.fs.release_lock, lock); self.operation = nil; return result(false, "internal_error") end
+  local ok, value = xpcall(fn, function()
+    if operation == "recover" then self:_safe_stop(); return result(false, "recovery_failed") end
+    return result(false, "internal_error")
+  end)
+  if type(value) ~= "table" then value = result(false, "internal_error") end
   self.last_error = (not value.ok) and value.code or nil
   local status_finished = pcall(function() self:_atomic_write(STATUS_PATH, "operation=idle\nlast_error=" .. tostring(self.last_error or "") .. "\ntime=" .. tostring(self.now()) .. "\n") end)
   local release_call, release_value = pcall(self.fs.release_lock, lock)
@@ -248,6 +340,7 @@ function Runtime:_readiness(global)
       local remaining = deadline - self.now()
       if remaining <= 0 then return "health_failed" end
       self.sleep(math.min(1, remaining))
+      if self.now() >= deadline then return "health_failed" end
     end
   end
   if not listeners_ready then return "listener_failed" end
@@ -259,220 +352,290 @@ function Runtime:_readiness(global)
   if not socks_healthy or not http_healthy then return "health_failed" end
 end
 
-function Runtime:_restore_previous(context, failure_code)
-  if context.old_config ~= nil then
-    self:_atomic_write(RUNTIME_PATH, context.old_config)
-  else
-    if not self:_checked_remove(RUNTIME_PATH) then return result(false, "recovery_failed") end
-  end
-  if not self:_apply_active(context.old_active) then error("restore failed", 0) end
-  if context.old_config ~= nil then
-    if not action_ok(self.exec.restart()) then error("restore failed", 0) end
-  else
-    if not action_ok(self.exec.stop()) then return result(false, "recovery_failed", { service = "unknown" }) end
-  end
-  if context.generation_config and not self:_checked_remove(context.generation_config) then
-    local stopped = action_ok(self.exec.stop()); return result(false, "recovery_failed", { service = stopped and "stopped" or "unknown" })
-  end
-  if context.generation_active and not self:_checked_remove(context.generation_active) then
-    local stopped = action_ok(self.exec.stop()); return result(false, "recovery_failed", { service = stopped and "stopped" or "unknown" })
-  end
-  if not self:_checked_remove(TRANSACTION_PATH) then
-    local stopped = action_ok(self.exec.stop()); return result(false, "recovery_failed", { service = stopped and "stopped" or "unknown" })
-  end
-  if context.old_config ~= nil then return result(false, failure_code) end
-  return result(false, failure_code .. "_no_previous_config", {
-    message = (messages[failure_code] or messages.internal_error) .. "; service stopped because no previous configuration exists"
-  })
+function Runtime:_safe_stop()
+  local ok, stopped = pcall(self.exec.stop)
+  return ok and action_ok(stopped)
 end
 
-function Runtime:_best_effort_restore(context)
-  if context.old_config ~= nil then self:_atomic_write(RUNTIME_PATH, context.old_config)
-  elseif not self:_checked_remove(RUNTIME_PATH) then error("recovery failed", 0) end
-  if not self:_apply_active(context.old_active) then error("recovery failed", 0) end
-  if context.old_config ~= nil then
-    if not action_ok(self.exec.restart()) then error("recovery failed", 0) end
-  elseif not action_ok(self.exec.stop()) then error("recovery failed", 0) end
+function Runtime:_restore_transaction(transaction, old)
+  local ok = xpcall(function()
+    if old.config ~= nil then
+      local config_path = generation_paths(transaction.generation)
+      local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], config_path }
+      if not action_ok(self.exec.run(argv)) then error("old runtime validation failed", 0) end
+      self:_atomic_write(RUNTIME_PATH, old.config)
+    elseif not self:_checked_remove(RUNTIME_PATH) then error("runtime removal failed", 0) end
+    if not self:_apply_active(old.active) then error("active recovery failed", 0) end
+    if transaction.old_service == "running" and old.config ~= nil then
+      if not action_ok(self.exec.restart()) then error("restart recovery failed", 0) end
+      local global = self.uci.get_global()
+      if type(global) ~= "table" or self:_readiness(global) then error("readiness recovery failed", 0) end
+    elseif not self:_safe_stop() then error("stop recovery failed", 0) end
+  end, function() return false end)
+  if not ok then self:_safe_stop(); return false end
+  return true
 end
 
-function Runtime:_restore_rollback_generation(context)
-  if context.prior_manifest ~= nil then self:_atomic_write(ROLLBACK_MANIFEST_PATH, context.prior_manifest)
-  elseif not self:_checked_remove(ROLLBACK_MANIFEST_PATH) then error("manifest recovery failed", 0) end
+function Runtime:_finish_recovery(transaction)
+  if not self:_trash_generation(transaction.generation) then return false end
+  return self:_checked_remove(TRANSACTION_PATH)
 end
 
-function Runtime:_promote_pending_snapshot(context)
-  context.promotion_started = true
-  if context.old_config == nil then
-    if not self:_checked_remove(ROLLBACK_MANIFEST_PATH) then error("snapshot promotion failed", 0) end
-    return
-  end
-  self:_atomic_write(ROLLBACK_MANIFEST_PATH, context.new_manifest)
-  local prior = parse_manifest(context.prior_manifest)
-  if prior then
-    if not action_ok(self.fs.remove_generation("/etc/xc/rollback", prior.generation)) then error("generation cleanup failed", 0) end
-  end
+local function change_transaction_phase(transaction, phase)
+  local version, token, kind, current, remainder = transaction._text:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)\n(.*)$")
+  if not version or current ~= transaction.phase then error("invalid transaction phase", 0) end
+  return table.concat({ version, token, kind, phase, remainder }, "\n")
 end
 
-function Runtime:_switch_locked(section_id, context)
-  local encoded, node_id, encode_error = self:_encode(section_id)
-  if encode_error then return encode_error end
-  self:_atomic_write(CANDIDATE_PATH, encoded)
-  local validation_argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
-  if not action_ok(self.exec.run(validation_argv)) then
-    self.fs.remove(CANDIDATE_PATH)
-    return result(false, "validation_failed")
-  end
+function Runtime:_mark_phase(transaction, phase)
+  local text = change_transaction_phase(transaction, phase)
+  self:_atomic_write(TRANSACTION_PATH, text)
+  transaction.phase, transaction._text = phase, text
+end
 
+function Runtime:_complete_switch(transaction, old)
+  self:_mark_phase(transaction, "cleanup_pending")
+  if transaction.old_present then
+    self:_atomic_write(ROLLBACK_MANIFEST_PATH, manifest_for(transaction.generation, old.config, old.marker))
+  elseif not self:_checked_remove(ROLLBACK_MANIFEST_PATH) then return false end
+  if transaction.prior_generation and transaction.prior_generation ~= transaction.generation
+    and not self:_trash_generation(transaction.prior_generation) then return false end
+  self:_mark_phase(transaction, "finalize")
+  return self:_cleanup_finalized(transaction)
+end
+
+function Runtime:_complete_rollback(transaction)
+  self:_mark_phase(transaction, "finalize")
+  return self:_cleanup_finalized(transaction)
+end
+
+function Runtime:_cleanup_finalized(transaction)
+  if transaction.kind == "switch" then
+    if transaction.prior_generation and transaction.prior_generation ~= transaction.generation
+      and not self:_trash_generation(transaction.prior_generation) then return false end
+    if not transaction.old_present and not self:_trash_generation(transaction.generation) then return false end
+    return self:_checked_remove(TRANSACTION_PATH)
+  end
+  if not self:_checked_remove(ROLLBACK_MANIFEST_PATH) then return false end
+  if transaction.target_generation and not self:_trash_generation(transaction.target_generation) then return false end
+  if not self:_trash_generation(transaction.generation) then return false end
+  return self:_checked_remove(TRANSACTION_PATH)
+end
+
+function Runtime:_validate_live(transaction)
+  local config = self:_read_optional(RUNTIME_PATH, 1048576)
+  if type(config) ~= "string" or #config ~= transaction.new_size or checksum(config) ~= transaction.new_hash then return false end
   local global = self.uci.get_global()
-  if type(global) ~= "table" then error("invalid UCI state", 0) end
-  context.old_active = global.active_node
-  context.old_config = self:_read_optional(RUNTIME_PATH, 1048576)
-  context.prior_manifest = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
-  if context.old_config ~= nil then
-    context.generation = self.fs.allocate_generation("/etc/xc/rollback")
-    if type(context.generation) ~= "string" or not context.generation:match("^[0-9A-Za-z_-]+$") or #context.generation > 64 then error("generation allocation failed", 0) end
-    context.generation_config, context.generation_active = generation_paths(context.generation)
-    local marker = active_marker(context.old_active)
-    self:_atomic_write(context.generation_config, context.old_config)
-    self:_atomic_write(context.generation_active, marker)
-    context.new_manifest = manifest_for(context.generation, context.old_config, marker)
-    self:_atomic_write(TRANSACTION_PATH, "xc-transaction-v1\n" .. context.generation .. "\nprepared\n")
-  end
-  if not action_ok(self.fs.rename(CANDIDATE_PATH, RUNTIME_PATH)) then error("runtime replace failed", 0) end
-  if not action_ok(self.fs.fsync_dir("/var/etc/xc")) then error("runtime replace failed", 0) end
-  context.replaced = true
-  if context.generation then self:_atomic_write(TRANSACTION_PATH, "xc-transaction-v1\n" .. context.generation .. "\ninstalled\n") end
+  if type(global) ~= "table" then return false end
+  local marker_ok, marker = pcall(active_marker, global.active_node)
+  if not marker_ok or #marker ~= transaction.new_active_size or checksum(marker) ~= transaction.new_active_hash then return false end
+  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], RUNTIME_PATH }
+  if not action_ok(self.exec.run(argv)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
+  return true
+end
 
-  if not action_ok(self.exec.restart()) then return self:_restore_previous(context, "restart_failed") end
-  local readiness_error = self:_readiness(global)
-  if readiness_error then return self:_restore_previous(context, readiness_error) end
-  if not self:_apply_active(node_id) then
-    return self:_restore_previous(context, "commit_failed")
+function Runtime:_scavenge(transaction)
+  local referenced = {}
+  if transaction then referenced[transaction.generation] = true; if transaction.target_generation then referenced[transaction.target_generation] = true end end
+  local manifest_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
+  local manifest = parse_manifest(manifest_text)
+  if manifest_text ~= nil and not manifest then return false end
+  if manifest then referenced[manifest.generation] = true end
+  local values = self.fs.list_generation_files("/etc/xc/rollback", 256)
+  if type(values) ~= "table" or #values > 256 then return false end
+  local found = {}
+  for _, name in ipairs(values) do
+    if type(name) == "string" then
+      local token = name:match("^generation%-([0-9A-Za-z_-]+)%.config$") or name:match("^generation%-([0-9A-Za-z_-]+)%.active$")
+      if token and valid_token(token) and not referenced[token] then found[token] = true end
+    end
   end
-  if context.generation then self:_atomic_write(TRANSACTION_PATH, "xc-transaction-v1\n" .. context.generation .. "\ncommitted\n") end
-  self:_promote_pending_snapshot(context)
-  if context.generation and not self:_checked_remove(TRANSACTION_PATH) then error("transaction cleanup failed", 0) end
-  context.replaced = false
-  return result(true, "switched", { node = node_id })
+  for token in pairs(found) do if not self:_trash_generation(token) then return false end end
+  return true
+end
+
+function Runtime:_recover_pending_locked()
+  local record = self:_read_optional(TRANSACTION_PATH, 1024)
+  if record == nil then
+    if not self:_scavenge(nil) then return result(false, "recovery_failed") end
+    return result(true, "recovered")
+  end
+  local transaction = parse_transaction(record)
+  if not transaction then self:_safe_stop(); return result(false, "recovery_failed") end
+  transaction._text = record
+  if transaction.phase == "recovery_done" then
+    if not self:_finish_recovery(transaction) then self:_safe_stop(); return result(false, "recovery_failed") end
+    return result(true, "recovered")
+  elseif transaction.phase == "finalize" then
+    if not self:_cleanup_finalized(transaction) then self:_safe_stop(); return result(false, "recovery_failed") end
+    return result(true, "recovered")
+  end
+  local old = self:_read_generation(transaction)
+  if not old then self:_safe_stop(); return result(false, "recovery_failed") end
+  local ok
+  if transaction.phase == "cleanup_pending" then ok = self:_complete_switch(transaction, old)
+  elseif transaction.phase == "uci_committed" and self:_validate_live(transaction) then
+    ok = transaction.kind == "switch" and self:_complete_switch(transaction, old) or self:_complete_rollback(transaction)
+  else
+    self:_mark_phase(transaction, "recovery_intent")
+    ok = self:_restore_transaction(transaction, old)
+    if ok then self:_mark_phase(transaction, "recovery_done"); ok = self:_finish_recovery(transaction) end
+  end
+  if not ok then self:_safe_stop(); return result(false, "recovery_failed") end
+  self:_scavenge(nil)
+  return result(true, "recovered")
 end
 
 function Runtime:recover_pending()
-  return self:_with_lock("recover", function()
-    local record = self:_read_optional(TRANSACTION_PATH, 256)
-    if not record then return result(true, "recovered") end
-    local version, generation, phase = record:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n$")
-    if version ~= "xc-transaction-v1" or not generation or not generation:match("^[0-9A-Za-z_-]+$") then return result(false, "recovery_failed") end
-    local config_path, active_path = generation_paths(generation)
-    local config, active = self:_read_optional(config_path, 1048576), self:_read_optional(active_path, 256)
-    if type(config) ~= "string" or type(active) ~= "string" then return result(false, "recovery_failed") end
-    if phase == "installed" then
-      local active_node, valid = decode_active_marker(active)
-      if not valid then return result(false, "recovery_failed") end
-      self:_atomic_write(RUNTIME_PATH, config)
-      if not self:_apply_active(active_node) or not action_ok(self.exec.restart()) then return result(false, "recovery_failed") end
-      if not action_ok(self.fs.remove_generation("/etc/xc/rollback", generation)) then return result(false, "recovery_failed") end
-    elseif phase == "committed" then
-      self:_atomic_write(ROLLBACK_MANIFEST_PATH, manifest_for(generation, config, active))
-    elseif phase ~= "prepared" then return result(false, "recovery_failed")
-    elseif not action_ok(self.fs.remove_generation("/etc/xc/rollback", generation)) then return result(false, "recovery_failed") end
-    if not self:_checked_remove(TRANSACTION_PATH) then return result(false, "recovery_failed") end
-    return result(true, "recovered")
-  end)
+  return self:_with_lock("recover", function() return self:_recover_pending_locked() end)
+end
+
+function Runtime:_service_state()
+  local deadline = self.now() + 2
+  if self.now() >= deadline then return "unknown" end
+  local state = self.exec.service_state(deadline)
+  if self.now() >= deadline or (state ~= "running" and state ~= "stopped") then return "unknown" end
+  return state
+end
+
+function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)
+  local generation = self.fs.allocate_generation("/etc/xc/rollback")
+  if not valid_token(generation) then error("generation allocation failed", 0) end
+  if generation == target or generation == prior then error("generation collision", 0) end
+  local config_path, active_path = generation_paths(generation)
+  local marker = active_marker(old_active)
+  self:_atomic_write(config_path, old_config or "")
+  self:_atomic_write(active_path, marker)
+  return {
+    generation = generation, kind = kind, target_generation = target, old_config = old_config,
+    old_marker = marker, new_config = new_config, new_marker = active_marker(new_active),
+    old_service = self:_service_state(), prior_generation = prior
+  }
+end
+
+function Runtime:_abort_transaction(context, code)
+  local record = self:_read_optional(TRANSACTION_PATH, 1024)
+  local transaction = parse_transaction(record)
+  if not transaction then self:_safe_stop(); return result(false, "recovery_failed") end
+  transaction._text = record
+  local old = self:_read_generation(transaction)
+  if not old then self:_safe_stop(); return result(false, "recovery_failed") end
+  self:_mark_phase(transaction, "recovery_intent")
+  if not self:_restore_transaction(transaction, old) then return result(false, "recovery_failed") end
+  self:_mark_phase(transaction, "recovery_done")
+  if not self:_finish_recovery(transaction) then return result(false, "recovery_failed") end
+  if context.old_config == nil then
+    return result(false, code .. "_no_previous_config", { message = (messages[code] or messages.internal_error) .. "; service stopped because no previous configuration exists" })
+  end
+  return result(false, code)
+end
+
+function Runtime:_install_candidate(context)
+  if not action_ok(self.fs.rename(CANDIDATE_PATH, RUNTIME_PATH)) then error("runtime replace failed", 0) end
+  if not action_ok(self.fs.fsync_dir("/var/etc/xc")) then error("runtime replace failed", 0) end
+  context.installed = true
+end
+
+function Runtime:_switch_locked(section_id)
+  local encoded, node_id, encode_error = self:_encode(section_id)
+  if encode_error then return encode_error end
+  self:_atomic_write(CANDIDATE_PATH, encoded)
+  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
+  if not action_ok(self.exec.run(argv)) then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
+    return result(false, "validation_failed")
+  end
+  local global, old_config, context
+  local prepared = xpcall(function()
+    global = self.uci.get_global()
+    if type(global) ~= "table" then error("invalid UCI state", 0) end
+    old_config = self:_read_optional(RUNTIME_PATH, 1048576)
+    local prior_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
+    local prior = parse_manifest(prior_text)
+    context = self:_prepare_transaction("switch", old_config, global.active_node, encoded, node_id, nil, prior and prior.generation)
+  end, function() return false end)
+  if not prepared then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
+    return result(false, "internal_error")
+  end
+  self:_write_transaction(context, "install_intent")
+  local ok, value = xpcall(function()
+    self:_install_candidate(context)
+    if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
+    local readiness_error = self:_readiness(global)
+    if readiness_error then return self:_abort_transaction(context, readiness_error) end
+    self:_write_transaction(context, "candidate_healthy")
+    if not self:_apply_active(node_id) then return self:_abort_transaction(context, "commit_failed") end
+    self:_write_transaction(context, "uci_committed")
+    local transaction = assert(parse_transaction(self:_read_optional(TRANSACTION_PATH, 1024)))
+    transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
+    local old = assert(self:_read_generation(transaction))
+    if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
+    return result(true, "switched", { node = node_id })
+  end, function() return result(false, "internal_error") end)
+  if not ok or not value.ok and self.fs.exists(TRANSACTION_PATH) then
+    local recovered = self:_recover_pending_locked()
+    if not recovered.ok then return result(false, "recovery_failed") end
+  end
+  return value
 end
 
 function Runtime:switch(section_id)
-  return self:_with_lock("switch", function()
-    local context = { replaced = false }
-    local ok, value = xpcall(function() return self:_switch_locked(section_id, context) end, function() return result(false, "internal_error") end)
-    if not ok then
-      local recovery_ok = true
-      if context.replaced then recovery_ok = pcall(function() self:_best_effort_restore(context) end) end
-      if context.promotion_started then recovery_ok = pcall(function() self:_restore_rollback_generation(context) end) and recovery_ok end
-      if context.generation_config then recovery_ok = self:_checked_remove(context.generation_config) and recovery_ok end
-      if context.generation_active then recovery_ok = self:_checked_remove(context.generation_active) and recovery_ok end
-      if not recovery_ok then
-        local stopped = action_ok(self.exec.stop())
-        return result(false, "recovery_failed", { service = stopped and "stopped" or "unknown" })
-      end
-    end
-    return value
-  end)
+  return self:_with_lock("switch", function() return self:_switch_locked(section_id) end)
 end
 
-function Runtime:_restore_rollback_attempt(context, failure_code)
-  if context.pre_config ~= nil then self:_atomic_write(RUNTIME_PATH, context.pre_config)
-  elseif not self:_checked_remove(RUNTIME_PATH) then error("rollback recovery failed", 0) end
-  if not self:_apply_active(context.pre_active) then error("rollback recovery failed", 0) end
-  if context.manifest_text and not self.fs.exists(ROLLBACK_MANIFEST_PATH) then self:_atomic_write(ROLLBACK_MANIFEST_PATH, context.manifest_text) end
-  if context.pre_config ~= nil then
-    if not action_ok(self.exec.restart()) then error("rollback recovery failed", 0) end
-  else
-    if not action_ok(self.exec.stop()) then error("rollback recovery failed", 0) end
-  end
-  context.installed = false
-  return result(false, failure_code)
-end
-
-function Runtime:_best_effort_restore_rollback(context)
-  if context.pre_config ~= nil then self:_atomic_write(RUNTIME_PATH, context.pre_config)
-  elseif not self:_checked_remove(RUNTIME_PATH) then error("recovery failed", 0) end
-  if not self:_apply_active(context.pre_active) then error("recovery failed", 0) end
-  if context.pre_config ~= nil then
-    if not action_ok(self.exec.restart()) then error("recovery failed", 0) end
-  elseif not action_ok(self.exec.stop()) then error("recovery failed", 0) end
-end
-
-function Runtime:_rollback_locked(context)
-  if not self.fs.exists(ROLLBACK_MANIFEST_PATH) then
-    return result(false, "no_rollback_state")
-  end
+function Runtime:_rollback_locked()
   local manifest_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
+  if manifest_text == nil then return result(false, "no_rollback_state") end
   local manifest = parse_manifest(manifest_text)
   if not manifest or manifest.config_size > 1048576 or manifest.active_size > 256 then return result(false, "no_rollback_state") end
   local config_path, active_path = generation_paths(manifest.generation)
-  local config = self:_read_optional(config_path, 1048576)
-  local marker = self:_read_optional(active_path, 256)
-  if type(config) ~= "string" or type(marker) ~= "string" or #config ~= manifest.config_size or checksum(config) ~= manifest.config_hash or #marker ~= manifest.active_size or checksum(marker) ~= manifest.active_hash then
-    return result(false, "no_rollback_state")
-  end
+  local config, marker = self:_read_optional(config_path, 1048576), self:_read_optional(active_path, 256)
+  if type(config) ~= "string" or type(marker) ~= "string" or #config ~= manifest.config_size or checksum(config) ~= manifest.config_hash
+    or #marker ~= manifest.active_size or checksum(marker) ~= manifest.active_hash then return result(false, "no_rollback_state") end
   local node_id, marker_ok = decode_active_marker(marker)
-  if type(config) ~= "string" or not marker_ok then
-    return result(false, "no_rollback_state")
+  if not marker_ok then return result(false, "no_rollback_state") end
+  self:_atomic_write(CANDIDATE_PATH, config)
+  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
+  if not action_ok(self.exec.run(argv)) then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
+    return result(false, "validation_failed")
   end
-  local global = self.uci.get_global()
-  if type(global) ~= "table" then return result(false, "internal_error") end
-  context.pre_config = self:_read_optional(RUNTIME_PATH, 1048576)
-  context.pre_active = global.active_node
-  context.manifest_text = manifest_text
-  local validation_argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], config_path }
-  if not action_ok(self.exec.run(validation_argv)) then return result(false, "validation_failed") end
-  self:_atomic_write(RUNTIME_PATH, config)
-  context.installed = true
-  if not action_ok(self.exec.restart()) then return self:_restore_rollback_attempt(context, "restart_failed") end
-  local readiness_error = self:_readiness(global)
-  if readiness_error then return self:_restore_rollback_attempt(context, readiness_error) end
-  if not self:_apply_active(node_id) then return self:_restore_rollback_attempt(context, "commit_failed") end
-  if not self:_checked_remove(ROLLBACK_MANIFEST_PATH) then return self:_restore_rollback_attempt(context, "internal_error") end
-  if not action_ok(self.fs.remove_generation("/etc/xc/rollback", manifest.generation)) then return self:_restore_rollback_attempt(context, "internal_error") end
-  context.installed = false
-  local extra = {}
-  if node_id ~= nil then extra.node = node_id else extra.active_node_unset = true end
-  return result(true, "rolled_back", extra)
+  local global, old_config, context
+  local prepared = xpcall(function()
+    global = self.uci.get_global()
+    if type(global) ~= "table" then error("invalid UCI state", 0) end
+    old_config = self:_read_optional(RUNTIME_PATH, 1048576)
+    context = self:_prepare_transaction("rollback", old_config, global.active_node, config, node_id, manifest.generation, manifest.generation)
+  end, function() return false end)
+  if not prepared then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
+    return result(false, "internal_error")
+  end
+  self:_write_transaction(context, "install_intent")
+  local ok, value = xpcall(function()
+    self:_install_candidate(context)
+    if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
+    local readiness_error = self:_readiness(global)
+    if readiness_error then return self:_abort_transaction(context, readiness_error) end
+    self:_write_transaction(context, "candidate_healthy")
+    if not self:_apply_active(node_id) then return self:_abort_transaction(context, "commit_failed") end
+    self:_write_transaction(context, "uci_committed")
+    local record = self:_read_optional(TRANSACTION_PATH, 1024)
+    local transaction = assert(parse_transaction(record)); transaction._text = record
+    if not self:_complete_rollback(transaction) then return result(false, "recovery_failed") end
+    local extra = {}; if node_id then extra.node = node_id else extra.active_node_unset = true end
+    return result(true, "rolled_back", extra)
+  end, function() return result(false, "internal_error") end)
+  if not ok or not value.ok and self.fs.exists(TRANSACTION_PATH) then
+    local recovered = self:_recover_pending_locked()
+    if not recovered.ok then return result(false, "recovery_failed") end
+  end
+  return value
 end
 
 function Runtime:rollback()
-  return self:_with_lock("rollback", function()
-    local context = { installed = false }
-    local ok, value = xpcall(function() return self:_rollback_locked(context) end, function() return result(false, "internal_error") end)
-    if not ok and context.installed then
-      local recovered = pcall(function() self:_best_effort_restore_rollback(context) end)
-      if not recovered then
-        local stopped = action_ok(self.exec.stop())
-        return result(false, "recovery_failed", { service = stopped and "stopped" or "unknown" })
-      end
-    end
-    return value
-  end)
+  return self:_with_lock("rollback", function() return self:_rollback_locked() end)
 end
 
 function Runtime:status()
@@ -488,6 +651,15 @@ function Runtime:status()
     local shared_status = self:_read_optional(STATUS_PATH, 1024) or ""
     local shared_operation = shared_status:match("operation=([A-Za-z_]+)") or "idle"
     local shared_error = shared_status:match("last_error=([A-Za-z0-9_]+)")
+    local lock_state = self.fs.lock_state(LOCK_PATH)
+    if lock_state ~= "held" and lock_state ~= "unlocked" then lock_state = "unknown" end
+    local pending = self:_read_optional(TRANSACTION_PATH, 1024) ~= nil
+    local recovery_required = lock_state == "unlocked" and pending
+    if recovery_required then
+      shared_operation = "interrupted"
+    elseif lock_state == "unlocked" and shared_operation ~= "idle" then
+      shared_operation = "idle"
+    end
     local listener_deadline = self.now() + 2
     local listeners = {
       socks = action_ok(self.exec.listener_ready("socks", address, tonumber(global.socks_port), listener_deadline)),
@@ -497,7 +669,7 @@ function Runtime:status()
       active_node = safe_active,
       active_state = active_state,
       runtime_config = self.fs.exists(RUNTIME_PATH),
-      service = service, operation = shared_operation, lock = self.fs.lock_state(LOCK_PATH) or "unknown",
+      service = service, operation = shared_operation, lock = lock_state, recovery_required = recovery_required,
       listen = { address = sanitize_text(address, 64), socks_port = tonumber(global.socks_port), http_port = tonumber(global.http_port) },
       listeners = listeners,
       last_error = shared_error
@@ -515,7 +687,7 @@ function Runtime:status()
     end
     return output
   end, function() return result(false, "internal_error") end)
-  if not ok then return value end
+  if not ok or not value.ok then self.last_error = value.code or "internal_error" end
   return value
 end
 
@@ -526,13 +698,28 @@ function Runtime:test_current()
     if action_ok(self.exec.run(argv)) then return result(true, "test_passed") end
     return result(false, "test_failed")
   end, function() return result(false, "internal_error") end)
-  if not ok then return value end
+  if not ok or not value.ok then self.last_error = value.code or "internal_error" end
   return value
+end
+
+local function utf8_prefix(value, maximum)
+  if #value <= maximum then return value end
+  local index = maximum
+  while index > 0 do
+    local byte = value:byte(index)
+    if byte < 128 then return value:sub(1, index) end
+    if byte >= 194 and byte <= 244 then
+      local width = byte < 224 and 2 or (byte < 240 and 3 or 4)
+      return value:sub(1, index + width - 1 <= maximum and index + width - 1 or index - 1)
+    end
+    index = index - 1
+  end
+  return ""
 end
 
 sanitize_text = function(value, maximum)
   if type(value) ~= "string" then value = tostring(value) end
-  value = value:sub(1, 8192)
+  value = utf8_prefix(value, 8192)
   value = value:gsub("%b{}", "[redacted]"):gsub("%b[]", "[redacted]")
   value = value:gsub("%-%-%-%-%-[Bb][Ee][Gg][Ii][Nn] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-.-%-%-%-%-%-[Ee][Nn][Dd] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-", "[redacted]")
   value = value:gsub("%a[%w+%.%-]*://[^%s]+", "[redacted]")
@@ -543,7 +730,7 @@ sanitize_text = function(value, maximum)
   value = value:gsub("[Ss][Ee][Cc][Rr][Ee][Tt]%s*[:=]%s*[^%s,;]+", "secret=[redacted]")
   value = value:gsub("[Aa][Pp][Ii][_-][Kk][Ee][Yy]%s*[:=]%s*[^%s,;]+", "api_key=[redacted]")
   value = value:gsub("[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-][Kk][Ee][Yy]%s*[:=]%s*[^%s,;]+", "private_key=[redacted]")
-  return value:sub(1, maximum or 256)
+  return utf8_prefix(value, maximum or 256)
 end
 
 local function sensitive_key(key)
@@ -555,6 +742,8 @@ local function sensitive_key(key)
 end
 
 function Runtime:log(message, fields)
+  local acquired, lock = pcall(self.fs.acquire_lock, LOG_LOCK_PATH)
+  if not acquired or not lock then self.last_error = acquired and "busy" or "lock_error"; return result(false, acquired and "busy" or "internal_error") end
   local ok, value = xpcall(function()
     local safe_fields, count = {}, 0
     if type(fields) == "table" then
@@ -582,11 +771,16 @@ function Runtime:log(message, fields)
     if #encoded > 2047 then encoded = '{"message":"log entry truncated"}' end
     local current = self:_read_optional(LOG_PATH, 262144) or ""
     local combined = current .. encoded .. "\n"
-    if #combined > 262144 then combined = combined:sub(#combined - 262144 + 1) end
+    if #combined > 262144 then
+      local newline = combined:find("\n", #combined - 262144 + 1, true)
+      combined = newline and combined:sub(newline + 1) or (encoded .. "\n")
+    end
     self:_atomic_write(LOG_PATH, combined)
     return result(true, "logged")
   end, function() return result(false, "internal_error") end)
-  if not ok then return value end
+  local released, release_value = pcall(self.fs.release_lock, lock)
+  if not ok or not released or not action_ok(release_value) then self.last_error = "internal_error"; return result(false, "internal_error") end
+  self.last_error = not value.ok and value.code or nil
   return value
 end
 
@@ -597,7 +791,7 @@ function M.new(adapters)
   for _, name in ipairs({ "network", "now", "sleep" }) do if type(adapters[name]) ~= "function" then return nil, "invalid runtime adapters" end end
   local methods = {
     uci = { "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert" },
-    fs = { "acquire_lock", "release_lock", "lock_state", "allocate_generation", "list_generation_files", "remove_generation", "read", "write_temp", "chmod", "fsync", "fsync_dir", "close", "rename", "exists", "remove" },
+    fs = { "acquire_lock", "release_lock", "lock_state", "allocate_generation", "list_generation_files", "trash_generation", "delete_trashed_generation", "read", "write_temp", "chmod", "fsync", "fsync_dir", "close", "rename", "exists", "remove" },
     exec = { "run", "restart", "stop", "listener_ready", "health_check", "service_state" },
     json = { "stringify" }
   }
@@ -612,10 +806,11 @@ end
 
 M.paths = {
   lock = LOCK_PATH, runtime = RUNTIME_PATH, candidate = CANDIDATE_PATH,
+  rollback_directory = "/etc/xc/rollback",
   rollback = ROLLBACK_PATH, rollback_node = ROLLBACK_NODE_PATH,
   rollback_manifest = ROLLBACK_MANIFEST_PATH,
   transaction = TRANSACTION_PATH, status = STATUS_PATH,
-  log = LOG_PATH
+  log = LOG_PATH, log_lock = LOG_LOCK_PATH
 }
 M.unset_active_marker = UNSET_ACTIVE_MARKER
 
