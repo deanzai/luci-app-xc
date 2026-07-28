@@ -1,0 +1,11 @@
+{
+  "luci-app-xc": {
+    "description": "Grant access to the XC configuration",
+    "read": {
+      "uci": [ "xc" ]
+    },
+    "write": {
+      "uci": [ "xc" ]
+    }
+  }
+}

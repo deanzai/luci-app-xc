@@ -1,0 +1,66 @@
+<%
+local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
+-%>
+<div class="cbi-section">
+  <div>
+    <input id="xc-log-refresh" type="button" class="cbi-button cbi-button-apply" value="<%:Refresh%>" />
+    <input id="xc-log-clear" type="button" class="cbi-button cbi-button-negative" value="<%:Clear log%>" />
+    <span id="xc-log-state"></span>
+  </div>
+  <pre id="xc-log-content" style="max-height:32em;overflow:auto;white-space:pre-wrap;word-break:break-all"><%:Loading…%></pre>
+</div>
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+  "use strict";
+  var getUrl = '<%=dispatcher.build_url("admin", "services", "xc", "get-log")%>';
+  var clearUrl = '<%=dispatcher.build_url("admin", "services", "xc", "clear-log")%>?token=<%=token%>';
+  var confirmText = <%=util.serialize_json(translate("Clear the log?"))%>;
+  var clearedText = <%=util.serialize_json(translate("Log cleared"))%>;
+  var loadFailedText = <%=util.serialize_json(translate("Unable to load the log"))%>;
+  var clearFailedText = <%=util.serialize_json(translate("Unable to clear the log"))%>;
+  var content = document.getElementById("xc-log-content");
+  var state = document.getElementById("xc-log-state");
+  var refresh = document.getElementById("xc-log-refresh");
+  var clear = document.getElementById("xc-log-clear");
+
+  function response(xhr) {
+    try { return JSON.parse(xhr.responseText); } catch (ignored) { return null; }
+  }
+
+  function setBusy(value) { refresh.disabled = value; clear.disabled = value; }
+
+  function loadLog() {
+    setBusy(true); state.textContent = "";
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = response(xhr);
+      if (payload && payload.ok === true && payload.data) content.textContent = payload.data.log || "";
+      else state.textContent = loadFailedText;
+      setBusy(false);
+    };
+    xhr.open("GET", getUrl, true); xhr.send(null);
+  }
+
+  refresh.onclick = loadLog;
+  clear.onclick = function() {
+    if (!confirm(confirmText)) return;
+    setBusy(true); state.textContent = "";
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = response(xhr);
+      if (payload && payload.ok === true) { content.textContent = ""; state.textContent = clearedText; }
+      else state.textContent = clearFailedText;
+      setBusy(false);
+    };
+    xhr.open("POST", clearUrl, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.send("{}");
+  };
+  loadLog();
+}());
+//]]>
+</script>

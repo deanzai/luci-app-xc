@@ -315,6 +315,33 @@ function M.new(injected)
       if handle:close() ~= true then return nil, "io_error" end
       return table.concat(chunks)
     end,
+    read_tail = function(path, maximum)
+      if not safe_path(path) or type(maximum) ~= "number" or maximum < 0 or maximum > 1048576 then return nil, "io_error" end
+      local handle, code = nixio.open(path, nixio.open_flags("rdonly") + O_NOFOLLOW)
+      if not handle then return nil, errno_missing(nixio, code) and "missing" or "io_error" end
+      local size = handle:seek(0, "end")
+      if type(size) ~= "number" then handle:close(); return nil, "io_error" end
+      local offset = math.max(0, size - maximum)
+      if offset > 0 and handle:seek(offset, "set") ~= offset then handle:close(); return nil, "io_error" end
+      local chunks, total = {}, 0
+      while total < maximum do
+        local chunk = handle:read(math.min(65536, maximum - total))
+        if chunk == nil then handle:close(); return nil, "io_error" end
+        if chunk == "" then break end
+        total = total + #chunk
+        chunks[#chunks + 1] = chunk
+      end
+      if handle:close() ~= true then return nil, "io_error" end
+      return table.concat(chunks)
+    end,
+    truncate = function(path)
+      if not safe_path(path) then return false end
+      local handle = nixio.open(path, nixio.open_flags("wronly", "creat", "trunc") + O_NOFOLLOW, 600)
+      if not handle then return false end
+      local synced = handle:sync() == true
+      local closed = handle:close() == true
+      return synced and closed and nfs.chmod(path, 600) == true
+    end,
     write_temp = function(path, content)
       if not safe_path(path) or type(content) ~= "string" or #content > 1048576 then return nil end
       for attempt = 1, 32 do

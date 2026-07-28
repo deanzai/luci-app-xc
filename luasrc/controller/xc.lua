@@ -287,7 +287,7 @@ end
 function action_get_log()
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
-  local called, content, read_error = pcall(adapters.fs.read, runtime_module.paths.log, LOG_READ_MAX)
+  local called, content, read_error = pcall(adapters.fs.read_tail, runtime_module.paths.log, LOG_READ_MAX)
   if not called then failure("internal_error"); return end
   if content == nil and read_error ~= "missing" then failure("internal_error"); return end
   success({ log = content or "" })
@@ -297,7 +297,7 @@ function action_clear_log()
   if not request_body(false) then return end
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
-  local called, removed = pcall(adapters.fs.remove, runtime_module.paths.log)
-  if not called or removed ~= true then failure("internal_error"); return end
+  local called, truncated = pcall(adapters.fs.truncate, runtime_module.paths.log)
+  if not called or truncated ~= true then failure("internal_error"); return end
   success({ cleared = true })
 end
