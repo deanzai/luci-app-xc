@@ -192,7 +192,12 @@ function Runtime:_trash_generation(generation)
   -- The adapter contract makes the generation token the stable trash token.
   if trash ~= generation then return false end
   if not action_ok(self.fs.fsync_dir("/etc/xc/rollback")) then return false end
-  if not action_ok(self.fs.delete_trashed_generation("/etc/xc/rollback", trash)) then return false end
+  return self:_delete_trashed_generation(trash)
+end
+
+function Runtime:_delete_trashed_generation(token)
+  if not valid_token(token) then return false end
+  if not action_ok(self.fs.delete_trashed_generation("/etc/xc/rollback", token)) then return false end
   return action_ok(self.fs.fsync_dir("/etc/xc/rollback"))
 end
 
@@ -443,13 +448,16 @@ function Runtime:_scavenge(transaction)
   if manifest then referenced[manifest.generation] = true end
   local values = self.fs.list_generation_files("/etc/xc/rollback", 256)
   if type(values) ~= "table" or #values > 256 then return false end
-  local found = {}
+  local found, trashed = {}, {}
   for _, name in ipairs(values) do
     if type(name) == "string" then
       local token = name:match("^generation%-([0-9A-Za-z_-]+)%.config$") or name:match("^generation%-([0-9A-Za-z_-]+)%.active$")
       if token and valid_token(token) and not referenced[token] then found[token] = true end
+      local trash_token = name:match("^%.trash%-([0-9A-Za-z_-]+)%.config$") or name:match("^%.trash%-([0-9A-Za-z_-]+)%.active$")
+      if trash_token and valid_token(trash_token) and not referenced[trash_token] then trashed[trash_token] = true end
     end
   end
+  for token in pairs(trashed) do if not self:_delete_trashed_generation(token) then return false end end
   for token in pairs(found) do if not self:_trash_generation(token) then return false end end
   return true
 end
@@ -465,9 +473,11 @@ function Runtime:_recover_pending_locked()
   transaction._text = record
   if transaction.phase == "recovery_done" then
     if not self:_finish_recovery(transaction) then self:_safe_stop(); return result(false, "recovery_failed") end
+    if not self:_scavenge(nil) then return result(false, "recovery_failed") end
     return result(true, "recovered")
   elseif transaction.phase == "finalize" then
     if not self:_cleanup_finalized(transaction) then self:_safe_stop(); return result(false, "recovery_failed") end
+    if not self:_scavenge(nil) then return result(false, "recovery_failed") end
     return result(true, "recovered")
   end
   local old = self:_read_generation(transaction)
@@ -482,7 +492,7 @@ function Runtime:_recover_pending_locked()
     if ok then self:_mark_phase(transaction, "recovery_done"); ok = self:_finish_recovery(transaction) end
   end
   if not ok then self:_safe_stop(); return result(false, "recovery_failed") end
-  self:_scavenge(nil)
+  if not self:_scavenge(nil) then return result(false, "recovery_failed") end
   return result(true, "recovered")
 end
 

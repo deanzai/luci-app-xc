@@ -186,6 +186,10 @@ local function fixture(options)
     end,
     delete_trashed_generation = function(directory, token)
       event("fs:delete_trashed_generation:" .. token)
+      if (options.delete_trash_failures or 0) > 0 then
+        options.delete_trash_failures = options.delete_trash_failures - 1
+        return false
+      end
       if options.delete_trash_ok == false then return false end
       files[directory .. "/.trash-" .. token .. ".config"] = nil
       files[directory .. "/.trash-" .. token .. ".active"] = nil
@@ -825,6 +829,50 @@ t.test("phase transitions cannot confuse a generation token with the phase field
   t.eq(phase, "recovery_intent")
   t.eq(files[TRANSACTION], nil)
   t.eq(files[RUNTIME], "old-runtime")
+end)
+
+t.test("scavenge retries deterministic trash deletion across runtime instances", function()
+  local files = {
+    ["/etc/xc/rollback/generation-orphan.config"] = "orphan-config",
+    ["/etc/xc/rollback/generation-orphan.active"] = "old"
+  }
+  local first = fixture({
+    shared_files = files,
+    generation_files = { "generation-orphan.config", "generation-orphan.active" },
+    delete_trash_ok = false
+  })
+  t.eq(first.runtime:recover_pending().code, "recovery_failed")
+  t.eq(files["/etc/xc/rollback/generation-orphan.config"], nil)
+  t.eq(files["/etc/xc/rollback/.trash-orphan.config"], "orphan-config")
+
+  local second = fixture({
+    shared_files = files,
+    generation_files = { ".trash-orphan.config", ".trash-orphan.active" }
+  })
+  t.eq(second.runtime:recover_pending().ok, true)
+  t.eq(files["/etc/xc/rollback/.trash-orphan.config"], nil)
+  t.eq(files["/etc/xc/rollback/.trash-orphan.active"], nil)
+  t.truthy(event_index(second.events, "fs:delete_trashed_generation:orphan"))
+end)
+
+t.test("scavenge ignores malformed trash names and propagates post-transaction cleanup failure", function()
+  local unrelated = "/etc/xc/rollback/.trash-../outside.config"
+  local files = {
+    [unrelated] = "untouched",
+    ["/etc/xc/rollback/generation-orphan.config"] = "orphan-config",
+    ["/etc/xc/rollback/generation-orphan.active"] = "old",
+    ["/etc/xc/rollback/generation-123-1.config"] = "old-runtime",
+    ["/etc/xc/rollback/generation-123-1.active"] = "old",
+    [TRANSACTION] = transaction("finalize", "old-runtime", "old", "candidate-runtime", "new")
+  }
+  local state = fixture({
+    shared_files = files,
+    generation_files = { ".trash-../outside.config", ".trash-bad!.active", "generation-orphan.config", "generation-orphan.active" },
+    delete_trash_ok = false
+  })
+  t.eq(state.runtime:recover_pending().code, "recovery_failed")
+  t.eq(files[unrelated], "untouched")
+  t.eq(event_index(state.events, "fs:delete_trashed_generation:../outside"), nil)
 end)
 
 return true
