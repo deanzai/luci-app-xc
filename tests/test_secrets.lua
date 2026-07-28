@@ -1,5 +1,6 @@
 local t = require "testlib"
 local runtime_module = require "xc.runtime"
+local controller_fixture = require("test_controller_actions").fixture
 
 local function read_file(path)
   local handle = assert(io.open(path, "r"))
@@ -82,6 +83,29 @@ t.test("public controller errors cannot echo exception secrets", function()
   t.eq(source:find("tostring(err)", 1, true), nil)
 end)
 
+t.test("controller exception responses redact representative secret values", function()
+  local secrets = {
+    "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    "controller-password",
+    "vless://bbbbbbbb-cccc-4ddd-8eee-ffffffffffff@private.invalid:443#Private",
+    '{"protocol":"trojan","password":"raw-controller-password"}',
+    "raw-controller-password"
+  }
+  local controller, state = controller_fixture({ import_parse = function()
+    error(table.concat(secrets, " "))
+  end })
+  controller.action_import_preview()
+  local public = table.concat({
+    tostring(state.status), tostring(state.content_type), tostring(state.response.ok),
+    tostring(state.response.code), tostring(state.response.message)
+  }, " ")
+  t.eq(state.status, 400)
+  t.eq(state.response.code, "validation_failed")
+  for _, secret in ipairs(secrets) do
+    t.eq(public:find(secret, 1, true), nil, "controller response leaked " .. secret)
+  end
+end)
+
 t.test("log UI uses authenticated bounded tail and truncate endpoints", function()
   local controller = read_file("luasrc/controller/xc.lua")
   local model = read_file("luasrc/model/cbi/xc/log.lua")
@@ -125,24 +149,42 @@ end)
 t.test("translation catalogs cover visible XC menu button and status strings", function()
   local pot = read_file("po/templates/xc.pot")
   local po = read_file("po/zh_Hans/xc.po")
-  local translations, current = {}
-  for line in po:gmatch("[^\r\n]+") do
-    local id = line:match('^msgid "(.*)"$')
-    if id then current = id end
-    local value = line:match('^msgstr "(.*)"$')
-    if value and current then translations[current] = value end
+  local function catalog(value, translated)
+    local entries, current = {}
+    for line in value:gmatch("[^\r\n]+") do
+      local id = line:match('^msgid "(.*)"$')
+      if id then current = id; if not translated then entries[id] = true end end
+      local message = line:match('^msgstr "(.*)"$')
+      if translated and message and current then entries[current] = message end
+    end
+    return entries
   end
-  local required = {
-    "Xray node switching", "Settings", "Nodes", "Log", "Enable", "Active node",
-    "Configured nodes", "Add", "Edit", "Delete", "Switch", "Probe", "Probe all",
-    "Stop probing", "Import", "Preview", "Confirm import", "Refresh", "Clear log",
-    "Clear the log?", "Loading…", "Log cleared", "Unable to load the log",
-    "Unable to clear the log", "Running", "Stopped", "Unavailable", "Working…",
-    "Operation completed", "Operation failed", "Rollback", "Test current node"
-  }
-  for _, message in ipairs(required) do
-    local quoted = message:gsub("\\", "\\\\"):gsub('"', '\\"')
-    t.contains(pot, 'msgid "' .. quoted .. '"', "POT missing " .. message)
+  local template_entries = catalog(pot, false)
+  local translations = catalog(po, true)
+  local required = {}
+  local function require_message(message) required[message] = true end
+  for _, path in ipairs({
+    "luasrc/controller/xc.lua", "luasrc/model/cbi/xc/settings.lua",
+    "luasrc/model/cbi/xc/nodes.lua", "luasrc/model/cbi/xc/node.lua",
+    "luasrc/model/cbi/xc/log.lua", "luasrc/view/xc/status.htm",
+    "luasrc/view/xc/node_table.htm", "luasrc/view/xc/import.htm",
+    "luasrc/view/xc/log.htm"
+  }) do
+    local source = read_file(path)
+    for message in source:gmatch('translate%(%s*"([^"\r\n]+)"') do require_message(message) end
+    for message in source:gmatch('_%(%s*"([^"\r\n]+)"') do require_message(message) end
+    for message in source:gmatch('<%%:([^%%\r\n]+)%%>') do require_message(message) end
+  end
+  for _, message in ipairs({
+    "Add", "Edit", "Delete", "Switch", "Probe all", "Import", "Running", "Stopped",
+    "Working…", "Operation completed", "Operation failed", "Rollback",
+    "Runtime status", "Service", "SOCKS listener", "HTTP listener", "Exit IP",
+    "Restart service", "Manual rollback", "Local import", "Test all", "Test"
+  }) do
+    require_message(message)
+  end
+  for message in pairs(required) do
+    t.truthy(template_entries[message], "POT missing " .. message)
     t.truthy(translations[message] and translations[message] ~= "", "Simplified Chinese translation missing " .. message)
   end
 end)
