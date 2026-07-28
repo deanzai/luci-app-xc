@@ -1,0 +1,25 @@
+#!/bin/sh
+
+backup=""
+for candidate in /etc/xc/legacy-backup-*; do
+	[ -d "$candidate" ] || continue
+	[ -f "$candidate/complete" ] || continue
+	[ -f "$candidate/nodes.json" ] || continue
+	if [ -z "$backup" ] || [ "$candidate/complete" -nt "$backup/complete" ]; then
+		backup="$candidate"
+	fi
+done
+
+[ -n "$backup" ] || exit 0
+mkdir -p /var/etc/xc || exit 1
+/usr/bin/xc migrate-legacy "$backup" || exit 1
+/usr/bin/xc render --output /var/etc/xc/config.json || exit 1
+/usr/bin/xray run -test -c /var/etc/xc/config.json >/dev/null 2>&1 || exit 1
+
+if [ -x /etc/init.d/xc-xray ]; then
+	/etc/init.d/xc-xray disable
+	/etc/init.d/xc-xray stop
+fi
+/etc/init.d/xc enable || exit 1
+/etc/init.d/xc start || exit 1
+exit 0

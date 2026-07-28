@@ -1,0 +1,6 @@
+#!/bin/sh
+
+[ "$INTERFACE" = "lan" ] || exit 0
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+[ "$(uci -q get xc.global.enabled)" = "1" ] || exit 0
+/etc/init.d/xc reload

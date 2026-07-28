@@ -1,3 +1,18 @@
 #!/usr/bin/lua
-io.stderr:write("luci-app-xc backend is not implemented\n")
-os.exit(2)
+local ok, code = pcall(function()
+  local platform = require "xc.platform"
+  local runtime_module = require "xc.runtime"
+  local cli = require "xc.cli"
+  local importer = require "xc.importer"
+  local adapters = platform.new()
+  local runtime = assert(runtime_module.new(adapters))
+  adapters.runtime = runtime
+  adapters.importer = importer
+  adapters.output = function(value) io.stdout:write(value, "\n") end
+  return cli.main(arg, adapters)
+end)
+if not ok then
+  io.stdout:write('{"ok":false,"code":"internal_error","message":"runtime operation failed"}\n')
+  os.exit(1)
+end
+os.exit(code)
