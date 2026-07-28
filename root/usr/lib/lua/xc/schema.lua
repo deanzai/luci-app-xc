@@ -28,7 +28,9 @@ local known_fields = {
 }
 local JSON_MAX_DEPTH = 32
 local JSON_MAX_LENGTH = 524288
+local JSON_MAX_UNITS = 8192
 local canonical_json
+local canonical_raw_cache = setmetatable({}, { __mode = "k" })
 
 local function invalid(field)
   return nil, "invalid " .. field
@@ -121,7 +123,9 @@ function M.normalize(input)
     if input.server ~= nil then return invalid("server") end
     if input.port ~= nil then return invalid("port") end
     if not output.raw_outbound or output.raw_outbound == "" then return invalid("raw_outbound") end
-    if not canonical_json(output.raw_outbound) then return invalid("raw_outbound") end
+    local canonical = canonical_json(output.raw_outbound)
+    if not canonical then return invalid("raw_outbound") end
+    canonical_raw_cache[output] = { source = output.raw_outbound, value = canonical }
     if output.name == nil or output.name == "" then output.name = "raw" end
     return output
   end
@@ -183,11 +187,6 @@ function M.validate(node)
   return true
 end
 
-local function identity_piece(value)
-  value = value == nil and "" or tostring(value)
-  return #value .. ":" .. value
-end
-
 local function utf8_character(codepoint)
   if codepoint < 128 then return string.char(codepoint) end
   if codepoint < 2048 then
@@ -199,11 +198,73 @@ local function utf8_character(codepoint)
   return string.char(240 + math.floor(codepoint / 262144), 128 + math.floor(codepoint / 4096) % 64, 128 + math.floor(codepoint / 64) % 64, 128 + codepoint % 64)
 end
 
+local function decimal_magnitude(value)
+  local first = value:find("[^0]")
+  return first and value:sub(first) or "0"
+end
+
+local function compare_decimal_magnitudes(left, right)
+  if #left ~= #right then return #left < #right and -1 or 1 end
+  if left == right then return 0 end
+  return left < right and -1 or 1
+end
+
+local function add_decimal_magnitudes(left, right)
+  local output, carry, left_index, right_index = {}, 0, #left, #right
+  while left_index > 0 or right_index > 0 or carry > 0 do
+    local digit = carry
+    if left_index > 0 then digit = digit + left:byte(left_index) - 48; left_index = left_index - 1 end
+    if right_index > 0 then digit = digit + right:byte(right_index) - 48; right_index = right_index - 1 end
+    output[#output + 1] = string.char(48 + digit % 10)
+    carry = math.floor(digit / 10)
+  end
+  for index = 1, math.floor(#output / 2) do
+    output[index], output[#output - index + 1] = output[#output - index + 1], output[index]
+  end
+  return table.concat(output)
+end
+
+local function subtract_decimal_magnitudes(left, right)
+  local output, borrow, left_index, right_index = {}, 0, #left, #right
+  while left_index > 0 do
+    local digit = left:byte(left_index) - 48 - borrow
+    if right_index > 0 then digit = digit - (right:byte(right_index) - 48); right_index = right_index - 1 end
+    if digit < 0 then digit = digit + 10; borrow = 1 else borrow = 0 end
+    output[#output + 1] = string.char(48 + digit)
+    left_index = left_index - 1
+  end
+  while #output > 1 and output[#output] == "0" do output[#output] = nil end
+  for index = 1, math.floor(#output / 2) do
+    output[index], output[#output - index + 1] = output[#output - index + 1], output[index]
+  end
+  return table.concat(output)
+end
+
+local function add_signed_decimal(sign, magnitude, offset)
+  if offset == 0 then return sign, magnitude end
+  local offset_sign = offset < 0 and -1 or 1
+  local offset_magnitude = tostring(math.abs(offset))
+  if sign == 0 then return offset_sign, offset_magnitude end
+  if sign == offset_sign then return sign, add_decimal_magnitudes(magnitude, offset_magnitude) end
+  local comparison = compare_decimal_magnitudes(magnitude, offset_magnitude)
+  if comparison == 0 then return 0, "0" end
+  if comparison > 0 then return sign, subtract_decimal_magnitudes(magnitude, offset_magnitude) end
+  return offset_sign, subtract_decimal_magnitudes(offset_magnitude, magnitude)
+end
+
 canonical_json = function(source)
   if #source > JSON_MAX_LENGTH then return nil end
-  local position, length = 1, #source
+  local position, length, units = 1, #source, 0
+  local function consume_unit()
+    units = units + 1
+    return units <= JSON_MAX_UNITS
+  end
   local function whitespace()
-    while position <= length and source:sub(position, position):match("%s") do position = position + 1 end
+    while position <= length do
+      local byte = source:byte(position)
+      if byte ~= 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then return end
+      position = position + 1
+    end
   end
   local parse_value
   local function utf8_end(index)
@@ -218,18 +279,24 @@ canonical_json = function(source)
     if first >= 241 and first <= 243 and continuation(second) and continuation(third) and continuation(fourth) then return index + 4 end
     if first == 244 and second and second >= 128 and second <= 143 and continuation(third) and continuation(fourth) then return index + 4 end
   end
+  local string_escapes = { ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b', f = '\f', n = '\n', r = '\r', t = '\t' }
   local function parse_string()
     position = position + 1
     local output = {}
+    local chunk_start = position
     while position <= length do
-      local character = source:sub(position, position)
-      if character == '"' then position = position + 1; return table.concat(output) end
-      if character == "\\" then
+      local byte = source:byte(position)
+      if byte == 34 then
+        if position > chunk_start then output[#output + 1] = source:sub(chunk_start, position - 1) end
+        position = position + 1
+        return table.concat(output)
+      end
+      if byte == 92 then
+        if position > chunk_start then output[#output + 1] = source:sub(chunk_start, position - 1) end
         position = position + 1
         local escape = source:sub(position, position)
-        local escapes = { ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b', f = '\f', n = '\n', r = '\r', t = '\t' }
-        if escapes[escape] then
-          output[#output + 1] = escapes[escape]
+        if string_escapes[escape] then
+          output[#output + 1] = string_escapes[escape]
           position = position + 1
         elseif escape == "u" then
           local hex = source:sub(position + 1, position + 4)
@@ -251,25 +318,24 @@ canonical_json = function(source)
         else
           return nil
         end
-      elseif character:byte() < 32 then
+        chunk_start = position
+      elseif byte < 32 then
         return nil
       else
-        local byte = character:byte()
         if byte >= 128 then
           local next_position = utf8_end(position)
           if not next_position then return nil end
-          output[#output + 1] = source:sub(position, next_position - 1)
           position = next_position
         else
-          output[#output + 1] = character
           position = position + 1
         end
       end
     end
   end
   local function parse_number()
-    local start = position
-    if source:sub(position, position) == "-" then position = position + 1 end
+    local negative = false
+    if source:sub(position, position) == "-" then negative = true; position = position + 1 end
+    local integer_start = position
     local first = source:byte(position)
     if first == 48 then
       position = position + 1
@@ -279,25 +345,49 @@ canonical_json = function(source)
     else
       return nil
     end
+    local integer_end = position - 1
+    local fraction_start, fraction_end
     if source:sub(position, position) == "." then
       position = position + 1
+      fraction_start = position
       local digit = source:byte(position)
       if not digit or digit < 48 or digit > 57 then return nil end
       repeat position = position + 1; digit = source:byte(position) until not digit or digit < 48 or digit > 57
+      fraction_end = position - 1
     end
+    local exponent_sign, exponent_magnitude = 0, "0"
     local exponent = source:sub(position, position)
     if exponent == "e" or exponent == "E" then
       position = position + 1
       local sign = source:sub(position, position)
-      if sign == "+" or sign == "-" then position = position + 1 end
+      if sign == "+" or sign == "-" then
+        exponent_sign = sign == "-" and -1 or 1
+        position = position + 1
+      else
+        exponent_sign = 1
+      end
+      local exponent_start = position
       local digit = source:byte(position)
       if not digit or digit < 48 or digit > 57 then return nil end
       repeat position = position + 1; digit = source:byte(position) until not digit or digit < 48 or digit > 57
+      exponent_magnitude = decimal_magnitude(source:sub(exponent_start, position - 1))
+      if exponent_magnitude == "0" then exponent_sign = 0 end
     end
-    local value = source:sub(start, position - 1)
-    local number = tonumber(value)
-    if not number or number ~= number or number == math.huge or number == -math.huge then return nil end
-    return { kind = "number", value = number }
+    local coefficient = source:sub(integer_start, integer_end)
+    local fraction_length = 0
+    if fraction_start then
+      coefficient = coefficient .. source:sub(fraction_start, fraction_end)
+      fraction_length = fraction_end - fraction_start + 1
+    end
+    coefficient = decimal_magnitude(coefficient)
+    if coefficient == "0" then return { kind = "number", value = "0" } end
+    local trailing_zeros = 0
+    while coefficient:byte(#coefficient - trailing_zeros) == 48 do trailing_zeros = trailing_zeros + 1 end
+    if trailing_zeros > 0 then coefficient = coefficient:sub(1, #coefficient - trailing_zeros) end
+    exponent_sign, exponent_magnitude = add_signed_decimal(exponent_sign, exponent_magnitude, trailing_zeros - fraction_length)
+    local value = (negative and "-" or "") .. coefficient
+    if exponent_sign ~= 0 then value = value .. "e" .. (exponent_sign < 0 and "-" or "") .. exponent_magnitude end
+    return { kind = "number", value = value }
   end
   local function parse_array(depth)
     position = position + 1; whitespace()
@@ -320,6 +410,7 @@ canonical_json = function(source)
     while true do
       if source:sub(position, position) ~= '"' then return nil end
       local key = parse_string(); if not key or seen[key] then return nil end
+      if not consume_unit() then return nil end
       seen[key] = true; whitespace()
       if source:sub(position, position) ~= ":" then return nil end
       position = position + 1
@@ -332,6 +423,7 @@ canonical_json = function(source)
     end
   end
   parse_value = function(depth)
+    if not consume_unit() then return nil end
     whitespace()
     local character = source:sub(position, position)
     if character == '"' then local value = parse_string(); return value and { kind = "string", value = value } end
@@ -344,15 +436,15 @@ canonical_json = function(source)
   end
   local value = parse_value(0); whitespace()
   if not value or value.kind ~= "object" or position <= length then return nil end
+  local quote_escapes = { ['\\'] = '\\\\', ['"'] = '\\"', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
   local function quote(value)
     return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
-      local escapes = { ['\\'] = '\\\\', ['"'] = '\\"', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
-      return escapes[character] or string.format("\\u%04x", character:byte())
+      return quote_escapes[character] or string.format("\\u%04x", character:byte())
     end) .. '"'
   end
   local function encode(item, depth)
     if item.kind == "string" then return quote(item.value) end
-    if item.kind == "number" then return string.format("%.17g", item.value) end
+    if item.kind == "number" then return item.value end
     if item.kind == "boolean" then return item.value and "true" or "false" end
     if item.kind == "null" then return "null" end
     local output = {}
@@ -379,25 +471,42 @@ end
 
 function M.fingerprint(node)
   node = node or {}
-  local identity = { identity_piece(node.protocol), identity_piece(node.server and node.server:lower() or nil), identity_piece(node.port) }
-  if node.protocol == "vless" or node.protocol == "vmess" then
-    identity[#identity + 1] = identity_piece(node.uuid and node.uuid:lower() or nil)
-  elseif node.protocol == "trojan" then
-    identity[#identity + 1] = identity_piece(node.password)
-  elseif node.protocol == "shadowsocks" then
-    identity[#identity + 1] = identity_piece(node.method and node.method:lower() or nil)
-    identity[#identity + 1] = identity_piece(node.password)
-  elseif node.protocol == "socks" then
-    identity[#identity + 1] = identity_piece(node.user)
-  elseif node.protocol == "raw" then
-    identity[#identity + 1] = identity_piece(canonical_json(node.raw_outbound or ""))
-  end
   local hash = 0
-  for index = 1, #identity do
-    local part = identity[index]
-    for position = 1, #part do
-      hash = (hash * 131 + part:byte(position)) % 2147483647
+  local function hash_bytes(value)
+    for position = 1, #value do
+      hash = (hash * 131 + value:byte(position)) % 2147483647
     end
+  end
+  local function hash_piece(value)
+    value = value == nil and "" or tostring(value)
+    hash_bytes(tostring(#value))
+    hash_bytes(":")
+    hash_bytes(value)
+  end
+  hash_piece(node.protocol)
+  hash_piece(node.server and node.server:lower() or nil)
+  hash_piece(node.port)
+  if node.protocol == "vless" or node.protocol == "vmess" then
+    hash_piece(node.uuid and node.uuid:lower() or nil)
+  elseif node.protocol == "trojan" then
+    hash_piece(node.password)
+  elseif node.protocol == "shadowsocks" then
+    hash_piece(node.method and node.method:lower() or nil)
+    hash_piece(node.password)
+  elseif node.protocol == "socks" then
+    hash_piece(node.user)
+  elseif node.protocol == "raw" then
+    local cached = canonical_raw_cache[node]
+    local canonical
+    if cached and cached.source == node.raw_outbound then
+      canonical = cached.value
+    else
+      canonical = canonical_json(node.raw_outbound or "")
+      if canonical then
+        canonical_raw_cache[node] = { source = node.raw_outbound, value = canonical }
+      end
+    end
+    hash_piece(canonical)
   end
   return string.format("%08x", hash)
 end

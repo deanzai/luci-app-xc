@@ -216,6 +216,45 @@ t.test("canonicalizes a bounded large numeric array", function()
   t.eq(schema.fingerprint(a), schema.fingerprint(b))
 end)
 
+t.test("canonicalizes raw JSON numbers without losing precision", function()
+  local function raw_fingerprint(id, number)
+    local value = assert(schema.normalize(node({
+      id = id, protocol = "raw", raw_outbound = "{\"number\":" .. number .. "}"
+    })))
+    return schema.fingerprint(value)
+  end
+
+  local zero = raw_fingerprint("zero", "0")
+  t.eq(zero, raw_fingerprint("negative_zero", "-0"))
+  t.eq(zero, raw_fingerprint("exponent_zero", "0e999999"))
+  t.eq(zero, raw_fingerprint("decimal_zero", "-0.000E-999999"))
+
+  local decimal = raw_fingerprint("decimal", "1230")
+  t.eq(decimal, raw_fingerprint("decimal_scale", "1.2300e3"))
+  t.eq(decimal, raw_fingerprint("exponent_scale", "123000e-2"))
+
+  local exact = raw_fingerprint("exact", "9007199254740992")
+  t.eq(exact, raw_fingerprint("exact_scale", "900719925474099200e-2"))
+  t.truthy(exact ~= raw_fingerprint("next_integer", "9007199254740993"))
+
+  local huge = raw_fingerprint("huge", "1e400")
+  t.eq(huge, raw_fingerprint("huge_scale", "10e399"))
+  t.truthy(huge ~= raw_fingerprint("huge_distinct", "2e400"))
+end)
+
+t.test("bounds raw JSON semantic tokens and object members", function()
+  local function dense_array(count)
+    local values = {}
+    for index = 1, count do values[index] = "0" end
+    return "{\"items\":[" .. table.concat(values, ",") .. "]}"
+  end
+
+  -- Root object + its member + array + 8,189 values = 8,192 units.
+  t.truthy(schema.normalize(node({ id = "tokens_ok", protocol = "raw", raw_outbound = dense_array(8189) })))
+  local _, err = schema.normalize(node({ id = "tokens_over", protocol = "raw", raw_outbound = dense_array(8190) }))
+  t.contains(err, "raw_outbound")
+end)
+
 t.test("accepts canonical raw JSON through the 512 KiB boundary", function()
   local function object_with_data(length, reverse)
     local data = string.rep("x", length)
