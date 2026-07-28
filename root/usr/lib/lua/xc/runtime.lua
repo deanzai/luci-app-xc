@@ -10,6 +10,9 @@ local RUNTIME_PATH = "/var/etc/xc/config.json"
 local CANDIDATE_PATH = RUNTIME_PATH .. ".candidate"
 local ROLLBACK_PATH = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE_PATH = "/etc/xc/rollback/active_node"
+local PENDING_ROLLBACK_PATH = ROLLBACK_PATH .. ".pending"
+local PENDING_ROLLBACK_NODE_PATH = ROLLBACK_NODE_PATH .. ".pending"
+local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
 local sanitize_text
@@ -58,6 +61,18 @@ local function enabled(value)
   return value == true or value == 1 or value == "1"
 end
 
+local function active_marker(active)
+  if active == nil then return UNSET_ACTIVE_MARKER end
+  if not schema.safe_section_id(active) then error("invalid active node", 0) end
+  return active
+end
+
+local function decode_active_marker(marker)
+  if marker == UNSET_ACTIVE_MARKER then return nil, true end
+  if type(marker) == "string" and schema.safe_section_id(marker) then return marker, true end
+  return nil, false
+end
+
 local function shallow_copy(value)
   local output = {}
   for key, item in pairs(value or {}) do output[key] = item end
@@ -94,12 +109,11 @@ function Runtime:_load(section_id)
   local global = self.uci.get_global()
   if type(global) ~= "table" then return nil, nil, result(false, "internal_error") end
   local selected = section_id
-  if selected ~= nil and selected ~= "" and not schema.safe_section_id(selected) then
-    return nil, nil, result(false, "invalid_node")
-  end
-  if selected == nil or selected == "" then
+  if selected ~= nil then
+    if not schema.safe_section_id(selected) then return nil, nil, result(false, "invalid_node") end
+  else
     selected = global.active_node
-    if selected ~= nil and selected ~= "" then
+    if selected ~= nil then
       if not schema.safe_section_id(selected) then return nil, nil, result(false, "invalid_node") end
     else
       local available = {}
@@ -147,23 +161,50 @@ function Runtime:render(section_id, output_path)
   return value
 end
 
+function Runtime:_apply_active(active)
+  local changed
+  if active == nil then changed = self.uci.clear_active()
+  elseif not schema.safe_section_id(active) then return false
+  else changed = self.uci.set_active(active) end
+  if not action_ok(changed) or not action_ok(self.uci.commit()) then return false end
+  return true
+end
+
+function Runtime:_discard_pending_snapshot()
+  pcall(self.fs.remove, PENDING_ROLLBACK_PATH)
+  pcall(self.fs.remove, PENDING_ROLLBACK_NODE_PATH)
+end
+
+function Runtime:_readiness(global)
+  local address = self.network()
+  local socks_port, http_port = global.socks_port, global.http_port
+  local listeners_ready = false
+  for attempt = 1, 10 do
+    local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port))
+    local http_ready = action_ok(self.exec.listener_ready("http", address, http_port))
+    if socks_ready and http_ready then listeners_ready = true; break end
+    if attempt < 10 then self.sleep(1) end
+  end
+  if not listeners_ready then return "listener_failed" end
+  local socks_healthy = action_ok(self.exec.health_check("socks", address, socks_port))
+  local http_healthy = action_ok(self.exec.health_check("http", address, http_port))
+  if not socks_healthy or not http_healthy then return "health_failed" end
+end
+
 function Runtime:_restore_previous(context, failure_code)
   if context.old_config ~= nil then
     self:_atomic_write(RUNTIME_PATH, context.old_config)
   else
     pcall(self.fs.remove, RUNTIME_PATH)
   end
-  if context.old_active ~= nil and context.old_active ~= "" then
-    if not action_ok(self.uci.set_active(context.old_active)) then error("restore failed", 0) end
-    if not action_ok(self.uci.commit()) then error("restore failed", 0) end
-  else
-    self.uci.revert()
-  end
+  if not self:_apply_active(context.old_active) then error("restore failed", 0) end
   if context.old_config ~= nil then
     if not action_ok(self.exec.restart()) then error("restore failed", 0) end
+    self:_discard_pending_snapshot()
     return result(false, failure_code)
   end
   self.exec.stop()
+  self:_discard_pending_snapshot()
   return result(false, failure_code .. "_no_previous_config", {
     message = (messages[failure_code] or messages.internal_error) .. "; service stopped because no previous configuration exists"
   })
@@ -175,14 +216,33 @@ function Runtime:_best_effort_restore(context)
     else self.fs.remove(RUNTIME_PATH) end
   end)
   pcall(function()
-    if context.old_active ~= nil and context.old_active ~= "" then
-      self.uci.set_active(context.old_active)
-      self.uci.commit()
-    else
-      self.uci.revert()
-    end
+    self:_apply_active(context.old_active)
   end)
   if context.old_config ~= nil then pcall(self.exec.restart) else pcall(self.exec.stop) end
+  self:_discard_pending_snapshot()
+end
+
+function Runtime:_restore_rollback_generation(context)
+  pcall(function()
+    if context.prior_rollback_config ~= nil then self:_atomic_write(ROLLBACK_PATH, context.prior_rollback_config)
+    else self.fs.remove(ROLLBACK_PATH) end
+  end)
+  pcall(function()
+    if context.prior_rollback_node ~= nil then self:_atomic_write(ROLLBACK_NODE_PATH, context.prior_rollback_node)
+    else self.fs.remove(ROLLBACK_NODE_PATH) end
+  end)
+end
+
+function Runtime:_promote_pending_snapshot(context)
+  context.promotion_started = true
+  if context.old_config == nil then
+    self.fs.remove(ROLLBACK_PATH)
+    self.fs.remove(ROLLBACK_NODE_PATH)
+    self:_discard_pending_snapshot()
+    return
+  end
+  if not action_ok(self.fs.rename(PENDING_ROLLBACK_PATH, ROLLBACK_PATH)) then error("snapshot promotion failed", 0) end
+  if not action_ok(self.fs.rename(PENDING_ROLLBACK_NODE_PATH, ROLLBACK_NODE_PATH)) then error("snapshot promotion failed", 0) end
 end
 
 function Runtime:_switch_locked(section_id, context)
@@ -199,37 +259,25 @@ function Runtime:_switch_locked(section_id, context)
   if type(global) ~= "table" then error("invalid UCI state", 0) end
   context.old_active = global.active_node
   context.old_config = self.fs.read(RUNTIME_PATH)
+  context.prior_rollback_config = self.fs.read(ROLLBACK_PATH)
+  context.prior_rollback_node = self.fs.read(ROLLBACK_NODE_PATH)
   if context.old_config ~= nil then
-    self:_atomic_write(ROLLBACK_PATH, context.old_config)
+    self:_atomic_write(PENDING_ROLLBACK_PATH, context.old_config)
   else
-    pcall(self.fs.remove, ROLLBACK_PATH)
+    pcall(self.fs.remove, PENDING_ROLLBACK_PATH)
   end
-  self:_atomic_write(ROLLBACK_NODE_PATH, context.old_active or "")
+  self:_atomic_write(PENDING_ROLLBACK_NODE_PATH, active_marker(context.old_active))
   if not action_ok(self.fs.rename(CANDIDATE_PATH, RUNTIME_PATH)) then error("runtime replace failed", 0) end
   context.replaced = true
 
   if not action_ok(self.exec.restart()) then return self:_restore_previous(context, "restart_failed") end
-  local address = self.network()
-  local socks_port, http_port = global.socks_port, global.http_port
-  local listeners_ready = false
-  for attempt = 1, 10 do
-    local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port))
-    local http_ready = action_ok(self.exec.listener_ready("http", address, http_port))
-    if socks_ready and http_ready then listeners_ready = true; break end
-    if attempt < 10 then self.sleep(1) end
-  end
-  if not listeners_ready then
-    return self:_restore_previous(context, "listener_failed")
-  end
-  local socks_healthy = action_ok(self.exec.health_check("socks", address, socks_port))
-  local http_healthy = action_ok(self.exec.health_check("http", address, http_port))
-  if not socks_healthy or not http_healthy then
-    return self:_restore_previous(context, "health_failed")
-  end
-  if not action_ok(self.uci.set_active(node_id)) or not action_ok(self.uci.commit()) then
+  local readiness_error = self:_readiness(global)
+  if readiness_error then return self:_restore_previous(context, readiness_error) end
+  if not self:_apply_active(node_id) then
     pcall(self.uci.revert)
     return self:_restore_previous(context, "commit_failed")
   end
+  self:_promote_pending_snapshot(context)
   context.replaced = false
   return result(true, "switched", { node = node_id })
 end
@@ -244,38 +292,75 @@ function Runtime:switch(section_id)
   if not ok then
     pcall(self.fs.remove, CANDIDATE_PATH)
     if context.replaced then self:_best_effort_restore(context) end
+    if context.promotion_started then self:_restore_rollback_generation(context) end
+    self:_discard_pending_snapshot()
   end
   local released = pcall(self.fs.release_lock, lock)
   if not released then return result(false, "internal_error") end
   return value
 end
 
-function Runtime:_rollback_locked()
+function Runtime:_restore_rollback_attempt(context, failure_code)
+  if context.pre_config ~= nil then self:_atomic_write(RUNTIME_PATH, context.pre_config)
+  else self.fs.remove(RUNTIME_PATH) end
+  if not self:_apply_active(context.pre_active) then error("rollback recovery failed", 0) end
+  if context.pre_config ~= nil then
+    if not action_ok(self.exec.restart()) then error("rollback recovery failed", 0) end
+  else
+    self.exec.stop()
+  end
+  context.installed = false
+  return result(false, failure_code)
+end
+
+function Runtime:_best_effort_restore_rollback(context)
+  pcall(function()
+    if context.pre_config ~= nil then self:_atomic_write(RUNTIME_PATH, context.pre_config)
+    else self.fs.remove(RUNTIME_PATH) end
+  end)
+  pcall(function() self:_apply_active(context.pre_active) end)
+  if context.pre_config ~= nil then pcall(self.exec.restart) else pcall(self.exec.stop) end
+end
+
+function Runtime:_rollback_locked(context)
   if not self.fs.exists(ROLLBACK_PATH) or not self.fs.exists(ROLLBACK_NODE_PATH) then
     return result(false, "no_rollback_state")
   end
   local config = self.fs.read(ROLLBACK_PATH)
-  local node_id = self.fs.read(ROLLBACK_NODE_PATH)
-  if type(config) ~= "string" or type(node_id) ~= "string" or not schema.safe_section_id(node_id) then
+  local marker = self.fs.read(ROLLBACK_NODE_PATH)
+  local node_id, marker_ok = decode_active_marker(marker)
+  if type(config) ~= "string" or not marker_ok then
     return result(false, "no_rollback_state")
   end
+  local global = self.uci.get_global()
+  if type(global) ~= "table" then return result(false, "internal_error") end
+  context.pre_config = self.fs.read(RUNTIME_PATH)
+  context.pre_active = global.active_node
   self:_atomic_write(RUNTIME_PATH, config)
-  if not action_ok(self.uci.set_active(node_id)) or not action_ok(self.uci.commit()) then
+  context.installed = true
+  if not self:_apply_active(node_id) then
     pcall(self.uci.revert)
-    return result(false, "commit_failed")
+    return self:_restore_rollback_attempt(context, "commit_failed")
   end
-  if not action_ok(self.exec.restart()) then return result(false, "restart_failed") end
+  if not action_ok(self.exec.restart()) then return self:_restore_rollback_attempt(context, "restart_failed") end
+  local readiness_error = self:_readiness(global)
+  if readiness_error then return self:_restore_rollback_attempt(context, readiness_error) end
   self.fs.remove(ROLLBACK_PATH)
   self.fs.remove(ROLLBACK_NODE_PATH)
-  return result(true, "rolled_back", { node = node_id })
+  context.installed = false
+  local extra = {}
+  if node_id ~= nil then extra.node = node_id else extra.active_node_unset = true end
+  return result(true, "rolled_back", extra)
 end
 
 function Runtime:rollback()
   local lock = self.fs.acquire_lock(LOCK_PATH)
   if not lock then return result(false, "busy") end
-  local ok, value = xpcall(function() return self:_rollback_locked() end, function()
+  local context = { installed = false }
+  local ok, value = xpcall(function() return self:_rollback_locked(context) end, function()
     return result(false, "internal_error")
   end)
+  if not ok and context.installed then self:_best_effort_restore_rollback(context) end
   local released = pcall(self.fs.release_lock, lock)
   if not released then return result(false, "internal_error") end
   return value
@@ -323,15 +408,7 @@ sanitize_text = function(value, maximum)
   if type(value) ~= "string" then value = tostring(value) end
   value = value:sub(1, 8192)
   value = value:gsub("%b{}", "[redacted]"):gsub("%b[]", "[redacted]")
-  value = value:gsub("%a[%w+%.%-]*://[^%s]+", function(url)
-    local scheme = url:match("^(%a[%w+%.%-]*):")
-    scheme = scheme and scheme:lower() or ""
-    if scheme == "vless" or scheme == "vmess" or scheme == "trojan" or scheme == "ss" or scheme == "socks" then
-      return "[redacted]"
-    end
-    if url:find("@", 1, true) or url:find("?", 1, true) or url:find("#", 1, true) then return "[redacted]" end
-    return url
-  end)
+  value = value:gsub("%a[%w+%.%-]*://[^%s]+", "[redacted]")
   value = value:gsub("%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x", "[redacted]")
   value = value:gsub("[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]%s*[:=]%s*[^%s,;]+", "password=[redacted]")
   return value:sub(1, maximum or 256)
@@ -391,7 +468,10 @@ end
 
 M.paths = {
   lock = LOCK_PATH, runtime = RUNTIME_PATH, candidate = CANDIDATE_PATH,
-  rollback = ROLLBACK_PATH, rollback_node = ROLLBACK_NODE_PATH, log = LOG_PATH
+  rollback = ROLLBACK_PATH, rollback_node = ROLLBACK_NODE_PATH,
+  pending_rollback = PENDING_ROLLBACK_PATH, pending_rollback_node = PENDING_ROLLBACK_NODE_PATH,
+  log = LOG_PATH
 }
+M.unset_active_marker = UNSET_ACTIVE_MARKER
 
 return M

@@ -5,6 +5,9 @@ local UUID = "11111111-1111-1111-1111-111111111111"
 local RUNTIME = "/var/etc/xc/config.json"
 local ROLLBACK = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE = "/etc/xc/rollback/active_node"
+local PENDING_ROLLBACK = ROLLBACK .. ".pending"
+local PENDING_ROLLBACK_NODE = ROLLBACK_NODE .. ".pending"
+local UNSET_ACTIVE = "!xc-active-unset!"
 local LOCK = "/var/lock/xc.lock"
 
 local function quote(value)
@@ -73,7 +76,19 @@ local function fixture(options)
       global.active_node = id
       return true
     end,
-    commit = function() event("uci:commit"); return options.commit_ok ~= false end,
+    clear_active = function()
+      event("uci:clear_active")
+      global.active_node = nil
+      return true
+    end,
+    commit = function()
+      event("uci:commit")
+      if (options.commit_failures or 0) > 0 then
+        options.commit_failures = options.commit_failures - 1
+        return false
+      end
+      return options.commit_ok ~= false
+    end,
     revert = function() event("uci:revert"); global.active_node = original_active; return true end
   }
   local fs = {
@@ -93,7 +108,10 @@ local function fixture(options)
     chmod = function(path, mode) event("fs:chmod:" .. path .. ":" .. tostring(mode)); return true end,
     fsync = function(handle)
       event("fs:fsync:" .. handle.path)
-      if options.throw_fsync then error("raw adapter exception {secret}") end
+      if options.throw_fsync or (options.fsync_failures or 0) > 0 then
+        if options.fsync_failures then options.fsync_failures = options.fsync_failures - 1 end
+        error("raw adapter exception {secret}")
+      end
       return true
     end,
     close = function(handle) event("fs:close:" .. handle.path); return true end,
@@ -110,7 +128,14 @@ local function fixture(options)
       event("exec:run:" .. table.concat(argv, "|"))
       return options.validation_ok ~= false
     end,
-    restart = function() event("exec:restart"); return options.restart_ok ~= false end,
+    restart = function()
+      event("exec:restart")
+      if (options.restart_failures or 0) > 0 then
+        options.restart_failures = options.restart_failures - 1
+        return false
+      end
+      return options.restart_ok ~= false
+    end,
     stop = function() event("exec:stop"); return true end,
     listener_ready = function(kind, address, port)
       event("exec:listener:" .. kind .. ":" .. address .. ":" .. tostring(port))
@@ -122,6 +147,10 @@ local function fixture(options)
     end,
     health_check = function(kind, address, port)
       event("exec:health:" .. kind .. ":" .. address .. ":" .. tostring(port))
+      if options.health_failures and (options.health_failures[kind] or 0) > 0 then
+        options.health_failures[kind] = options.health_failures[kind] - 1
+        return false
+      end
       return not options.health_fail or options.health_fail ~= kind
     end
   }
@@ -166,6 +195,8 @@ t.test("render auto-selects only a sole enabled node and writes atomically", fun
   t.eq(multiple.runtime:render(nil, "/tmp/render.json").code, "active_node_required")
   local none = fixture({ global = { socks_port = 7890, http_port = 10809 }, nodes = { node("off", false) } })
   t.eq(none.runtime:render(nil, "/tmp/render.json").code, "no_enabled_nodes")
+  local corrupt = fixture({ global = { active_node = "", socks_port = 7890, http_port = 10809 }, nodes = { node("only", true) } })
+  t.eq(corrupt.runtime:render(nil, "/tmp/render.json").code, "invalid_node")
 end)
 
 t.test("render validates section IDs and uses lossless raw encoding", function()
@@ -194,12 +225,30 @@ t.test("switch validates before snapshot and commits only after listeners and he
   local candidate = RUNTIME .. ".candidate"
   local test_event = "exec:run:/usr/bin/xray|run|-test|-c|" .. candidate
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "exec:restart"))
-  t.truthy(event_index(state.events, test_event) < event_index(state.events, "fs:write_temp:" .. ROLLBACK .. ".tmp.123"))
+  t.truthy(event_index(state.events, test_event) < event_index(state.events, "fs:write_temp:" .. PENDING_ROLLBACK .. ".tmp.123"))
   t.truthy(event_index(state.events, "exec:health:http:192.168.6.1:10809") < event_index(state.events, "uci:set_active:new"))
   t.truthy(event_index(state.events, "uci:set_active:new") < event_index(state.events, "uci:commit"))
-  t.truthy(event_index(state.events, "fs:chmod:" .. ROLLBACK .. ".tmp.123:0600"))
-  t.truthy(event_index(state.events, "fs:chmod:" .. ROLLBACK_NODE .. ".tmp.123:0600"))
+  t.truthy(event_index(state.events, "uci:commit") < event_index(state.events, "fs:rename:" .. PENDING_ROLLBACK .. ":" .. ROLLBACK))
+  t.truthy(event_index(state.events, "fs:chmod:" .. PENDING_ROLLBACK .. ".tmp.123:0600"))
+  t.truthy(event_index(state.events, "fs:chmod:" .. PENDING_ROLLBACK_NODE .. ".tmp.123:0600"))
   t.eq(state.events[#state.events], "fs:unlock")
+end)
+
+t.test("failed switch preserves the prior successful rollback generation", function()
+  local state = fixture({
+    health_fail = "http",
+    files = { [RUNTIME] = "runtime-B", [ROLLBACK] = "runtime-A", [ROLLBACK_NODE] = "A" },
+    global = { active_node = "B", socks_port = 7890, http_port = 10809 },
+    nodes = { node("A", true), node("B", true), node("C", true) }
+  })
+  local result = state.runtime:switch("C")
+  t.eq(result.code, "health_failed")
+  t.eq(state.files[RUNTIME], "runtime-B")
+  t.eq(state.global.active_node, "B")
+  t.eq(state.files[ROLLBACK], "runtime-A")
+  t.eq(state.files[ROLLBACK_NODE], "A")
+  t.eq(state.files[PENDING_ROLLBACK], nil)
+  t.eq(state.files[PENDING_ROLLBACK_NODE], nil)
 end)
 
 t.test("failed Xray validation never restarts and releases the lock", function()
@@ -298,11 +347,53 @@ t.test("rollback reports no snapshot and restores a one-generation snapshot", fu
   t.eq(state.files[ROLLBACK_NODE], nil)
   t.truthy(event_index(state.events, "fs:chmod:" .. RUNTIME .. ".tmp.123:0600") < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, "uci:commit") < event_index(state.events, "exec:restart"))
+  t.truthy(event_index(state.events, "exec:listener:http:192.168.6.1:10809"))
+  t.truthy(event_index(state.events, "exec:health:socks:192.168.6.1:7890"))
+  t.truthy(event_index(state.events, "exec:health:http:192.168.6.1:10809"))
+end)
+
+t.test("rollback failures restore the pre-rollback runtime UCI and service", function()
+  local cases = {
+    { options = { restart_failures = 1 }, code = "restart_failed" },
+    { options = { commit_failures = 1 }, code = "commit_failed" },
+    { options = { health_failures = { http = 1 } }, code = "health_failed" },
+    { options = { fsync_failures = 1 }, code = "internal_error" }
+  }
+  for _, case in ipairs(cases) do
+    case.options.files = { [RUNTIME] = "runtime-new", [ROLLBACK] = "runtime-old", [ROLLBACK_NODE] = "old" }
+    case.options.global = { active_node = "new", socks_port = 7890, http_port = 10809 }
+    local state = fixture(case.options)
+    local result = state.runtime:rollback()
+    t.eq(result.ok, false)
+    t.eq(result.code, case.code)
+    t.eq(state.files[RUNTIME], "runtime-new")
+    t.eq(state.global.active_node, "new")
+    t.eq(state.files[ROLLBACK], "runtime-old")
+    t.eq(state.files[ROLLBACK_NODE], "old")
+    t.eq(state.events[#state.events], "fs:unlock")
+  end
+end)
+
+t.test("rollback restores an explicitly unset active node", function()
+  local state = fixture({
+    files = { [RUNTIME] = "runtime-before" },
+    global = { socks_port = 7890, http_port = 10809 },
+    nodes = { node("only", true) }
+  })
+  local switched = state.runtime:switch(nil)
+  t.eq(switched.ok, true)
+  t.eq(state.global.active_node, "only")
+  t.eq(state.files[ROLLBACK_NODE], UNSET_ACTIVE)
+  local rolled_back = state.runtime:rollback()
+  t.eq(rolled_back.ok, true)
+  t.eq(state.global.active_node, nil)
+  t.truthy(event_index(state.events, "uci:clear_active"))
+  t.eq(state.files[RUNTIME], "runtime-before")
 end)
 
 t.test("status and test_current omit credentials and use only fixed argv", function()
   local secret_node = node("old", true)
-  secret_node.name = "vless://" .. UUID .. "@secret.invalid:443?token=private#raw"
+  secret_node.name = "https://sub.invalid/opaque-secret-token"
   local state = fixture({ files = { [RUNTIME] = "raw-secret-runtime" }, nodes = { secret_node } })
   local status = state.runtime:status()
   t.eq(status.ok, true)
@@ -314,8 +405,8 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(tested.ok, true)
   t.eq(state.events[#state.events], "exec:run:/usr/bin/xray|run|-test|-c|" .. RUNTIME)
   t.eq(stringify(status):find(UUID, 1, true), nil)
-  t.eq(stringify(status):find("vless://", 1, true), nil)
-  t.eq(stringify(status):find("token=private", 1, true), nil)
+  t.eq(stringify(status):find("https://", 1, true), nil)
+  t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
   t.eq(stringify(tested):find("raw-secret-runtime", 1, true), nil)
 end)
 
@@ -323,13 +414,13 @@ t.test("logging redacts credentials links raw content and bounds output", functi
   local state = fixture()
   local link = "vless://" .. UUID .. "@secret.invalid:443?security=reality#private"
   local result = state.runtime:log(
-    "failed " .. UUID .. " password=hunter2 " .. link .. " {\"raw\":\"do-not-log\"}" .. string.rep("x", 5000),
+    "failed " .. UUID .. " password=hunter2 " .. link .. " https://sub.invalid/opaque-secret-token hysteria2://edge.invalid/share-secret {\"raw\":\"do-not-log\"}" .. string.rep("x", 5000),
     { password = "field-secret", raw_content = "raw-field-secret", url = "https://u:p@host/path?q=secret#frag", node = "safe-node" }
   )
   t.eq(result.ok, true)
   local line = state.files["/var/log/xc.log"]
   t.truthy(#line <= 2048)
-  for _, secret in ipairs({ UUID, "hunter2", "vless://", "secret.invalid", "do-not-log", "field-secret", "raw-field-secret", "q=secret", "u:p" }) do
+  for _, secret in ipairs({ UUID, "hunter2", "vless://", "hysteria2://", "secret.invalid", "sub.invalid", "edge.invalid", "opaque-secret-token", "share-secret", "do-not-log", "field-secret", "raw-field-secret", "q=secret", "u:p" }) do
     t.eq(line:find(secret, 1, true), nil, "log leaked " .. secret)
   end
   t.contains(line, "safe-node")
