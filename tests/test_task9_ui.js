@@ -62,7 +62,7 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   h.requests[0].respond({ ok: true, data: { socket: "ok", ping: 99, time: 99, outcome: "tcp" } });
   assert.strictEqual(h.rows[2].latency.textContent, "99 ms");
   assert.strictEqual(h.rows[2].latency.style.color, "green");
-  assert.strictEqual(h.rows[2].socket.textContent, "ok");
+  assert.strictEqual(h.rows[2].socket.textContent, "OK");
 }
 
 for (const [ping, color] of [[100, "#b7791f"], [200, "#dd6b20"], [300, "red"]]) {
@@ -111,8 +111,10 @@ function importHarness() {
   h.elements["xc-import-preview"].onclick();
   assert.strictEqual(h.requests[0].method, "POST"); assert.ok(h.requests[0].url.indexOf("import-preview") >= 0);
   h.requests[0].respond({ ok: true, data: { nodes: [{ section: "node_1", name: "Safe", protocol: "socks",
-    server: "example.invalid", port: 1080 }], warnings: ["duplicate"] } });
+    server: "example.invalid", port: 1080 }], warnings: ["skipped duplicate node", "unexpected backend prose"] } });
   assert.strictEqual(h.elements["xc-import-preview-body"].children.length, 1);
+  assert.strictEqual(h.elements["xc-import-warnings"].children[0].textContent, "Skipped duplicate node");
+  assert.strictEqual(h.elements["xc-import-warnings"].children[1].textContent, "Import warning");
   assert.strictEqual(h.requests.length, 1, "preview does not commit");
   h.elements["xc-import-commit"].onclick();
   assert.ok(h.requests[1].url.indexOf("import-commit") >= 0);

@@ -3,7 +3,7 @@ local real_schema = require "xc.schema"
 
 local function controller_fixture(options)
   options = options or {}
-  local state = { reverts = 0, commits = 0 }
+  local state = { reverts = 0, commits = 0, fs_events = {} }
   local body = options.body or "{}"
   local http = {
     getenv = function(name)
@@ -40,7 +40,27 @@ local function controller_fixture(options)
     },
     fs = {
       read = function() return "" end,
-      remove = function() return true end
+      remove = function() return true end,
+      read_tail = options.read_tail or function(path, maximum)
+        state.fs_events[#state.fs_events + 1] = "read_tail:" .. path .. ":" .. tostring(maximum)
+        if options.log_error then return nil, options.log_error end
+        return options.log_content or ""
+      end,
+      acquire_lock = options.acquire_lock or function(path)
+        state.fs_events[#state.fs_events + 1] = "acquire:" .. path
+        if options.lock_busy then return nil end
+        return { path = path }
+      end,
+      truncate = options.truncate or function(path)
+        state.fs_events[#state.fs_events + 1] = "truncate:" .. path
+        if options.truncate_throw then error("password=truncate-secret") end
+        return options.truncate_ok ~= false
+      end,
+      release_lock = options.release_lock or function(lock)
+        state.fs_events[#state.fs_events + 1] = "release:" .. tostring(lock and lock.path)
+        if options.release_throw then error("password=release-secret") end
+        return options.release_ok ~= false
+      end
     }
   }
   local runtime_instance = options.runtime_instance or {
@@ -60,7 +80,9 @@ local function controller_fixture(options)
     ["luci.http"] = http,
     ["xc.schema"] = real_schema,
     ["xc.platform"] = { new = function() return adapters end },
-    ["xc.runtime"] = { new = function() return runtime_instance end, paths = { log = "/var/log/xc.log" } },
+    ["xc.runtime"] = { new = function() return runtime_instance end, paths = {
+      log = "/var/log/xc.log", log_lock = "/var/lock/xc-log.lock"
+    } },
     ["xc.importer"] = importer,
     ["xc.probe"] = options.probe_module or { new = function()
       return { run = function(_, section, selected, timeout)

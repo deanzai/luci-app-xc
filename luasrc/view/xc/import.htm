@@ -1,5 +1,6 @@
 <%
 local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
 -%>
 <fieldset class="cbi-section">
   <legend><%:Local import%></legend>
@@ -22,6 +23,17 @@ local dispatcher = require "luci.dispatcher"
   "use strict";
   var previewUrl = '<%=dispatcher.build_url("admin", "services", "xc", "import-preview")%>?token=<%=token%>';
   var commitUrl = '<%=dispatcher.build_url("admin", "services", "xc", "import-commit")%>?token=<%=token%>';
+  var fileErrorText = <%=util.serialize_json(translate("File read failed"))%>;
+  var emptyText = <%=util.serialize_json(translate("Import source is empty"))%>;
+  var previewingText = <%=util.serialize_json(translate("Previewing…"))%>;
+  var previewFailedText = <%=util.serialize_json(translate("Preview failed"))%>;
+  var readyText = <%=util.serialize_json(translate("Ready"))%>;
+  var confirmText = <%=util.serialize_json(translate("Confirm import?"))%>;
+  var importingText = <%=util.serialize_json(translate("Importing…"))%>;
+  var importFailedText = <%=util.serialize_json(translate("Import failed"))%>;
+  var importedText = <%=util.serialize_json(translate("Imported"))%>;
+  var duplicateText = <%=util.serialize_json(translate("Skipped duplicate node"))%>;
+  var warningText = <%=util.serialize_json(translate("Import warning"))%>;
   var fileText = "", previewSource = "", previewReady = false;
   var file, paste, previewButton, commitButton, state, warnings, body;
 
@@ -63,7 +75,9 @@ local dispatcher = require "luci.dispatcher"
     }
     var items = data.warnings || [];
     for (var warningIndex = 0; warningIndex < items.length; warningIndex++) {
-      var item = document.createElement("div"); item.textContent = String(items[warningIndex]); warnings.appendChild(item);
+      var item = document.createElement("div");
+      item.textContent = items[warningIndex] === "skipped duplicate node" ? duplicateText : warningText;
+      warnings.appendChild(item);
     }
   }
 
@@ -77,32 +91,32 @@ local dispatcher = require "luci.dispatcher"
       if (!file.files || !file.files[0]) return;
       var reader = new FileReader();
       reader.onload = function() { fileText = typeof reader.result === "string" ? reader.result : ""; };
-      reader.onerror = function() { setState("file error", true); };
+      reader.onerror = function() { setState(fileErrorText, true); };
       reader.readAsText(file.files[0]);
     };
     previewButton.onclick = function() {
       var source = paste.value || fileText;
-      if (!source) { setState("empty", true); return; }
-      previewButton.disabled = true; setState("previewing", false);
+      if (!source) { setState(emptyText, true); return; }
+      previewButton.disabled = true; setState(previewingText, false);
       send(previewUrl, source, function(payload) {
         previewButton.disabled = false;
         if (!payload || payload.ok !== true || !payload.data) {
           previewReady = false; commitButton.disabled = true;
-          setState(payload && payload.message ? payload.message : "preview failed", true); return;
+          setState(previewFailedText, true); return;
         }
         previewSource = source; previewReady = true; commitButton.disabled = false;
-        render(payload.data); setState("ready", false);
+        render(payload.data); setState(readyText, false);
       });
     };
     commitButton.onclick = function() {
-      if (!previewReady || !confirm("Confirm import?")) return;
-      commitButton.disabled = true; setState("importing", false);
+      if (!previewReady || !confirm(confirmText)) return;
+      commitButton.disabled = true; setState(importingText, false);
       send(commitUrl, previewSource, function(payload) {
         if (!payload || payload.ok !== true) {
-          commitButton.disabled = false; setState(payload && payload.message ? payload.message : "import failed", true); return;
+          commitButton.disabled = false; setState(importFailedText, true); return;
         }
         paste.value = ""; file.value = ""; fileText = ""; previewSource = ""; previewReady = false;
-        clearChildren(body); clearChildren(warnings); setState("imported", false);
+        clearChildren(body); clearChildren(warnings); setState(importedText, false);
       });
     };
   }

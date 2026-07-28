@@ -297,7 +297,13 @@ function action_clear_log()
   if not request_body(false) then return end
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
+  local acquired, lock = pcall(adapters.fs.acquire_lock, runtime_module.paths.log_lock)
+  if not acquired then failure("internal_error"); return end
+  if not lock then failure("busy"); return end
   local called, truncated = pcall(adapters.fs.truncate, runtime_module.paths.log)
-  if not called or truncated ~= true then failure("internal_error"); return end
+  local released, release_result = pcall(adapters.fs.release_lock, lock)
+  if not called or truncated ~= true or not released or release_result ~= true then
+    failure("internal_error"); return
+  end
   success({ cleared = true })
 end

@@ -322,7 +322,7 @@ function M.new(injected)
       local size = handle:seek(0, "end")
       if type(size) ~= "number" then handle:close(); return nil, "io_error" end
       local offset = math.max(0, size - maximum)
-      if offset > 0 and handle:seek(offset, "set") ~= offset then handle:close(); return nil, "io_error" end
+      if handle:seek(offset, "set") ~= offset then handle:close(); return nil, "io_error" end
       local chunks, total = {}, 0
       while total < maximum do
         local chunk = handle:read(math.min(65536, maximum - total))

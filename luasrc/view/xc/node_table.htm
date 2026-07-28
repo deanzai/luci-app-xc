@@ -1,5 +1,6 @@
 <%
 local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
 local probe_concurrency = self.probe_concurrency or 3
 -%>
 <%+cbi/tblsection%>
@@ -14,6 +15,12 @@ local probe_concurrency = self.probe_concurrency or 3
   var endpoint = '<%=dispatcher.build_url("admin", "services", "xc", "probe")%>?token=<%=token%>';
   var configured = Number("<%=probe_concurrency%>");
   var concurrency = isFinite(configured) ? Math.min(5, Math.max(1, Math.floor(configured))) : 3;
+  var errorText = <%=util.serialize_json(translate("Error"))%>;
+  var failText = <%=util.serialize_json(translate("Failed"))%>;
+  var timeoutText = <%=util.serialize_json(translate("Timed out"))%>;
+  var testingText = <%=util.serialize_json(translate("Testing…"))%>;
+  var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
+  var okText = <%=util.serialize_json(translate("OK"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
   var allButton, stopButton, state;
 
@@ -39,16 +46,16 @@ local probe_concurrency = self.probe_concurrency or 3
     var latency = row.querySelector(".xc-latency");
     var socket = row.querySelector(".xc-socket");
     if (!payload || payload.ok !== true || !payload.data) {
-      latency.textContent = "error"; latency.style.color = "red";
-      socket.textContent = "fail"; socket.style.color = "red"; return;
+      latency.textContent = errorText; latency.style.color = "red";
+      socket.textContent = failText; socket.style.color = "red"; return;
     }
     var data = payload.data;
     var milliseconds = Number(data.ping);
-    if (data.outcome === "timeout") latency.textContent = "timeout";
-    else if (!isFinite(milliseconds) || milliseconds <= 0) latency.textContent = data.outcome || "error";
+    if (data.outcome === "timeout") latency.textContent = timeoutText;
+    else if (!isFinite(milliseconds) || milliseconds <= 0) latency.textContent = errorText;
     else latency.textContent = Math.floor(milliseconds) + " ms";
     latency.style.color = color(isFinite(milliseconds) ? milliseconds : 10000);
-    socket.textContent = data.socket === "ok" ? "ok" : "fail";
+    socket.textContent = data.socket === "ok" ? okText : failText;
     socket.style.color = data.socket === "ok" ? "green" : "red";
   }
 
@@ -79,13 +86,13 @@ local probe_concurrency = self.probe_concurrency or 3
   function start(selected) {
     if (running) return false;
     runId++; running = true; queue = selected.slice(0); inFlight = 0;
-    allButton.disabled = true; state.textContent = "testing";
+    allButton.disabled = true; state.textContent = testingText;
     pump(runId); return true;
   }
 
   function stop() {
     runId++; queue = []; inFlight = 0; running = false;
-    allButton.disabled = false; state.textContent = "stopped";
+    allButton.disabled = false; state.textContent = stoppedText;
   }
 
   function initialize() {
