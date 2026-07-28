@@ -1,20 +1,65 @@
 #!/bin/sh
 
-backup=""
+backup_limit=256
+backup_count=0
+backup_overflow=0
+backup_candidates=0
+backup_list="$(mktemp /tmp/luci-xc-backups.XXXXXX)" || exit 1
+chmod 0600 "$backup_list" || { rm -f "$backup_list"; exit 1; }
+sorted_list="$(mktemp /tmp/luci-xc-backups-sorted.XXXXXX)" || { rm -f "$backup_list"; exit 1; }
+chmod 0600 "$sorted_list" || { rm -f "$backup_list" "$sorted_list"; exit 1; }
+trap 'rm -f "$backup_list" "$sorted_list"' EXIT HUP INT TERM
+
 for candidate in /etc/xc/legacy-backup-*; do
+	if [ "$backup_count" -ge "$backup_limit" ]; then
+		backup_overflow=1
+		break
+	fi
+	backup_count=$((backup_count + 1))
 	[ -d "$candidate" ] || continue
+	token="${candidate##*/legacy-backup-}"
+	case "$token" in
+		''|*[!0-9-]*|*-*-*|-*|*-) continue ;;
+	esac
+	backup_timestamp="${token%%-*}"
+	case "$backup_timestamp" in
+		0|[1-9]*) ;;
+		*) continue ;;
+	esac
+	if [ "$token" = "$backup_timestamp" ]; then
+		backup_suffix=0
+	else
+		backup_suffix="${token#*-}"
+		case "$backup_suffix" in
+			[1-9]) ;;
+			*) continue ;;
+		esac
+	fi
+	[ "${#backup_timestamp}" -le 20 ] || continue
+	[ "${#backup_suffix}" -le 20 ] || continue
 	[ -f "$candidate/complete" ] || continue
 	[ -f "$candidate/nodes.json" ] || continue
-	if [ -z "$backup" ] || [ "$candidate/complete" -nt "$backup/complete" ]; then
-		backup="$candidate"
-	fi
+	printf '%020s %020s %s\n' \
+		"$backup_timestamp" "$backup_suffix" "$candidate" >>"$backup_list" || exit 1
+	backup_candidates=$((backup_candidates + 1))
 done
+[ "$backup_overflow" = "0" ] || exit 1
+[ "$backup_candidates" -gt "0" ] || exit 0
 
-[ -n "$backup" ] || exit 0
 mkdir -p /var/etc/xc || exit 1
-/usr/bin/xc migrate-legacy "$backup" || exit 1
-/usr/bin/xc render --output /var/etc/xc/config.json || exit 1
-/usr/bin/xray run -test -c /var/etc/xc/config.json >/dev/null 2>&1 || exit 1
+sort -r "$backup_list" >"$sorted_list" || exit 1
+migration_succeeded=0
+while IFS=' ' read -r backup_timestamp backup_suffix backup; do
+	if /usr/bin/xc migrate-legacy "$backup" && \
+		/usr/bin/xc render --output /var/etc/xc/config.json && \
+		/usr/bin/xray run -test -c /var/etc/xc/config.json >/dev/null 2>&1; then
+		migration_succeeded=1
+		break
+	fi
+done <"$sorted_list"
+rm -f "$backup_list" "$sorted_list"
+trap - EXIT HUP INT TERM
+[ "$migration_succeeded" = "1" ] || exit 1
 
 if [ -x /etc/init.d/xc-xray ]; then
 	/etc/init.d/xc-xray disable

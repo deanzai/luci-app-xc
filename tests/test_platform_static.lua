@@ -67,3 +67,34 @@ t.test("CLI entrypoint loads concrete adapters and emits JSON only", function()
   t.contains(source, 'require "xc.cli"')
   t.eq(source:find("io.stderr", 1, true), nil)
 end)
+
+t.test("runtime restart uses a prepared fixed-argv action while ordinary reload renders", function()
+  local calls, outcomes = {}, { true, false, true }
+  local adapters = require("xc.platform").new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    spawn = function(argv)
+      calls[#calls + 1] = table.concat(argv, "|")
+      return outcomes[#calls]
+    end
+  })
+  local called, result = pcall(adapters.exec.restart)
+  t.eq(called, true); t.eq(result, true)
+  called, result = pcall(adapters.exec.restart)
+  t.eq(called, true); t.eq(result, false)
+  called, result = pcall(adapters.exec.restart)
+  t.eq(called, true); t.eq(result, true)
+  for _, call in ipairs(calls) do t.eq(call, "/etc/init.d/xc|restart_prepared") end
+
+  local platform_source = read_file("root/usr/lib/lua/xc/platform.lua")
+  t.eq(platform_source:find('"signal"', 1, true), nil)
+  local init = read_file("root/etc/init.d/xc")
+  t.contains(init, "reload_service()")
+  t.contains(init, 'EXTRA_COMMANDS="restart_prepared"')
+  t.contains(init, '"$XC_RUNTIME_PREPARED" != "1"')
+  local reload_body = assert(init:match("reload_service%(%) {%s*(.-)%s*}"))
+  t.eq(reload_body:find("XC_RUNTIME_PREPARED", 1, true), nil)
+  t.contains(reload_body, "stop || return 1")
+  local prepared_body = assert(init:match("restart_prepared%(%) {%s*(.-)%s*}"))
+  t.truthy(prepared_body:find("XC_RUNTIME_PREPARED=1", 1, true) < prepared_body:find("stop", 1, true))
+end)

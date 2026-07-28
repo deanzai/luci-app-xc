@@ -1,0 +1,111 @@
+local t = require "testlib"
+local platform = require "xc.platform"
+
+local function copy(value)
+  if type(value) ~= "table" then return value end
+  local output = {}
+  for key, child in pairs(value) do output[key] = copy(child) end
+  return output
+end
+
+local function serialize(sections)
+  local output = {}
+  for name, section in pairs(sections) do
+    local fields = {}
+    for key, value in pairs(section) do fields[#fields + 1] = tostring(key) .. "=" .. tostring(value) end
+    table.sort(fields)
+    output[#output + 1] = name .. "{" .. table.concat(fields, ",") .. "}"
+  end
+  table.sort(output)
+  return table.concat(output, "|")
+end
+
+local function cursor_fixture(fail_at)
+  local committed = {
+    global = { [".name"] = "global", [".type"] = "global", enabled = "1", active_node = "old" },
+    old = { [".name"] = "old", [".type"] = "node", enabled = "1", name = "Old" }
+  }
+  local state = { working = copy(committed), committed = copy(committed), mutations = 0, reverts = 0 }
+  local function mutate(fn)
+    state.mutations = state.mutations + 1
+    if state.mutations == fail_at then return false end
+    fn()
+    return true
+  end
+  local cursor = {
+    foreach = function(_, _, section_type, callback)
+      local names = {}
+      for name, section in pairs(state.working) do if section[".type"] == section_type then names[#names + 1] = name end end
+      table.sort(names)
+      for _, name in ipairs(names) do callback(copy(state.working[name])) end
+    end,
+    get = function(_, _, section, option) return state.working[section] and state.working[section][option] end,
+    get_all = function(_, _, section) return state.working[section] and copy(state.working[section]) end,
+    set = function(_, _, section, option, value)
+      return mutate(function() state.working[section][option] = value end)
+    end,
+    delete = function(_, _, section, option)
+      return mutate(function()
+        if option then state.working[section][option] = nil else state.working[section] = nil end
+      end)
+    end,
+    section = function(_, _, section_type, name)
+      local ok = mutate(function() state.working[name] = { [".name"] = name, [".type"] = section_type } end)
+      return ok and name or false
+    end,
+    commit = function() state.committed = copy(state.working); return true end,
+    revert = function() state.reverts = state.reverts + 1; state.working = copy(state.committed); return true end
+  }
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = cursor, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  return state, adapters.uci
+end
+
+local node = {
+  id = "new", name = "New", enabled = true, protocol = "socks",
+  server = "127.0.0.1", port = 1080, user = "u", password = "p"
+}
+local global = {
+  enabled = "1", active_node = "new", listen_mode = "lan", listen_address = "",
+  socks_port = "7890", http_port = "10809", health_url = "https://health.invalid/", health_timeout = "5"
+}
+
+t.test("set and clear active revert when their cursor mutation fails", function()
+  local state, uci = cursor_fixture(1)
+  local before = serialize(state.working)
+  t.eq(uci.set_active("new"), false)
+  t.eq(serialize(state.working), before)
+  t.eq(state.reverts, 1)
+
+  state, uci = cursor_fixture(1)
+  before = serialize(state.working)
+  t.eq(uci.clear_active(), false)
+  t.eq(serialize(state.working), before)
+  t.eq(state.reverts, 1)
+end)
+
+local function assert_failure_matrix(method, arguments)
+  local baseline, baseline_uci = cursor_fixture(9999)
+  t.truthy(baseline_uci[method](unpack(arguments)))
+  local mutations = baseline.mutations
+  t.truthy(mutations > 1)
+  for position = 1, mutations do
+    local state, uci = cursor_fixture(position)
+    local before = serialize(state.working)
+    local called, result = pcall(uci[method], unpack(arguments))
+    t.eq(called, true, method .. " must contain mutation " .. position)
+    t.eq(result, false, method .. " mutation " .. position)
+    t.eq(serialize(state.working), before, method .. " atomic " .. position)
+    t.eq(state.reverts, 1, method .. " revert " .. position)
+  end
+end
+
+t.test("stage_nodes checks every section and set mutation atomically", function()
+  assert_failure_matrix("stage_nodes", { { node } })
+end)
+
+t.test("stage_replace checks every delete section and set mutation atomically", function()
+  assert_failure_matrix("stage_replace", { global, { node } })
+end)

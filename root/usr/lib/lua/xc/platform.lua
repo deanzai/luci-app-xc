@@ -75,18 +75,30 @@ function M.new(injected)
   local uci_module = injected.uci_module or require "uci"
   local jsonc = injected.jsonc or require "luci.jsonc"
   local cursor = injected.cursor or uci_module.cursor()
+  local spawn_process = injected.spawn or function(argv) return spawn(nixio, argv) end
 
   local function foreach(section_type, callback)
     cursor:foreach("xc", section_type, callback)
   end
 
+  local function revert_failure()
+    pcall(cursor.revert, cursor, "xc")
+    return false
+  end
+
+  local function mutation(method, ...)
+    local ok, result = pcall(method, cursor, ...)
+    return ok and result ~= false and result ~= nil
+  end
+
   local function set_values(section, values)
     for key, value in pairs(values) do
-      if key ~= "id" and key:sub(1, 1) ~= "." then
+      if type(key) == "string" and key ~= "id" and key:sub(1, 1) ~= "." then
         local item = scalar(value)
-        if item ~= nil then cursor:set("xc", section, key, item) end
+        if item ~= nil and not mutation(cursor.set, "xc", section, key, item) then return false end
       end
     end
+    return true
   end
 
   local uci = {
@@ -113,11 +125,12 @@ function M.new(injected)
     end,
     set_active = function(id)
       if not schema.safe_section_id(id) then return false end
-      cursor:set("xc", "global", "active_node", id)
+      if not mutation(cursor.set, "xc", "global", "active_node", id) then return revert_failure() end
       return true
     end,
     clear_active = function()
-      cursor:delete("xc", "global", "active_node")
+      if cursor:get("xc", "global", "active_node") == nil then return true end
+      if not mutation(cursor.delete, "xc", "global", "active_node") then return revert_failure() end
       return true
     end,
     commit = function()
@@ -127,27 +140,37 @@ function M.new(injected)
     revert = function() cursor:revert("xc"); return true end,
     stage_replace = function(global, nodes)
       if type(global) ~= "table" or type(nodes) ~= "table" then return false end
+      local normalized_nodes = {}
+      for index, node in ipairs(nodes) do
+        local normalized = schema.normalize(node)
+        if not normalized then return false end
+        normalized_nodes[index] = normalized
+      end
       local sections = {}
       foreach("global", function(section) sections[#sections + 1] = section[".name"] end)
       foreach("node", function(section) sections[#sections + 1] = section[".name"] end)
-      for _, section in ipairs(sections) do cursor:delete("xc", section) end
-      cursor:section("xc", "global", "global", {})
-      set_values("global", global)
-      for _, node in ipairs(nodes) do
-        local normalized = schema.normalize(node)
-        if not normalized then cursor:revert("xc"); return false end
-        cursor:section("xc", "node", normalized.id, {})
-        set_values(normalized.id, normalized)
+      for _, section in ipairs(sections) do
+        if not mutation(cursor.delete, "xc", section) then return revert_failure() end
+      end
+      if not mutation(cursor.section, "xc", "global", "global", {}) then return revert_failure() end
+      if not set_values("global", global) then return revert_failure() end
+      for _, normalized in ipairs(normalized_nodes) do
+        if not mutation(cursor.section, "xc", "node", normalized.id, {}) then return revert_failure() end
+        if not set_values(normalized.id, normalized) then return revert_failure() end
       end
       return true
     end,
     stage_nodes = function(nodes)
       if type(nodes) ~= "table" then return false end
-      for _, node in ipairs(nodes) do
+      local normalized_nodes = {}
+      for index, node in ipairs(nodes) do
         local normalized = schema.normalize(node)
-        if not normalized or cursor:get_all("xc", normalized.id) then cursor:revert("xc"); return false end
-        cursor:section("xc", "node", normalized.id, {})
-        set_values(normalized.id, normalized)
+        if not normalized or cursor:get_all("xc", normalized.id) then return false end
+        normalized_nodes[index] = normalized
+      end
+      for _, normalized in ipairs(normalized_nodes) do
+        if not mutation(cursor.section, "xc", "node", normalized.id, {}) then return revert_failure() end
+        if not set_values(normalized.id, normalized) then return revert_failure() end
       end
       return true
     end
@@ -317,13 +340,13 @@ function M.new(injected)
     run = function(argv)
       if type(argv) ~= "table" or #argv ~= 5 or argv[1] ~= "/usr/bin/xray" or argv[2] ~= "run"
         or argv[3] ~= "-test" or argv[4] ~= "-c" or not safe_path(argv[5]) then return false end
-      return spawn(nixio, argv)
+      return spawn_process(argv)
     end,
     restart = function()
-      return spawn(nixio, { "/sbin/ubus", "call", "service", "signal", '{"name":"xc","signal":15}' })
+      return spawn_process({ "/etc/init.d/xc", "restart_prepared" })
     end,
-    stop = function() return spawn(nixio, { "/etc/init.d/xc", "stop" }) end,
-    service_state = function() return spawn(nixio, { "/etc/init.d/xc", "running" }) and "running" or "stopped" end,
+    stop = function() return spawn_process({ "/etc/init.d/xc", "stop" }) end,
+    service_state = function() return spawn_process({ "/etc/init.d/xc", "running" }) and "running" or "stopped" end,
     listener_ready = function(kind, address, port, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) or M.now(nixio) >= deadline then return false end
       local family = address:find(":", 1, true) and "inet6" or "inet"
@@ -353,7 +376,7 @@ function M.new(injected)
       if remaining < 1 then return false end
       local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
       local proxy = kind == "socks" and (address .. ":" .. tostring(port)) or ("http://" .. address .. ":" .. tostring(port))
-      return spawn(nixio, { "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
+      return spawn_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
         "--connect-timeout", tostring(math.min(remaining, 5)), proxy_flag, proxy, url })
     end
   }
