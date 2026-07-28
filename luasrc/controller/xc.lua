@@ -63,7 +63,7 @@ local function post_entry(path, action)
 end
 
 function index()
-  local root = entry({ "admin", "services", "xc" }, alias("admin", "services", "xc", "status"), _("Xray node switching"), 60)
+  local root = entry({ "admin", "services", "xc" }, alias("admin", "services", "xc", "settings"), _("Xray node switching"), 60)
   root.dependent = true
 
   entry({ "admin", "services", "xc", "settings" }, cbi("xc/settings"), _("Settings"), 10).leaf = true

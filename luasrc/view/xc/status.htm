@@ -1,0 +1,142 @@
+<%
+local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
+%>
+
+<div class="cbi-section">
+  <h3><%:Runtime status%></h3>
+  <div class="table">
+    <div class="tr"><div class="td left" width="33%"><%:Service%></div><div class="td left" id="xc-service-state"><em><%:Loading…%></em></div></div>
+    <div class="tr"><div class="td left"><%:Active node%></div><div class="td left" id="xc-active-node">-</div></div>
+    <div class="tr"><div class="td left"><%:SOCKS listener%></div><div class="td left" id="xc-socks-listener">-</div></div>
+    <div class="tr"><div class="td left"><%:HTTP listener%></div><div class="td left" id="xc-http-listener">-</div></div>
+    <div class="tr"><div class="td left"><%:Exit IP%></div><div class="td left" id="xc-exit-ip">-</div></div>
+  </div>
+  <div class="cbi-page-actions">
+    <button type="button" class="btn cbi-button cbi-button-apply" id="xc-restart"><%:Restart service%></button>
+    <button type="button" class="btn cbi-button cbi-button-action" id="xc-health"><%:Test current node%></button>
+    <button type="button" class="btn cbi-button cbi-button-reset" id="xc-rollback"><%:Manual rollback%></button>
+  </div>
+  <p id="xc-action-result" role="status"></p>
+</div>
+
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+  "use strict";
+
+  var statusUrl = "<%=dispatcher.build_url("admin", "services", "xc", "status")%>";
+  var switchUrl = "<%=dispatcher.build_url("admin", "services", "xc", "switch")%>";
+  var probeUrl = "<%=dispatcher.build_url("admin", "services", "xc", "probe")%>";
+  var rollbackUrl = "<%=dispatcher.build_url("admin", "services", "xc", "rollback")%>";
+  var csrfToken = "<%=token%>";
+  var unavailableText = <%=util.serialize_json(translate("Unavailable"))%>;
+  var pollTimer = null;
+  var statusRequest = null;
+  var activeSection = null;
+  var actionBusy = false;
+
+  function element(id) { return document.getElementById(id); }
+  function text(id, value) { element(id).textContent = value == null || value === "" ? "-" : String(value); }
+  function endpoint(address, port) { return address && port ? address + ":" + port : "-"; }
+
+  function setButtons(disabled) {
+    element("xc-restart").disabled = disabled || !activeSection;
+    element("xc-health").disabled = disabled || !activeSection;
+    element("xc-rollback").disabled = disabled;
+  }
+
+  function renderStatus(response) {
+    if (!response || response.ok !== true || !response.data) {
+      text("xc-service-state", "error");
+      text("xc-action-result", response && response.message ? response.message : "Status request failed");
+      activeSection = null;
+      setButtons(actionBusy);
+      return;
+    }
+    var data = response.data;
+    var state = data.service_state;
+    text("xc-service-state", state === "running" || state === "stopped" || state === "error" ? state : "error");
+    activeSection = data.active_section || null;
+    text("xc-active-node", data.active_name || activeSection);
+    text("xc-socks-listener", endpoint(data.listen_ip, data.socks_port));
+    text("xc-http-listener", endpoint(data.listen_ip, data.http_port));
+    text("xc-exit-ip", data.exit_ip || unavailableText);
+    if (data.last_error) text("xc-action-result", data.last_error);
+    setButtons(actionBusy || data.lock_state === "held");
+  }
+
+  function parseResponse(xhr) {
+    try { return JSON.parse(xhr.responseText || "{}"); }
+    catch (error) { return { ok: false, code: "invalid_response", message: "Invalid server response" }; }
+  }
+
+  function schedulePoll() {
+    if (pollTimer !== null) window.clearTimeout(pollTimer);
+    pollTimer = null;
+    if (!document.hidden) pollTimer = window.setTimeout(pollStatus, 5000);
+  }
+
+  function pollStatus() {
+    if (document.hidden || statusRequest !== null) { schedulePoll(); return; }
+    var xhr = new XMLHttpRequest();
+    statusRequest = xhr;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      statusRequest = null;
+      renderStatus(parseResponse(xhr));
+      schedulePoll();
+    };
+    xhr.open("GET", statusUrl, true);
+    xhr.send(null);
+  }
+
+  function mutation(url, payload, callback) {
+    if (actionBusy) return;
+    actionBusy = true;
+    setButtons(true);
+    text("xc-action-result", "Working…");
+    var xhr = new XMLHttpRequest();
+    var separator = url.indexOf("?") === -1 ? "?" : "&";
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      actionBusy = false;
+      var data = parseResponse(xhr);
+      if (data.code === "not_implemented") {
+        text("xc-action-result", data.message || "Health testing is not implemented yet");
+      } else if (data.ok === true) {
+        text("xc-action-result", "Operation completed");
+      } else {
+        text("xc-action-result", data.message || data.code || "Operation failed");
+      }
+      if (callback) callback(data);
+      setButtons(false);
+      pollStatus();
+    };
+    xhr.open("POST", url + separator + "token=" + encodeURIComponent(csrfToken), true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.send(JSON.stringify(payload || {}));
+  }
+
+  element("xc-restart").onclick = function() {
+    if (activeSection) mutation(switchUrl, { section: activeSection });
+  };
+  element("xc-health").onclick = function() {
+    if (activeSection) mutation(probeUrl, { section: activeSection });
+  };
+  element("xc-rollback").onclick = function() { mutation(rollbackUrl, {}); };
+
+  document.addEventListener("visibilitychange", function() {
+    if (document.hidden) {
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+      pollTimer = null;
+    } else {
+      pollStatus();
+    }
+  });
+
+  setButtons(true);
+  pollStatus();
+}());
+//]]>
+</script>

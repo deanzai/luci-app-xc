@@ -13,6 +13,12 @@ local function route(path)
   return table.concat(path, '\", \"')
 end
 
+t.test("controller root opens settings while status remains a JSON API", function()
+  t.contains(source, 'alias("admin", "services", "xc", "settings")')
+  t.eq(source:find('alias("admin", "services", "xc", "status")', 1, true), nil)
+  t.contains(source, 'entry({ "admin", "services", "xc", "status" }, call("action_status"))')
+end)
+
 t.test("controller registers the authenticated XC page and action routes", function()
   for _, path in ipairs({
     { "admin", "services", "xc" },
