@@ -1,6 +1,5 @@
 config global 'global'
 	option enabled '0'
-	option active_node ''
 	option listen_mode 'lan'
 	option listen_address ''
 	option socks_port '7890'

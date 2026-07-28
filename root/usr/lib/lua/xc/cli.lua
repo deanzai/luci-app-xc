@@ -4,6 +4,7 @@ local M = {}
 local MAX_IMPORT = 524288
 local MAX_CURRENT = 256
 local MIGRATION_CANDIDATE = "/var/etc/xc/migration-candidate.json"
+local MIGRATION_MARKER = "/etc/xc/migration-complete"
 
 local messages = {
   invalid_arguments = "invalid command arguments",
@@ -127,6 +128,18 @@ local function legacy_global(existing, active)
   }
 end
 
+local function checksum(value)
+  local hash = 5381
+  for index = 1, #value do hash = (hash * 33 + value:byte(index)) % 2147483647 end
+  return string.format("%08x", hash)
+end
+
+local function migration_marker(directory, text)
+  local source = directory:match("/([^/]+)$")
+  if not source or #source > 128 or not source:match("^[0-9A-Za-z_.+-]+$") then return nil end
+  return table.concat({ "xc-migration-v1", source, tostring(#text), checksum(text), "" }, "\n")
+end
+
 local function migrate_legacy(directory, deps)
   if type(directory) ~= "string" or not directory:match("^/[%w%._/%-%+]+$") or directory:find("/%.%./") then
     return response(false, "migration_failed")
@@ -135,6 +148,10 @@ local function migrate_legacy(directory, deps)
   if type(complete) ~= "string" then return response(false, "migration_failed") end
   local text = deps.fs.read(directory .. "/nodes.json", MAX_IMPORT)
   if type(text) ~= "string" then return response(false, "migration_failed") end
+  local current_text, current_error = deps.fs.read(directory .. "/current", MAX_CURRENT)
+  if current_text == nil and current_error ~= "missing" then return response(false, "migration_failed") end
+  local marker_text = migration_marker(directory, text .. "\0" .. (current_text or ""))
+  if not marker_text then return response(false, "migration_failed") end
   local ok, legacy = pcall(deps.json.parse, text)
   if not ok or type(legacy) ~= "table" then return response(false, "migration_failed") end
   local nodes = deps.importer.parse_legacy(legacy)
@@ -145,7 +162,7 @@ local function migrate_legacy(directory, deps)
     nodes[index] = normalized
   end
 
-  local current = trim(deps.fs.read(directory .. "/current", MAX_CURRENT))
+  local current = trim(current_text)
   local active
   if current and type(legacy.nodes) == "table" and legacy.nodes[current] ~= nil then
     local keys = {}
@@ -154,26 +171,49 @@ local function migrate_legacy(directory, deps)
     for index, key in ipairs(keys) do if tostring(key) == current then active = nodes[index].id; break end end
   end
   if not active and #nodes == 1 then active = nodes[1].id end
-  local global = legacy_global(deps.uci.get_global(), active)
-  local recovered = deps.runtime:recover_pending()
-  if not recovered.ok then return recovered end
-  local stage_call, staged = pcall(deps.uci.stage_replace, global, nodes)
-  if not stage_call or not staged then pcall(deps.uci.revert); return response(false, "migration_failed") end
+  return deps.runtime:exclusive("migration", function(capability)
+    local committed, dirty = false, false
+    local operation_ok, value = xpcall(function()
+      local completed, marker_error = deps.fs.read(MIGRATION_MARKER, 1024)
+      if completed ~= nil then
+        if type(completed) ~= "string" or not completed:match("^xc%-migration%-v1\n[0-9A-Za-z_.+%-]+\n%d+\n%x%x%x%x%x%x%x%x\n$") then
+          return response(false, "migration_failed")
+        end
+        return response(true, "migrated", { already_migrated = true })
+      end
+      if marker_error ~= "missing" then return response(false, "migration_failed") end
 
-  local render_call, rendered = pcall(deps.runtime.render, deps.runtime, active, MIGRATION_CANDIDATE)
-  if not render_call or type(rendered) ~= "table" or not rendered.ok then
-    pcall(deps.uci.revert)
-    local render_code = render_call and type(rendered) == "table" and rendered.code or "validation_failed"
-    return response(false, render_code)
-  end
-  local test_call, tested = pcall(deps.exec.run, { "/usr/bin/xray", "run", "-test", "-c", MIGRATION_CANDIDATE })
-  if not test_call or not tested then
-    pcall(deps.uci.revert)
-    return response(false, "validation_failed")
-  end
-  local commit_call, committed = pcall(deps.uci.commit)
-  if not commit_call or not committed then pcall(deps.uci.revert); return response(false, "migration_failed") end
-  return response(true, "migrated", { count = #nodes, active_node = active })
+      local existing_call, existing = pcall(deps.uci.list_nodes)
+      if not existing_call or type(existing) ~= "table" then return response(false, "migration_failed") end
+      if #existing > 0 then return response(true, "migrated", { existing_config = true }) end
+
+      local global = legacy_global(deps.uci.get_global(), active)
+      dirty = true
+      local stage_call, staged = pcall(deps.uci.stage_replace, global, nodes)
+      if not stage_call or not staged then return response(false, "migration_failed") end
+
+      local render_call, rendered = pcall(capability.render, active, MIGRATION_CANDIDATE)
+      if not render_call or type(rendered) ~= "table" or not rendered.ok then
+        local render_code = render_call and type(rendered) == "table" and rendered.code or "validation_failed"
+        return response(false, render_code)
+      end
+      local test_call, tested = pcall(deps.exec.run,
+        { "/usr/bin/xray", "run", "-test", "-c", MIGRATION_CANDIDATE }, deps.now() + 30)
+      if not test_call or not tested then return response(false, "validation_failed") end
+
+      local commit_call, commit_result = pcall(deps.uci.commit)
+      if not commit_call or not commit_result then return response(false, "migration_failed") end
+      committed = true
+      local marker_call, marker_written = pcall(capability.write, MIGRATION_MARKER, marker_text)
+      if not marker_call or not marker_written then return response(false, "migration_failed") end
+      return response(true, "migrated", { count = #nodes, active_node = active })
+    end, function() return response(false, "migration_failed") end)
+    if not operation_ok or type(value) ~= "table" then value = response(false, "migration_failed") end
+    if not value.ok and dirty and not committed then pcall(deps.uci.revert) end
+    local cleanup_call, cleaned = pcall(deps.fs.remove, MIGRATION_CANDIDATE)
+    if not cleanup_call or not cleaned then return response(false, "migration_failed") end
+    return value
+  end)
 end
 
 function M.main(argv, deps)

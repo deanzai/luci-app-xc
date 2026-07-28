@@ -1,70 +1,143 @@
 #!/bin/sh
 
-backup_limit=256
-backup_count=0
-backup_overflow=0
-backup_candidates=0
-backup_list="$(mktemp /tmp/luci-xc-backups.XXXXXX)" || exit 1
-chmod 0600 "$backup_list" || { rm -f "$backup_list"; exit 1; }
-sorted_list="$(mktemp /tmp/luci-xc-backups-sorted.XXXXXX)" || { rm -f "$backup_list"; exit 1; }
-chmod 0600 "$sorted_list" || { rm -f "$backup_list" "$sorted_list"; exit 1; }
-trap 'rm -f "$backup_list" "$sorted_list"' EXIT HUP INT TERM
+if [ ! -f /etc/xc/migration-complete ]; then
+	backup_limit=256
+	backup_count=0
+	backup_overflow=0
+	backup_candidates=0
+	backup_list="$(mktemp /tmp/luci-xc-backups.XXXXXX)" || exit 1
+	chmod 0600 "$backup_list" || { rm -f "$backup_list"; exit 1; }
+	sorted_list="$(mktemp /tmp/luci-xc-backups-sorted.XXXXXX)" || { rm -f "$backup_list"; exit 1; }
+	chmod 0600 "$sorted_list" || { rm -f "$backup_list" "$sorted_list"; exit 1; }
+	trap 'rm -f "$backup_list" "$sorted_list"' EXIT HUP INT TERM
 
-for candidate in /etc/xc/legacy-backup-*; do
-	if [ "$backup_count" -ge "$backup_limit" ]; then
-		backup_overflow=1
-		break
-	fi
-	backup_count=$((backup_count + 1))
-	[ -d "$candidate" ] || continue
-	token="${candidate##*/legacy-backup-}"
-	case "$token" in
-		''|*[!0-9-]*|*-*-*|-*|*-) continue ;;
-	esac
-	backup_timestamp="${token%%-*}"
-	case "$backup_timestamp" in
-		0|[1-9]*) ;;
-		*) continue ;;
-	esac
-	if [ "$token" = "$backup_timestamp" ]; then
-		backup_suffix=0
-	else
-		backup_suffix="${token#*-}"
-		case "$backup_suffix" in
-			[1-9]) ;;
+	for candidate in /etc/xc/legacy-backup-*; do
+		if [ "$backup_count" -ge "$backup_limit" ]; then
+			backup_overflow=1
+			break
+		fi
+		backup_count=$((backup_count + 1))
+		[ -d "$candidate" ] || continue
+		token="${candidate##*/legacy-backup-}"
+		case "$token" in
+			''|*[!0-9-]*|*-*-*|-*|*-) continue ;;
+		esac
+		backup_timestamp="${token%%-*}"
+		case "$backup_timestamp" in
+			0|[1-9]*) ;;
 			*) continue ;;
 		esac
-	fi
-	[ "${#backup_timestamp}" -le 20 ] || continue
-	[ "${#backup_suffix}" -le 20 ] || continue
-	[ -f "$candidate/complete" ] || continue
-	[ -f "$candidate/nodes.json" ] || continue
-	printf '%020s %020s %s\n' \
-		"$backup_timestamp" "$backup_suffix" "$candidate" >>"$backup_list" || exit 1
-	backup_candidates=$((backup_candidates + 1))
-done
-[ "$backup_overflow" = "0" ] || exit 1
-[ "$backup_candidates" -gt "0" ] || exit 0
+		if [ "$token" = "$backup_timestamp" ]; then
+			backup_suffix=0
+		else
+			backup_suffix="${token#*-}"
+			case "$backup_suffix" in
+				[1-9]) ;;
+				*) continue ;;
+			esac
+		fi
+		[ "${#backup_timestamp}" -le 20 ] || continue
+		[ "${#backup_suffix}" -le 20 ] || continue
+		[ -f "$candidate/complete" ] || continue
+		[ -f "$candidate/nodes.json" ] || continue
+		printf '%020s %020s %s\n' \
+			"$backup_timestamp" "$backup_suffix" "$candidate" >>"$backup_list" || exit 1
+		backup_candidates=$((backup_candidates + 1))
+	done
+	[ "$backup_overflow" = "0" ] || exit 1
+	[ "$backup_candidates" -gt "0" ] || exit 0
 
-mkdir -p /var/etc/xc || exit 1
-sort -r "$backup_list" >"$sorted_list" || exit 1
-migration_succeeded=0
-while IFS=' ' read -r backup_timestamp backup_suffix backup; do
-	if /usr/bin/xc migrate-legacy "$backup" && \
-		/usr/bin/xc render --output /var/etc/xc/config.json && \
-		/usr/bin/xray run -test -c /var/etc/xc/config.json >/dev/null 2>&1; then
-		migration_succeeded=1
-		break
+	sort -r "$backup_list" >"$sorted_list" || exit 1
+	migration_succeeded=0
+	while IFS=' ' read -r backup_timestamp backup_suffix backup; do
+		if /usr/bin/xc migrate-legacy "$backup"; then
+			migration_succeeded=1
+			break
+		fi
+	done <"$sorted_list"
+	rm -f "$backup_list" "$sorted_list"
+	trap - EXIT HUP INT TERM
+	[ "$migration_succeeded" = "1" ] || exit 1
+fi
+
+old_present=0
+old_enabled=0
+old_running=0
+
+legacy_config_running() {
+	legacy_process_count=0
+	for legacy_cmdline in /proc/[0-9]*/cmdline; do
+		[ -r "$legacy_cmdline" ] || continue
+		legacy_process_count=$((legacy_process_count + 1))
+		[ "$legacy_process_count" -le 4096 ] || return 1
+		if tr '\000' '\n' <"$legacy_cmdline" 2>/dev/null | grep -Fqx '/etc/xc/config.json'; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+legacy_service_running() {
+	legacy_running_output="$(/etc/init.d/xc-xray running 2>&1)"
+	legacy_running_status=$?
+	if [ -z "$legacy_running_output" ]; then
+		[ "$legacy_running_status" -eq 0 ]
+		return
 	fi
-done <"$sorted_list"
-rm -f "$backup_list" "$sorted_list"
-trap - EXIT HUP INT TERM
-[ "$migration_succeeded" = "1" ] || exit 1
+	legacy_config_running
+}
+
+new_service_running() {
+	new_running_attempt=0
+	new_running_consecutive=0
+	while [ "$new_running_attempt" -lt 5 ]; do
+		if /etc/init.d/xc running >/dev/null 2>&1; then
+			new_running_consecutive=$((new_running_consecutive + 1))
+			[ "$new_running_consecutive" -ge 2 ] && return 0
+		else
+			new_running_consecutive=0
+		fi
+		new_running_attempt=$((new_running_attempt + 1))
+		[ "$new_running_attempt" -ge 5 ] || sleep 1 || return 1
+	done
+	return 1
+}
 
 if [ -x /etc/init.d/xc-xray ]; then
-	/etc/init.d/xc-xray disable
-	/etc/init.d/xc-xray stop
+	old_present=1
+	/etc/init.d/xc-xray enabled >/dev/null 2>&1 && old_enabled=1
+	legacy_service_running && old_running=1
 fi
-/etc/init.d/xc enable || exit 1
-/etc/init.d/xc start || exit 1
+
+restore_takeover() {
+	restore_failed=0
+	/etc/init.d/xc disable || restore_failed=1
+	/etc/init.d/xc stop || restore_failed=1
+	if [ "$old_present" = "1" ]; then
+		if [ "$old_enabled" = "1" ]; then
+			/etc/init.d/xc-xray enable || restore_failed=1
+		else
+			/etc/init.d/xc-xray disable || restore_failed=1
+		fi
+		if [ "$old_running" = "1" ]; then
+			/etc/init.d/xc-xray start || restore_failed=1
+		else
+			/etc/init.d/xc-xray stop || restore_failed=1
+		fi
+	fi
+	return "$restore_failed"
+}
+
+takeover_failed() {
+	restore_takeover
+	exit 1
+}
+
+if [ "$old_present" = "1" ]; then
+	/etc/init.d/xc-xray disable || takeover_failed
+	/etc/init.d/xc-xray stop || takeover_failed
+fi
+/etc/init.d/xc enable || takeover_failed
+/etc/init.d/xc start || takeover_failed
+new_service_running || takeover_failed
 exit 0

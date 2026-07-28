@@ -42,16 +42,18 @@ local function cursor_fixture(fail_at)
     get = function(_, _, section, option) return state.working[section] and state.working[section][option] end,
     get_all = function(_, _, section) return state.working[section] and copy(state.working[section]) end,
     set = function(_, _, section, option, value)
-      return mutate(function() state.working[section][option] = value end)
+      return mutate(function()
+        if value == nil then
+          state.working[section] = { [".name"] = section, [".type"] = option }
+        else
+          state.working[section][option] = value
+        end
+      end)
     end,
     delete = function(_, _, section, option)
       return mutate(function()
         if option then state.working[section][option] = nil else state.working[section] = nil end
       end)
-    end,
-    section = function(_, _, section_type, name)
-      local ok = mutate(function() state.working[name] = { [".name"] = name, [".type"] = section_type } end)
-      return ok and name or false
     end,
     commit = function() state.committed = copy(state.working); return true end,
     revert = function() state.reverts = state.reverts + 1; state.working = copy(state.committed); return true end
@@ -108,4 +110,53 @@ end)
 
 t.test("stage_replace checks every delete section and set mutation atomically", function()
   assert_failure_matrix("stage_replace", { global, { node } })
+end)
+
+t.test("raw OpenWrt cursor creates named sections through overloaded set", function()
+  local state, uci = cursor_fixture(9999)
+  t.eq(uci.stage_replace(global, { node }), true)
+  t.eq(state.working.global[".type"], "global")
+  t.eq(state.working.new[".type"], "node")
+end)
+
+t.test("credential commits enforce config mode before and after commit", function()
+  local function commit_fixture(fail_chmod, throw_commit)
+    local events, chmod_calls = {}, 0
+    local cursor = {
+      foreach = function() end,
+      commit = function(_, config)
+        events[#events + 1] = "commit:" .. config
+        if throw_commit then error("commit-secret") end
+        return true
+      end
+    }
+    local adapters = platform.new({
+      nixio = {}, cursor = cursor, uci_module = {},
+      fs = { chmod = function(path, mode)
+        chmod_calls = chmod_calls + 1
+        events[#events + 1] = "chmod:" .. path .. ":" .. tostring(mode)
+        return chmod_calls ~= fail_chmod
+      end },
+      jsonc = { parse = function() end, stringify = function() return "{}" end }
+    })
+    return adapters.uci, events
+  end
+
+  local uci, events = commit_fixture()
+  t.eq(uci.commit(), true)
+  t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
+
+  uci, events = commit_fixture(1)
+  t.eq(uci.commit(), false)
+  t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600")
+
+  uci, events = commit_fixture(2)
+  t.eq(uci.commit(), false)
+  t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
+
+  uci, events = commit_fixture(nil, true)
+  local called, committed = pcall(uci.commit)
+  t.eq(called, true)
+  t.eq(committed, false)
+  t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
 end)

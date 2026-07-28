@@ -31,6 +31,8 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.eq(source:find("os.execute", 1, true), nil)
   t.eq(source:find("clock_gettime", 1, true), nil)
   t.eq(source:find(":flock", 1, true), nil)
+  t.eq(source:find("384", 1, true), nil)
+  t.eq(source:find("448", 1, true), nil)
 end)
 
 t.test("platform generation trash resumes an interrupted pair move", function()
@@ -65,7 +67,40 @@ t.test("CLI entrypoint loads concrete adapters and emits JSON only", function()
   local source = read_file("root/usr/bin/xc")
   t.contains(source, 'require "xc.platform"')
   t.contains(source, 'require "xc.cli"')
+  t.contains(source, "adapters.fs.ensure_layout()")
   t.eq(source:find("io.stderr", 1, true), nil)
+end)
+
+t.test("platform provisions private runtime directories on a clean filesystem", function()
+  local entries, events = {}, {}
+  local fake_fs = {
+    stat = function(path) return entries[path] and { type = "dir" } or nil end,
+    mkdirr = function(path) entries[path] = true; events[#events + 1] = "mkdir:" .. path; return true end,
+    chmod = function(path, mode) events[#events + 1] = "chmod:" .. path .. ":" .. tostring(mode); return entries[path] == true end
+  }
+  local adapters = require("xc.platform").new({
+    nixio = {}, fs = fake_fs, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(type(adapters.fs.ensure_layout), "function")
+  t.eq(adapters.fs.ensure_layout(), true)
+  for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/var/etc/xc" }) do
+    t.truthy(entries[path])
+    t.contains(table.concat(events, "|"), "chmod:" .. path .. ":700")
+  end
+end)
+
+t.test("platform normalizes an empty active option and ships no empty default", function()
+  local adapters = require("xc.platform").new({
+    nixio = {}, fs = {}, uci_module = {},
+    cursor = { foreach = function(_, _, kind, callback)
+      if kind == "global" then callback({ [".name"] = "global", [".type"] = "global", active_node = "" }) end
+    end },
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(adapters.uci.get_global().active_node, nil)
+  local config = read_file("root/etc/config/xc")
+  t.eq(config:find("option active_node", 1, true), nil)
 end)
 
 t.test("runtime restart uses a prepared fixed-argv action while ordinary reload renders", function()
@@ -73,6 +108,7 @@ t.test("runtime restart uses a prepared fixed-argv action while ordinary reload 
   local adapters = require("xc.platform").new({
     nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
     jsonc = { parse = function() end, stringify = function() return "{}" end },
+    now = function() return 10 end,
     spawn = function(argv)
       calls[#calls + 1] = table.concat(argv, "|")
       return outcomes[#calls]

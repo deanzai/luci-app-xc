@@ -5,6 +5,7 @@ local ok, code = pcall(function()
   local cli = require "xc.cli"
   local importer = require "xc.importer"
   local adapters = platform.new()
+  assert(adapters.fs.ensure_layout())
   local runtime = assert(runtime_module.new(adapters))
   adapters.runtime = runtime
   adapters.importer = importer

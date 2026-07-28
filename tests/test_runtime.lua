@@ -130,7 +130,7 @@ local function fixture(options)
   local by_id = {}
   for _, value in ipairs(nodes) do by_id[value.id] = value end
   local original_active = global.active_node
-  local state = { events = events, files = files, global = global, writes = {} }
+  local state = { events = events, files = files, global = global, writes = {}, validation_deadlines = {} }
   local generation_count = 0
   local function event(value) events[#events + 1] = value end
   local uci = {
@@ -236,8 +236,9 @@ local function fixture(options)
     append = function(path, content) event("fs:append:" .. path); files[path] = (files[path] or "") .. content; return true end
   }
   local exec = {
-    run = function(argv)
+    run = function(argv, deadline)
       event("exec:run:" .. table.concat(argv, "|"))
+      state.validation_deadlines[#state.validation_deadlines + 1] = deadline
       return options.validation_ok ~= false
     end,
     restart = function()
@@ -309,8 +310,10 @@ t.test("render auto-selects only a sole enabled node and writes atomically", fun
   t.eq(multiple.runtime:render(nil, "/tmp/render.json").code, "active_node_required")
   local none = fixture({ global = { socks_port = 7890, http_port = 10809 }, nodes = { node("off", false) } })
   t.eq(none.runtime:render(nil, "/tmp/render.json").code, "no_enabled_nodes")
-  local corrupt = fixture({ global = { active_node = "", socks_port = 7890, http_port = 10809 }, nodes = { node("only", true) } })
-  t.eq(corrupt.runtime:render(nil, "/tmp/render.json").code, "invalid_node")
+  local empty = fixture({ global = { active_node = "", socks_port = 7890, http_port = 10809 }, nodes = { node("only", true) } })
+  local empty_result = empty.runtime:render(nil, "/tmp/render.json")
+  t.eq(empty_result.ok, true)
+  t.eq(empty_result.node, "only")
 end)
 
 t.test("render validates section IDs and uses lossless raw encoding", function()
@@ -446,6 +449,25 @@ t.test("central lock protects runtime render and rejects acquire or release faul
   t.eq(result.code, "internal_error")
 end)
 
+t.test("migration exclusive capability renders and writes under one runtime lock", function()
+  local state = fixture({ nodes = { node("only", true) }, global = { active_node = "only", socks_port = 7890, http_port = 10809 } })
+  t.eq(type(state.runtime.exclusive), "function")
+  local value = state.runtime:exclusive("migration", function(capability)
+    local rendered = capability.render("only", "/var/etc/xc/migration-candidate.json")
+    if not rendered.ok then return rendered end
+    capability.write("/etc/xc/migration-complete", "marker")
+    return { ok = true, code = "rendered", message = "configuration rendered" }
+  end)
+  t.eq(value.ok, true)
+  local joined = table.concat(state.events, "|")
+  local first_lock = assert(joined:find("fs:lock:/var/lock/xc.lock", 1, true))
+  local write = assert(joined:find("fs:write_temp:/etc/xc/migration-complete", 1, true))
+  local unlock = assert(joined:find("fs:unlock", 1, true))
+  t.truthy(first_lock < write and write < unlock)
+  local _, locks = joined:gsub("fs:lock:/var/lock/xc.lock", "")
+  t.eq(locks, 1)
+end)
+
 t.test("adapter exceptions release the lock and return generic secret-safe errors", function()
   local state = fixture({ throw_set_active = true, files = { [RUNTIME] = "old-runtime" } })
   local result = state.runtime:switch("new")
@@ -560,6 +582,17 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(stringify(status):find("https://", 1, true), nil)
   t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
   t.eq(stringify(tested):find("raw-secret-runtime", 1, true), nil)
+end)
+
+t.test("every runtime Xray validation receives a finite monotonic deadline", function()
+  local current = fixture({ files = { [RUNTIME] = "runtime" } })
+  t.eq(current.runtime:test_current().ok, true)
+  t.eq(current.validation_deadlines[1], 153)
+
+  local switched = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  t.eq(switched.runtime:switch("new").ok, true)
+  t.truthy(#switched.validation_deadlines >= 1)
+  for _, deadline in ipairs(switched.validation_deadlines) do t.eq(deadline, 153) end
 end)
 
 t.test("status distinguishes unset and invalid active state", function()

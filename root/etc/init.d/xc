@@ -6,8 +6,10 @@ EXTRA_COMMANDS="restart_prepared"
 EXTRA_HELP="\trestart_prepared Restart using the runtime-prepared configuration"
 
 start_service() {
+	mkdir -p /etc/xc/rollback /var/etc/xc /var/log || return 1
+	chmod 0700 /etc/xc /etc/xc/rollback /var/etc/xc || return 1
+	chmod 0600 /etc/config/xc || return 1
 	[ "$(uci -q get xc.global.enabled)" = "1" ] || return 0
-	mkdir -p /var/etc/xc /var/log
 	if [ "$XC_RUNTIME_PREPARED" != "1" ]; then
 		/usr/bin/xc recover-pending || return 1
 		/usr/bin/xc render --output /var/etc/xc/config.json || return 1

@@ -1,11 +1,49 @@
 local t = require "testlib"
 local schema = require "xc.schema"
+local MIGRATION_CANDIDATE = "/var/etc/xc/migration-candidate.json"
+local MIGRATION_MARKER = "/etc/xc/migration-complete"
 
 local function read_file(path)
   local handle = assert(io.open(path, "rb"))
   local value = assert(handle:read("*a"))
   handle:close()
   return value
+end
+
+local function write_file(path, value)
+  local handle = assert(io.open(path, "wb"))
+  assert(handle:write(value))
+  handle:close()
+end
+
+local function command_output(command)
+  local output = "tests/tmp/command-output"
+  assert(os.execute(command .. " >" .. output) == 0)
+  local value = read_file(output)
+  os.remove(output)
+  return value:gsub("%s+$", "")
+end
+
+local function make_script(name)
+  local source = read_file("Makefile")
+  local marker = "define Package/$(PKG_NAME)/" .. name
+  local first = source:find(marker, 1, true)
+  if not first then return nil end
+  local body_start = assert(source:find("\n", first, true)) + 1
+  local body_end = assert(source:find("\nendef", body_start, true)) - 1
+  return source:sub(body_start, body_end):gsub("%$%$", "$")
+end
+
+local function replace_plain(value, old, new)
+  local output, offset = {}, 1
+  while true do
+    local first, last = value:find(old, offset, true)
+    if not first then output[#output + 1] = value:sub(offset); break end
+    output[#output + 1] = value:sub(offset, first - 1)
+    output[#output + 1] = new
+    offset = last + 1
+  end
+  return table.concat(output)
 end
 
 local function load_cli()
@@ -43,10 +81,12 @@ end
 local function fixture(options)
   options = options or {}
   local legacy = legacy_nodes()
-  local state = { globals = {}, nodes = {}, commits = 0, reverts = 0, events = {}, output = {} }
+  local files = options.files or {}
+  if options.marker then files[MIGRATION_MARKER] = options.marker end
+  local state = { globals = {}, nodes = {}, commits = 0, reverts = 0, events = {}, output = {}, files = files }
   local staged
   local uci = {
-    get_global = function() return staged and staged.global or state.globals[1] end,
+    get_global = function() if options.global_throw then error("global-secret") end; return staged and staged.global or state.globals[1] end,
     get_node = function(id) return (staged and staged.by_id or state.nodes)[id] end,
     list_nodes = function()
       local values = {}
@@ -87,8 +127,29 @@ local function fixture(options)
   local runtime = {
     render = function(_, section, path)
       state.events[#state.events + 1] = "render:" .. tostring(section) .. ":" .. path
+      files[path] = "candidate"
       if options.render_fail then return { ok = false, code = "validation_failed", message = "candidate rejected" } end
       return { ok = true, code = "rendered", message = "configuration rendered" }
+    end,
+    exclusive = function(_, operation, callback)
+      state.events[#state.events + 1] = "lock:" .. tostring(operation)
+      local called, value = pcall(callback, {
+        render = function(section, path)
+          state.events[#state.events + 1] = "render:" .. tostring(section) .. ":" .. path
+          files[path] = "candidate"
+          if options.render_fail then return { ok = false, code = "validation_failed", message = "candidate rejected" } end
+          return { ok = true, code = "rendered", message = "configuration rendered" }
+        end,
+        write = function(path, content)
+          state.events[#state.events + 1] = "marker"
+          if options.marker_write_fail then return false end
+          files[path] = content
+          return true
+        end
+      })
+      state.events[#state.events + 1] = "unlock:" .. tostring(operation)
+      if not called then return { ok = false, code = "internal_error", message = "runtime operation failed" } end
+      return value
     end,
     status = function() return { ok = true, code = "status", message = "runtime status", password = "must-not-print" } end,
     switch = function(_, id) return { ok = id ~= "fail", code = id ~= "fail" and "switched" or "health_failed", message = "safe" } end,
@@ -101,16 +162,26 @@ local function fixture(options)
     importer = require "xc.importer",
     json = { parse = function(text) if text == "legacy-json" then return legacy end; return options.import_value end, stringify = json_stringify },
     fs = { read = function(path)
+      if options.read_throw and path == MIGRATION_MARKER then error("read-secret") end
+      if files[path] ~= nil then return files[path] end
       if path:match("nodes%.json$") then return "legacy-json" end
       if path:match("current$") then return "1\n" end
-      if path:match("complete$") then if options.missing_complete then return nil, "missing" end; return "" end
+      if path:match("/complete$") then if options.missing_complete then return nil, "missing" end; return "" end
       if path == "/tmp/import" then return options.import_text or "{}" end
       return nil, "missing"
+    end,
+    remove = function(path)
+      state.events[#state.events + 1] = "remove:" .. path
+      if options.remove_fail then return false end
+      files[path] = nil
+      return true
     end },
-    exec = { run = function(argv)
+    exec = { run = function(argv, deadline)
       state.events[#state.events + 1] = "xray:test"
+      state.xray_deadline = deadline
       return options.xray_fail ~= true
     end },
+    now = function() if options.now_throw then error("clock-secret") end; return 123 end,
     output = function(value) state.output[#state.output + 1] = value end
   }
   state.deps = deps
@@ -131,7 +202,11 @@ t.test("migrates captured 1 through 11 legacy shape atomically with one global",
   t.eq(count, 11)
   t.eq(state.globals[1].active_node, assert(state.deps.importer.parse_legacy(legacy_nodes()))[1].id)
   t.eq(state.commits, 1)
-  t.truthy(state.events[1] == "recover" and state.events[2] == "stage_replace" and state.events[3]:match("^render:") and state.events[4] == "xray:test" and state.events[5] == "commit")
+  local joined = table.concat(state.events, "|")
+  t.contains(joined, "lock:migration|stage_replace|render:")
+  t.contains(joined, "xray:test|commit|marker|remove:" .. MIGRATION_CANDIDATE .. "|unlock:migration")
+  t.eq(state.xray_deadline, 153)
+  t.contains(state.files[MIGRATION_MARKER], "xc-migration-v1\nlegacy-backup-1\n14\n")
 end)
 
 t.test("migration requires a complete backup marker before staging", function()
@@ -147,10 +222,69 @@ t.test("legacy migration is idempotent", function()
   t.eq(cli.main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 0)
   local first = state.globals[1].active_node
   t.eq(cli.main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 0)
+  state.globals[1].health_url = "https://custom.invalid/"
+  state.nodes.custom = { id = "custom", name = "customized" }
+  local stages = 0
+  for _, event in ipairs(state.events) do if event == "stage_replace" then stages = stages + 1 end end
+  local commits = state.commits
+  t.eq(cli.main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 0)
+  t.eq(state.commits, commits)
+  t.eq(state.globals[1].health_url, "https://custom.invalid/")
+  t.truthy(state.nodes.custom)
+  local later_stages = 0
+  for _, event in ipairs(state.events) do if event == "stage_replace" then later_stages = later_stages + 1 end end
+  t.eq(later_stages, stages)
   local count = 0
   for _ in pairs(state.nodes) do count = count + 1 end
-  t.eq(count, 11)
+  t.eq(count, 12)
   t.eq(state.globals[1].active_node, first)
+end)
+
+t.test("legacy migration never replaces an established XC configuration without a marker", function()
+  local state = fixture()
+  state.globals[1] = { enabled = "1", active_node = "custom", health_url = "https://custom.invalid/" }
+  state.nodes.custom = { id = "custom", name = "customized", enabled = true }
+  t.eq(load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 0)
+  t.eq(state.commits, 0)
+  t.eq(state.reverts, 0)
+  t.eq(state.globals[1].active_node, "custom")
+  t.truthy(state.nodes.custom)
+  t.eq(table.concat(state.events, "|"):find("stage_replace", 1, true), nil)
+end)
+
+t.test("migration removes its bounded candidate on every terminal path", function()
+  for _, case in ipairs({
+    { name = "success" },
+    { name = "render", render_fail = true },
+    { name = "xray", xray_fail = true },
+    { name = "commit", commit_fail = true },
+    { name = "marker", marker_write_fail = true }
+  }) do
+    local state = fixture(case)
+    load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps)
+    t.eq(state.files[MIGRATION_CANDIDATE], nil, case.name)
+    local joined = table.concat(state.events, "|")
+    t.contains(joined, "remove:" .. MIGRATION_CANDIDATE, case.name)
+    t.truthy(joined:find("remove:" .. MIGRATION_CANDIDATE, 1, true) < joined:find("unlock:migration", 1, true), case.name)
+    if case.render_fail or case.xray_fail or case.commit_fail then t.truthy(state.reverts >= 1, case.name) end
+  end
+end)
+
+t.test("migration adapter exceptions still clean stale candidate before unlock", function()
+  for _, case in ipairs({
+    { name = "read", read_throw = true },
+    { name = "global", global_throw = true },
+    { name = "clock", now_throw = true }
+  }) do
+    case.files = { [MIGRATION_CANDIDATE] = "stale-candidate" }
+    local state = fixture(case)
+    local called, code = pcall(load_cli().main, { "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps)
+    t.eq(called, true, case.name)
+    t.eq(code, 1, case.name)
+    t.eq(state.files[MIGRATION_CANDIDATE], nil, case.name)
+    local joined = table.concat(state.events, "|")
+    t.truthy(joined:find("remove:" .. MIGRATION_CANDIDATE, 1, true) < joined:find("unlock:migration", 1, true), case.name)
+  end
 end)
 
 t.test("migration validation failure reverts without committing", function()
@@ -227,6 +361,9 @@ end)
 
 t.test("lifecycle files contain guarded recovery, takeover, and bounded backup contracts", function()
   local init = read_file("root/etc/init.d/xc")
+  t.contains(init, "mkdir -p /etc/xc/rollback /var/etc/xc")
+  t.contains(init, "chmod 0700 /etc/xc /etc/xc/rollback /var/etc/xc")
+  t.contains(init, "chmod 0600 /etc/config/xc")
   t.contains(init, "/usr/bin/xc recover-pending")
   t.truthy(init:find("recover%-pending") < init:find("render %-%-output"))
   t.contains(init, "procd_set_param command /usr/bin/xray run -c /var/etc/xc/config.json")
@@ -237,8 +374,10 @@ t.test("lifecycle files contain guarded recovery, takeover, and bounded backup c
   t.contains(hotplug, '"$ACTION" = "ifup"')
   t.contains(hotplug, '"$ACTION" = "ifupdate"')
   local defaults = read_file("root/etc/uci-defaults/luci-xc")
+  t.contains(defaults, "if [ ! -f /etc/xc/migration-complete ]; then")
   t.truthy(defaults:find("migrate%-legacy") < defaults:find("xc%-xray disable"))
-  t.truthy(defaults:find("render %-%-output") < defaults:find("xc%-xray disable"))
+  t.eq(defaults:find("/usr/bin/xc render", 1, true), nil)
+  t.eq(defaults:find("/usr/bin/xray run", 1, true), nil)
   t.contains(defaults, '[ -f "$candidate/nodes.json" ] || continue')
   t.contains(defaults, "backup_limit=256")
   t.contains(defaults, "backup_overflow=1")
@@ -262,10 +401,152 @@ t.test("lifecycle files contain guarded recovery, takeover, and bounded backup c
   for _, name in ipairs({ "nodes.json", "current", "config.json", "config.previous", "current.previous" }) do t.contains(makefile, name) end
   t.contains(makefile, "legacy-backup-$$(date +%s)")
   t.contains(makefile, "/etc/init.d/xc-xray")
-  t.contains(makefile, '[ -n "$${IPKG_INSTROOT}" ] && exit 0')
-  t.contains(makefile, '[ -f /etc/xc/nodes.json ] || exit 0')
+  t.contains(makefile, 'root="$${IPKG_INSTROOT:-}"')
+  t.contains(makefile, '"$$xc_dir/migration-complete"')
+  t.contains(makefile, "define Package/$(PKG_NAME)/postinst")
+  t.contains(makefile, 'chmod 0700 "$$root/etc/xc" "$$root/etc/xc/rollback" "$$root/var/etc/xc"')
+  t.contains(makefile, 'chmod 0600 "$$root/etc/config/xc"')
   t.contains(makefile, 'touch "$$backup/complete"')
   t.eq(makefile:find("$$$$backup", 1, true), nil)
   t.eq(makefile:find("cp %-r"), nil)
   t.eq(makefile:find("find $$backup", 1, true), nil)
+end)
+
+t.test("expanded preinst backs up only the offline root and skips completed migration", function()
+  local preinst = make_script("preinst")
+  t.eq(type(preinst), "string")
+  local root = "/tmp/luci-xc-package-root"
+  os.execute("rm -rf '" .. root .. "'")
+  assert(os.execute("mkdir -p '" .. root .. "/etc/xc' '" .. root .. "/etc/config' '" .. root .. "/etc/init.d' '" .. root .. "/usr/bin'") == 0)
+  write_file(root .. "/etc/xc/nodes.json", "legacy-secret")
+  write_file(root .. "/etc/xc/current", "1\n")
+  write_file(root .. "/etc/config/xc", "config package 'xc'\n")
+  write_file(root .. "/etc/config-xc", "sentinel")
+  assert(os.execute("mkdir -p tests/tmp && chmod 0644 '" .. root .. "/etc/xc/nodes.json' '" .. root .. "/etc/config/xc'") == 0)
+  write_file("tests/tmp/preinst-expanded.sh", preinst)
+  assert(os.execute("IPKG_INSTROOT='" .. root .. "' sh tests/tmp/preinst-expanded.sh") == 0)
+  local backup = command_output("find '" .. root .. "/etc/xc' -maxdepth 1 -type d -name 'legacy-backup-*' | head -n 1")
+  t.truthy(#backup > 0)
+  t.eq(read_file(backup .. "/nodes.json"), "legacy-secret")
+  t.eq(command_output("stat -c %a '" .. root .. "/etc/config/xc'"), "600")
+  local before = command_output("find '" .. root .. "/etc/xc' -maxdepth 1 -type d -name 'legacy-backup-*' | wc -l")
+  write_file(root .. "/etc/xc/migration-complete", "xc-migration-v1\nsource\n1\n00000000\n")
+  write_file(root .. "/etc/xc/nodes.json", "stale-secret")
+  assert(os.execute("IPKG_INSTROOT='" .. root .. "' sh tests/tmp/preinst-expanded.sh") == 0)
+  local after = command_output("find '" .. root .. "/etc/xc' -maxdepth 1 -type d -name 'legacy-backup-*' | wc -l")
+  t.eq(after, before)
+end)
+
+t.test("expanded postinst provisions rollback and config modes in an offline root", function()
+  local postinst = make_script("postinst")
+  t.eq(type(postinst), "string")
+  local root = "/tmp/luci-xc-postinst-root"
+  os.execute("rm -rf '" .. root .. "'")
+  assert(os.execute("mkdir -p '" .. root .. "/etc/config'") == 0)
+  write_file(root .. "/etc/config/xc", "config package 'xc'\n")
+  assert(os.execute("chmod 0644 '" .. root .. "/etc/config/xc'") == 0)
+  write_file("tests/tmp/postinst-expanded.sh", postinst)
+  assert(os.execute("IPKG_INSTROOT='" .. root .. "' sh tests/tmp/postinst-expanded.sh") == 0)
+  t.eq(command_output("stat -c %a '" .. root .. "/etc/xc/rollback'"), "700")
+  t.eq(command_output("stat -c %a '" .. root .. "/etc/config/xc'"), "600")
+end)
+
+local SERVICE_SCRIPT = [[#!/bin/sh
+name="${0##*/}"
+state="$STATE_DIR/$name"
+read -r enabled running <"$state"
+action="$1"
+if [ "$FAIL_SERVICE" = "$name" ] && [ "$FAIL_ACTION" = "$action" ]; then exit 1; fi
+if [ "$HELP_RUNNING_SERVICE" = "$name" ] && [ "$action" = "running" ]; then
+	echo "Syntax: $name [command]"
+	exit "${HELP_RUNNING_STATUS:-0}"
+fi
+case "$action" in
+	enabled) [ "$enabled" = "1" ] ;;
+	running) [ "$running" = "1" ] ;;
+	enable) enabled=1 ;;
+	disable) enabled=0 ;;
+	start) [ "$NOOP_START_SERVICE" = "$name" ] || running=1 ;;
+	stop) running=0 ;;
+	*) exit 2 ;;
+esac
+case "$action" in enabled|running) exit $? ;; esac
+printf '%s %s\n' "$enabled" "$running" >"$state"
+]]
+
+local function takeover_fixture(old_enabled, old_running)
+  local root = "/tmp/luci-xc-takeover-root"
+  os.execute("rm -rf '" .. root .. "'")
+  assert(os.execute("mkdir -p '" .. root .. "/etc/xc/legacy-backup-1' '" .. root .. "/etc/init.d' '" .. root .. "/usr/bin' '" .. root .. "/var/etc/xc' '" .. root .. "/tmp' '" .. root .. "/state' '" .. root .. "/proc' '" .. root .. "/bin'") == 0)
+  write_file(root .. "/etc/xc/legacy-backup-1/complete", "")
+  write_file(root .. "/etc/xc/legacy-backup-1/nodes.json", "legacy")
+  write_file(root .. "/etc/init.d/xc", SERVICE_SCRIPT)
+  write_file(root .. "/etc/init.d/xc-xray", SERVICE_SCRIPT)
+  write_file(root .. "/state/xc", "0 0\n")
+  write_file(root .. "/state/xc-xray", tostring(old_enabled) .. " " .. tostring(old_running) .. "\n")
+  write_file(root .. "/usr/bin/xc", "#!/bin/sh\nexit 0\n")
+  write_file(root .. "/usr/bin/xray", "#!/bin/sh\nexit 0\n")
+  write_file(root .. "/bin/sleep", "#!/bin/sh\nexit 0\n")
+  assert(os.execute("chmod 0755 '" .. root .. "/etc/init.d/xc' '" .. root .. "/etc/init.d/xc-xray' '" .. root .. "/usr/bin/xc' '" .. root .. "/usr/bin/xray' '" .. root .. "/bin/sleep'") == 0)
+  local source = read_file("root/etc/uci-defaults/luci-xc")
+  local mappings = {
+    { "/var/etc/xc", root .. "/var/etc/xc" }, { "/etc/init.d/xc-xray", root .. "/etc/init.d/xc-xray" },
+    { "/etc/init.d/xc", root .. "/etc/init.d/xc" }, { "/etc/xc", root .. "/etc/xc" },
+    { "/usr/bin/xray", root .. "/usr/bin/xray" }, { "/usr/bin/xc", root .. "/usr/bin/xc" },
+    { "/tmp/luci-xc", root .. "/tmp/luci-xc" }, { "/proc", root .. "/proc" }
+  }
+  for index, mapping in ipairs(mappings) do source = replace_plain(source, mapping[1], "__XC_PATH_" .. index .. "__") end
+  for index, mapping in ipairs(mappings) do source = replace_plain(source, "__XC_PATH_" .. index .. "__", mapping[2]) end
+  write_file("tests/tmp/uci-default-expanded.sh", source)
+  return root
+end
+
+t.test("uci-default takeover restores exact old service state on every step failure", function()
+  for _, failure in ipairs({
+    { service = "xc-xray", action = "disable" }, { service = "xc-xray", action = "stop" },
+    { service = "xc", action = "enable" }, { service = "xc", action = "start" }
+  }) do
+    local root = takeover_fixture(1, 1)
+    local command = "STATE_DIR='" .. root .. "/state' FAIL_SERVICE='" .. failure.service .. "' FAIL_ACTION='" .. failure.action .. "' sh tests/tmp/uci-default-expanded.sh"
+    t.truthy(os.execute(command) ~= 0, failure.service .. ":" .. failure.action)
+    t.eq(read_file(root .. "/state/xc-xray"), "1 1\n", failure.service .. ":" .. failure.action)
+    t.eq(read_file(root .. "/state/xc"), "0 0\n", failure.service .. ":" .. failure.action)
+  end
+end)
+
+t.test("uci-default rejects a swallowed procd start failure and restores legacy", function()
+  local root = takeover_fixture(1, 1)
+  local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
+    "/state' NOOP_START_SERVICE='xc' sh tests/tmp/uci-default-expanded.sh"
+  t.truthy(os.execute(command) ~= 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "1 1\n")
+  t.eq(read_file(root .. "/state/xc"), "0 0\n")
+end)
+
+t.test("uci-default does not mistake unsupported running help for a stopped legacy process", function()
+  local root = takeover_fixture(1, 0)
+  local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
+    "/state' HELP_RUNNING_SERVICE='xc-xray' FAIL_SERVICE='xc' FAIL_ACTION='start' sh tests/tmp/uci-default-expanded.sh"
+  t.truthy(os.execute(command) ~= 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "1 0\n")
+  t.eq(read_file(root .. "/state/xc"), "0 0\n")
+end)
+
+t.test("uci-default detects a running non-procd legacy process by its exact config argument", function()
+  local root = takeover_fixture(1, 1)
+  assert(os.execute("mkdir -p '" .. root .. "/proc/123'") == 0)
+  write_file(root .. "/proc/123/cmdline", "/usr/bin/xray\0run\0-c\0" .. root .. "/etc/xc/config.json\0")
+  local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
+    "/state' HELP_RUNNING_SERVICE='xc-xray' HELP_RUNNING_STATUS='1' FAIL_SERVICE='xc' FAIL_ACTION='start' sh tests/tmp/uci-default-expanded.sh"
+  t.truthy(os.execute(command) ~= 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "1 1\n")
+  t.eq(read_file(root .. "/state/xc"), "0 0\n")
+end)
+
+t.test("uci-default completed migration marker skips migration but resumes takeover", function()
+  local root = takeover_fixture(1, 1)
+  write_file(root .. "/etc/xc/migration-complete", "xc-migration-v1\nsource\n1\n00000000\n")
+  assert(os.execute("STATE_DIR='" .. root .. "/state' sh tests/tmp/uci-default-expanded.sh") == 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "0 0\n")
+  t.eq(read_file(root .. "/state/xc"), "1 1\n")
 end)

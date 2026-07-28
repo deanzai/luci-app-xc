@@ -30,15 +30,47 @@ local function public_section(section)
   for key, value in pairs(section) do
     if type(key) == "string" and key:sub(1, 1) ~= "." then output[key] = value end
   end
+  if output.active_node == "" then output.active_node = nil end
   if output.enabled ~= nil then output.enabled = enabled(output.enabled) end
   return output
 end
 
-local function wait_status(nixio, pid)
-  while true do
-    local waited, state, status = nixio.waitpid(pid)
-    if waited then return state == "exited" and status == 0 end
+local function poll_child(nixio, pid)
+  local called, waited, state, status = pcall(nixio.waitpid, pid, "nohang")
+  if not called or waited == nil then return nil end
+  if waited == false or waited == 0 then return false end
+  if waited ~= pid and waited ~= true then return nil end
+  return true, state == "exited" and status == 0
+end
+
+local function nixio_mode(mode)
+  if mode == "0600" or mode == 600 then return 600 end
+  if mode == "0700" or mode == 700 then return 700 end
+  return nil
+end
+
+local function terminate_and_reap(nixio, pid, now, sleep)
+  pcall(nixio.kill, pid, 15)
+  local grace = now() + 1
+  while now() < grace do
+    local finished = poll_child(nixio, pid)
+    if finished == true then return false end
+    if finished == nil then break end
+    sleep(0.05)
   end
+  pcall(nixio.kill, pid, 9)
+  pcall(nixio.waitpid, pid)
+  return false
+end
+
+local function wait_status(nixio, pid, deadline, now, sleep)
+  while now() < deadline do
+    local finished, success = poll_child(nixio, pid)
+    if finished == true then return success end
+    if finished == nil then return terminate_and_reap(nixio, pid, now, sleep) end
+    sleep(0.05)
+  end
+  return terminate_and_reap(nixio, pid, now, sleep)
 end
 
 local function valid_argv(argv)
@@ -49,7 +81,7 @@ local function valid_argv(argv)
   return argv[1]:sub(1, 1) == "/"
 end
 
-local function spawn(nixio, argv)
+local function spawn(nixio, argv, deadline, now, sleep)
   if not valid_argv(argv) then return false end
   local pid = nixio.fork()
   if pid == 0 then
@@ -59,7 +91,7 @@ local function spawn(nixio, argv)
     os.exit(127)
   end
   if type(pid) ~= "number" or pid < 1 then return false end
-  return wait_status(nixio, pid)
+  return wait_status(nixio, pid, deadline, now, sleep)
 end
 
 local function errno_missing(nixio, code)
@@ -75,7 +107,14 @@ function M.new(injected)
   local uci_module = injected.uci_module or require "uci"
   local jsonc = injected.jsonc or require "luci.jsonc"
   local cursor = injected.cursor or uci_module.cursor()
-  local spawn_process = injected.spawn or function(argv) return spawn(nixio, argv) end
+  local now_process = injected.now or function() return M.now(nixio) end
+  local sleep_process = injected.sleep or function(seconds)
+    local whole = math.floor(seconds)
+    nixio.nanosleep(whole, math.floor((seconds - whole) * 1000000000))
+  end
+  local spawn_process = injected.spawn or function(argv, deadline)
+    return spawn(nixio, argv, deadline, now_process, sleep_process)
+  end
 
   local function foreach(section_type, callback)
     cursor:foreach("xc", section_type, callback)
@@ -134,8 +173,10 @@ function M.new(injected)
       return true
     end,
     commit = function()
-      local result = cursor:commit("xc")
-      return result == true or result == 0
+      if nfs.chmod("/etc/config/xc", 600) ~= true then return false end
+      local called, result = pcall(cursor.commit, cursor, "xc")
+      local secured = nfs.chmod("/etc/config/xc", 600) == true
+      return called and (result == true or result == 0) and secured
     end,
     revert = function() cursor:revert("xc"); return true end,
     stage_replace = function(global, nodes)
@@ -152,10 +193,10 @@ function M.new(injected)
       for _, section in ipairs(sections) do
         if not mutation(cursor.delete, "xc", section) then return revert_failure() end
       end
-      if not mutation(cursor.section, "xc", "global", "global", {}) then return revert_failure() end
+      if not mutation(cursor.set, "xc", "global", "global") then return revert_failure() end
       if not set_values("global", global) then return revert_failure() end
       for _, normalized in ipairs(normalized_nodes) do
-        if not mutation(cursor.section, "xc", "node", normalized.id, {}) then return revert_failure() end
+        if not mutation(cursor.set, "xc", normalized.id, "node") then return revert_failure() end
         if not set_values(normalized.id, normalized) then return revert_failure() end
       end
       return true
@@ -169,7 +210,7 @@ function M.new(injected)
         normalized_nodes[index] = normalized
       end
       for _, normalized in ipairs(normalized_nodes) do
-        if not mutation(cursor.section, "xc", "node", normalized.id, {}) then return revert_failure() end
+        if not mutation(cursor.set, "xc", normalized.id, "node") then return revert_failure() end
         if not set_values(normalized.id, normalized) then return revert_failure() end
       end
       return true
@@ -179,13 +220,29 @@ function M.new(injected)
   local O_WRONLY, O_CREAT, O_EXCL = "wronly", "creat", "excl"
   local function open_exclusive(path)
     local flags = nixio.open_flags(O_WRONLY, O_CREAT, O_EXCL) + O_NOFOLLOW
-    return nixio.open(path, flags, 384)
+    return nixio.open(path, flags, 600)
+  end
+
+  local function ensure_directory(path)
+    local information = nfs.stat(path)
+    if not information then
+      if type(nfs.mkdirr) ~= "function" or nfs.mkdirr(path) ~= true then return false end
+      information = nfs.stat(path)
+    end
+    return type(information) == "table" and information.type == "dir" and nfs.chmod(path, 700) == true
   end
 
   local fs = {
+    ensure_layout = function()
+      for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/var/etc/xc" }) do
+        if not ensure_directory(path) then return false end
+      end
+      local config = nfs.stat("/etc/config/xc")
+      return not config or nfs.chmod("/etc/config/xc", 600) == true
+    end,
     acquire_lock = function(path)
       if not safe_path(path) then return nil end
-      local handle = nixio.open(path, nixio.open_flags("rdwr", "creat") + O_NOFOLLOW, 384)
+      local handle = nixio.open(path, nixio.open_flags("rdwr", "creat") + O_NOFOLLOW, 600)
       if not handle then return nil end
       if not handle:lock("tlock") then handle:close(); return nil end
       return { fd = handle, path = path }
@@ -199,7 +256,7 @@ function M.new(injected)
     end,
     lock_state = function(path)
       if not safe_path(path) then return "unknown" end
-      local handle = nixio.open(path, nixio.open_flags("rdwr", "creat") + O_NOFOLLOW, 384)
+      local handle = nixio.open(path, nixio.open_flags("rdwr", "creat") + O_NOFOLLOW, 600)
       if not handle then return "unknown" end
       local locked = handle:lock("tlock")
       if locked then handle:lock("ulock") end
@@ -240,7 +297,10 @@ function M.new(injected)
       end
       return nil
     end,
-    chmod = function(path, mode) return safe_path(path) and nfs.chmod(path, tonumber(mode, 8)) == true end,
+    chmod = function(path, mode)
+      local value = nixio_mode(mode)
+      return safe_path(path) and value ~= nil and nfs.chmod(path, value) == true
+    end,
     fsync = function(handle) return type(handle) == "table" and handle.fd and handle.fd:sync() == true end,
     fsync_dir = function(path)
       if not safe_path(path) then return false end
@@ -337,16 +397,21 @@ function M.new(injected)
   }
 
   local exec = {
-    run = function(argv)
+    run = function(argv, deadline)
       if type(argv) ~= "table" or #argv ~= 5 or argv[1] ~= "/usr/bin/xray" or argv[2] ~= "run"
         or argv[3] ~= "-test" or argv[4] ~= "-c" or not safe_path(argv[5]) then return false end
-      return spawn_process(argv)
+      deadline = deadline or (now_process() + 30)
+      if type(deadline) ~= "number" or deadline <= now_process() or deadline > now_process() + 300 then return false end
+      return spawn_process(argv, deadline)
     end,
     restart = function()
-      return spawn_process({ "/etc/init.d/xc", "restart_prepared" })
+      return spawn_process({ "/etc/init.d/xc", "restart_prepared" }, now_process() + 30)
     end,
-    stop = function() return spawn_process({ "/etc/init.d/xc", "stop" }) end,
-    service_state = function() return spawn_process({ "/etc/init.d/xc", "running" }) and "running" or "stopped" end,
+    stop = function() return spawn_process({ "/etc/init.d/xc", "stop" }, now_process() + 30) end,
+    service_state = function(deadline)
+      deadline = deadline or (now_process() + 2)
+      return spawn_process({ "/etc/init.d/xc", "running" }, deadline) and "running" or "stopped"
+    end,
     listener_ready = function(kind, address, port, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) or M.now(nixio) >= deadline then return false end
       local family = address:find(":", 1, true) and "inet6" or "inet"
@@ -375,9 +440,10 @@ function M.new(injected)
       local remaining = math.floor(deadline - M.now(nixio))
       if remaining < 1 then return false end
       local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
-      local proxy = kind == "socks" and (address .. ":" .. tostring(port)) or ("http://" .. address .. ":" .. tostring(port))
+      local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
+      local proxy = kind == "socks" and (host .. ":" .. tostring(port)) or ("http://" .. host .. ":" .. tostring(port))
       return spawn_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
-        "--connect-timeout", tostring(math.min(remaining, 5)), proxy_flag, proxy, url })
+        "--connect-timeout", tostring(math.min(remaining, 5)), proxy_flag, proxy, url }, deadline)
     end
   }
 
@@ -394,13 +460,8 @@ function M.new(injected)
 
   return {
     uci = uci, fs = fs, exec = exec, json = json, network = network,
-    now = function() return M.now(nixio) end,
-    sleep = function(seconds)
-      if seconds > 0 and seconds <= 30 then
-        local whole = math.floor(seconds)
-        nixio.nanosleep(whole, math.floor((seconds - whole) * 1000000000))
-      end
-    end
+    now = now_process,
+    sleep = function(seconds) if seconds > 0 and seconds <= 30 then sleep_process(seconds) end end
   }
 end
 

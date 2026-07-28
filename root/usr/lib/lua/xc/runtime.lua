@@ -13,10 +13,13 @@ local ROLLBACK_NODE_PATH = "/etc/xc/rollback/active_node"
 local ROLLBACK_MANIFEST_PATH = "/etc/xc/rollback/current"
 local STATUS_PATH = "/var/run/xc-status"
 local TRANSACTION_PATH = "/etc/xc/rollback/transaction"
+local MIGRATION_CANDIDATE_PATH = "/var/etc/xc/migration-candidate.json"
+local MIGRATION_MARKER_PATH = "/etc/xc/migration-complete"
 local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local LOG_LOCK_PATH = "/var/lock/xc-log.lock"
 local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
+local VALIDATION_TIMEOUT = 30
 local sanitize_text
 
 local function checksum(value)
@@ -233,6 +236,7 @@ function Runtime:_load(section_id)
     if not schema.safe_section_id(selected) then return nil, nil, result(false, "invalid_node") end
   else
     selected = global.active_node
+    if selected == "" then selected = nil end
     if selected ~= nil then
       if not schema.safe_section_id(selected) then return nil, nil, result(false, "invalid_node") end
     else
@@ -276,15 +280,16 @@ function Runtime:_encode(section_id)
   return encoded, node.id, nil
 end
 
-function Runtime:render(section_id, output_path)
+function Runtime:_render_locked(section_id, output_path)
   if not valid_output_path(output_path) then self.last_error = "invalid_output"; return result(false, "invalid_output") end
-  local function render_operation()
-    local encoded, node_id, encode_error = self:_encode(section_id)
-    if encode_error then return encode_error end
-    self:_atomic_write(output_path, encoded)
-    return result(true, "rendered", { node = node_id, path = output_path })
-  end
-  return self:_with_lock("render", render_operation)
+  local encoded, node_id, encode_error = self:_encode(section_id)
+  if encode_error then return encode_error end
+  self:_atomic_write(output_path, encoded)
+  return result(true, "rendered", { node = node_id, path = output_path })
+end
+
+function Runtime:render(section_id, output_path)
+  return self:_with_lock("render", function() return self:_render_locked(section_id, output_path) end)
 end
 
 function Runtime:_with_lock(operation, fn)
@@ -316,6 +321,23 @@ function Runtime:_with_lock(operation, fn)
   self.operation = nil
   if not status_finished or not release_call or not action_ok(release_value) then self.last_error = "lock_release_failed"; return result(false, "internal_error") end
   return value
+end
+
+function Runtime:exclusive(operation, callback)
+  if operation ~= "migration" or type(callback) ~= "function" then return result(false, "internal_error") end
+  return self:_with_lock("migration", function()
+    local capability = {
+      render = function(section_id, output_path)
+        if output_path ~= MIGRATION_CANDIDATE_PATH then return result(false, "invalid_output") end
+        return self:_render_locked(section_id, output_path)
+      end,
+      write = function(path, content)
+        if path ~= MIGRATION_MARKER_PATH or type(content) ~= "string" or #content > 1024 then return false end
+        return pcall(self._atomic_write, self, path, content)
+      end
+    }
+    return callback(capability)
+  end)
 end
 
 function Runtime:_apply_active(active)
@@ -367,7 +389,7 @@ function Runtime:_restore_transaction(transaction, old)
     if old.config ~= nil then
       local config_path = generation_paths(transaction.generation)
       local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], config_path }
-      if not action_ok(self.exec.run(argv)) then error("old runtime validation failed", 0) end
+      if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then error("old runtime validation failed", 0) end
       self:_atomic_write(RUNTIME_PATH, old.config)
     elseif not self:_checked_remove(RUNTIME_PATH) then error("runtime removal failed", 0) end
     if not self:_apply_active(old.active) then error("active recovery failed", 0) end
@@ -435,7 +457,7 @@ function Runtime:_validate_live(transaction)
   local marker_ok, marker = pcall(active_marker, global.active_node)
   if not marker_ok or #marker ~= transaction.new_active_size or checksum(marker) ~= transaction.new_active_hash then return false end
   local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], RUNTIME_PATH }
-  if not action_ok(self.exec.run(argv)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
+  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
   return true
 end
 
@@ -551,7 +573,7 @@ function Runtime:_switch_locked(section_id)
   if encode_error then return encode_error end
   self:_atomic_write(CANDIDATE_PATH, encoded)
   local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
-  if not action_ok(self.exec.run(argv)) then
+  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -607,7 +629,7 @@ function Runtime:_rollback_locked()
   if not marker_ok then return result(false, "no_rollback_state") end
   self:_atomic_write(CANDIDATE_PATH, config)
   local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
-  if not action_ok(self.exec.run(argv)) then
+  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -705,7 +727,7 @@ function Runtime:test_current()
   local ok, value = xpcall(function()
     if not self.fs.exists(RUNTIME_PATH) then return result(false, "missing_runtime") end
     local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], XRAY_TEST[5] }
-    if action_ok(self.exec.run(argv)) then return result(true, "test_passed") end
+    if action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then return result(true, "test_passed") end
     return result(false, "test_failed")
   end, function() return result(false, "internal_error") end)
   if not ok or not value.ok then self.last_error = value.code or "internal_error" end
@@ -820,6 +842,7 @@ M.paths = {
   rollback = ROLLBACK_PATH, rollback_node = ROLLBACK_NODE_PATH,
   rollback_manifest = ROLLBACK_MANIFEST_PATH,
   transaction = TRANSACTION_PATH, status = STATUS_PATH,
+  migration_candidate = MIGRATION_CANDIDATE_PATH, migration_marker = MIGRATION_MARKER_PATH,
   log = LOG_PATH, log_lock = LOG_LOCK_PATH
 }
 M.unset_active_marker = UNSET_ACTIVE_MARKER
