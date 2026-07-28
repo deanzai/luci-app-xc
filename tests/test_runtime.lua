@@ -133,7 +133,12 @@ local function fixture(options)
       files[directory .. "/generation-" .. generation .. ".active"] = nil
       return true
     end,
-    read = function(path, maximum) event("fs:read:" .. path); if maximum and files[path] and #files[path] > maximum then return nil end; return files[path] end,
+    read = function(path, maximum)
+      event("fs:read:" .. path)
+      if files[path] == nil then return nil, "missing" end
+      if maximum and #files[path] > maximum then return nil, "too_large" end
+      return files[path]
+    end,
     exists = function(path) event("fs:exists:" .. path); return files[path] ~= nil end,
     write_temp = function(path, content)
       local temporary = path .. ".tmp.123"

@@ -12,7 +12,7 @@ local ROLLBACK_PATH = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE_PATH = "/etc/xc/rollback/active_node"
 local ROLLBACK_MANIFEST_PATH = "/etc/xc/rollback/current"
 local STATUS_PATH = "/var/run/xc-status"
-local TRANSACTION_PATH = "/var/run/xc-transaction"
+local TRANSACTION_PATH = "/etc/xc/rollback/transaction"
 local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
@@ -139,7 +139,7 @@ end
 
 function Runtime:_read_optional(path, maximum)
   local value, read_error = self.fs.read(path, maximum)
-  if value == nil and read_error ~= nil and read_error ~= "missing" then error("bounded read failed", 0) end
+  if value == nil and read_error ~= "missing" then error("bounded read failed", 0) end
   return value
 end
 
@@ -240,7 +240,9 @@ function Runtime:_readiness(global)
   for attempt = 1, 10 do
     if self.now() >= deadline then return "health_failed" end
     local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port, deadline))
+    if self.now() >= deadline then return "health_failed" end
     local http_ready = action_ok(self.exec.listener_ready("http", address, http_port, deadline))
+    if self.now() >= deadline then return "health_failed" end
     if socks_ready and http_ready then listeners_ready = true; break end
     if attempt < 10 then
       local remaining = deadline - self.now()
@@ -253,6 +255,7 @@ function Runtime:_readiness(global)
   local socks_healthy = action_ok(self.exec.health_check("socks", address, socks_port, health_url, deadline))
   if self.now() >= deadline then return "health_failed" end
   local http_healthy = action_ok(self.exec.health_check("http", address, http_port, health_url, deadline))
+  if self.now() >= deadline then return "health_failed" end
   if not socks_healthy or not http_healthy then return "health_failed" end
 end
 
@@ -611,6 +614,7 @@ M.paths = {
   lock = LOCK_PATH, runtime = RUNTIME_PATH, candidate = CANDIDATE_PATH,
   rollback = ROLLBACK_PATH, rollback_node = ROLLBACK_NODE_PATH,
   rollback_manifest = ROLLBACK_MANIFEST_PATH,
+  transaction = TRANSACTION_PATH, status = STATUS_PATH,
   log = LOG_PATH
 }
 M.unset_active_marker = UNSET_ACTIVE_MARKER
