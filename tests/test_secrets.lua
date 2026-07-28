@@ -343,3 +343,23 @@ t.test("probe and import templates translate every stable visible state and warn
   t.contains(import, '"skipped duplicate node"')
   t.eq(import:find("String(items[warningIndex])", 1, true), nil, "raw backend warning is rendered")
 end)
+
+t.test("status template translates visible states and action fallbacks", function()
+  local status = read_file("luasrc/view/xc/status.htm")
+  for _, message in ipairs({
+    "Running", "Stopped", "Error", "Status request failed", "Invalid server response",
+    "Working…", "Health testing is not implemented yet", "Operation completed", "Operation failed"
+  }) do
+    t.contains(status, 'translate("' .. message .. '")', "status does not translate " .. message)
+  end
+  for _, literal in ipairs({
+    'text("xc-service-state", "error")', 'message: "Invalid server response"',
+    'text("xc-action-result", "Working…")', 'data.message || "Health testing is not implemented yet"',
+    'text("xc-action-result", "Operation completed")', 'data.message || data.code || "Operation failed"'
+  }) do
+    t.eq(status:find(literal, 1, true), nil, "status exposes untranslated literal " .. literal)
+  end
+  t.contains(status, 'state === "running"')
+  t.contains(status, 'state === "stopped"')
+  t.contains(status, 'data.code === "not_implemented"')
+end)

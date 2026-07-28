@@ -31,6 +31,15 @@ local util = require "luci.util"
   var rollbackUrl = "<%=dispatcher.build_url("admin", "services", "xc", "rollback")%>";
   var csrfToken = "<%=token%>";
   var unavailableText = <%=util.serialize_json(translate("Unavailable"))%>;
+  var runningText = <%=util.serialize_json(translate("Running"))%>;
+  var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
+  var errorText = <%=util.serialize_json(translate("Error"))%>;
+  var statusFailedText = <%=util.serialize_json(translate("Status request failed"))%>;
+  var invalidResponseText = <%=util.serialize_json(translate("Invalid server response"))%>;
+  var workingText = <%=util.serialize_json(translate("Working…"))%>;
+  var healthUnavailableText = <%=util.serialize_json(translate("Health testing is not implemented yet"))%>;
+  var operationCompletedText = <%=util.serialize_json(translate("Operation completed"))%>;
+  var operationFailedText = <%=util.serialize_json(translate("Operation failed"))%>;
   var pollTimer = null;
   var statusRequest = null;
   var activeSection = null;
@@ -53,27 +62,27 @@ local util = require "luci.util"
 
   function renderStatus(response) {
     if (!response || response.ok !== true || !response.data) {
-      text("xc-service-state", "error");
-      text("xc-action-result", response && response.message ? response.message : "Status request failed");
+      text("xc-service-state", errorText);
+      text("xc-action-result", response && response.code === "invalid_response" ? invalidResponseText : statusFailedText);
       activeSection = null;
       setButtons(actionBusy);
       return;
     }
     var data = response.data;
     var state = data.service_state;
-    text("xc-service-state", state === "running" || state === "stopped" || state === "error" ? state : "error");
+    text("xc-service-state", state === "running" ? runningText : (state === "stopped" ? stoppedText : errorText));
     activeSection = data.active_section || null;
     text("xc-active-node", data.active_name || activeSection);
     text("xc-socks-listener", endpoint(data.listen_ip, data.socks_port));
     text("xc-http-listener", endpoint(data.listen_ip, data.http_port));
     text("xc-exit-ip", data.exit_ip || unavailableText);
-    if (data.last_error) text("xc-action-result", data.last_error);
+    if (data.last_error) text("xc-action-result", errorText);
     setButtons(actionBusy || data.lock_state === "held");
   }
 
   function parseResponse(xhr) {
     try { return JSON.parse(xhr.responseText || "{}"); }
-    catch (error) { return { ok: false, code: "invalid_response", message: "Invalid server response" }; }
+    catch (error) { return { ok: false, code: "invalid_response" }; }
   }
 
   function schedulePoll() {
@@ -111,18 +120,18 @@ local util = require "luci.util"
     if (actionBusy) return;
     actionBusy = true;
     setButtons(true);
-    text("xc-action-result", "Working…");
+    text("xc-action-result", workingText);
     var xhr = new XMLHttpRequest();
     var separator = url.indexOf("?") === -1 ? "?" : "&";
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var data = parseResponse(xhr);
       if (data.code === "not_implemented") {
-        text("xc-action-result", data.message || "Health testing is not implemented yet");
+        text("xc-action-result", healthUnavailableText);
       } else if (data.ok === true) {
-        text("xc-action-result", "Operation completed");
+        text("xc-action-result", operationCompletedText);
       } else {
-        text("xc-action-result", data.message || data.code || "Operation failed");
+        text("xc-action-result", operationFailedText);
       }
       if (callback) callback(data);
       awaitingRefresh = true;

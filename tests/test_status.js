@@ -9,7 +9,7 @@ function loadStatus() {
   let script = source.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
     .replace(/<%=dispatcher\.build_url\("admin", "services", "xc", "([^"]+)"\)%>/g, "/xc/$1")
     .replace(/<%=token%>/g, "csrf-token")
-    .replace(/<%=util\.serialize_json\(translate\("Unavailable"\)\)%>/g, '"Unavailable"');
+    .replace(/<%=util\.serialize_json\(translate\("([^"]+)"\)\)%>/g, (_, text) => JSON.stringify(text));
   const elements = {};
   ["xc-service-state", "xc-active-node", "xc-socks-listener", "xc-http-listener", "xc-exit-ip",
     "xc-restart", "xc-health", "xc-rollback", "xc-action-result"].forEach(id => {
@@ -42,6 +42,7 @@ function status(data) { return { ok: true, data: Object.assign({ service_state: 
 {
   const h = loadStatus();
   h.requests[0].respond(status({ listen_ip: "192.0.2.1", socks_port: 7890, http_port: 10809, exit_ip: "203.0.113.1" }));
+  assert.strictEqual(h.elements["xc-service-state"].textContent, "Running");
   assert.strictEqual(h.elements["xc-socks-listener"].textContent, "192.0.2.1:7890");
   assert.strictEqual(h.elements["xc-exit-ip"].textContent, "203.0.113.1");
   h.elements["xc-health"].onclick();
@@ -50,6 +51,43 @@ function status(data) { return { ok: true, data: Object.assign({ service_state: 
   assert.strictEqual(health.url, "/xc/test-current?token=csrf-token");
   assert.strictEqual(health.headers["Content-Type"], "application/json");
   assert.strictEqual(health.body, "{}");
+}
+
+{
+  const h = loadStatus(); h.requests[0].respond(status({ service_state: "stopped" }));
+  assert.strictEqual(h.elements["xc-service-state"].textContent, "Stopped");
+}
+
+{
+  const h = loadStatus(); h.requests[0].respond({ ok: false });
+  assert.strictEqual(h.elements["xc-service-state"].textContent, "Error");
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Status request failed");
+}
+
+{
+  const h = loadStatus(), request = h.requests[0];
+  request.responseText = "{"; request.readyState = 4; request.onreadystatechange();
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Invalid server response");
+}
+
+{
+  const h = loadStatus(); h.requests[0].respond(status({}));
+  h.elements["xc-health"].onclick();
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Working…");
+  h.requests[1].respond({ ok: true, data: {} });
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Operation completed");
+}
+
+{
+  const h = loadStatus(); h.requests[0].respond(status({}));
+  h.elements["xc-health"].onclick(); h.requests[1].respond({ ok: false, code: "not_implemented" });
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Health testing is not implemented yet");
+}
+
+{
+  const h = loadStatus(); h.requests[0].respond(status({}));
+  h.elements["xc-restart"].onclick(); h.requests[1].respond({ ok: false, code: "test_failed" });
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Operation failed");
 }
 
 for (const [address, port, expected] of [["fd00::1", 7890, "[fd00::1]:7890"], ["", 7890, "-"], ["192.0.2.1", null, "-"]]) {
