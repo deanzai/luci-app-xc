@@ -64,16 +64,54 @@ local compatible_fields = {
   raw = { raw_outbound = true }
 }
 
+local function write_transition(self, section, value, cleanup)
+  local snapshots, seen = {}, {}
+  local function snapshot(field)
+    if seen[field] then return end
+    seen[field] = true
+    local old = self.map:get(section, field)
+    snapshots[#snapshots + 1] = { field = field, present = old ~= nil, value = old }
+  end
+  snapshot(self.option)
+  for _, field in ipairs(cleanup) do snapshot(field) end
+
+  local function fail()
+    for _, old in ipairs(snapshots) do
+      local current = self.map:get(section, old.field)
+      if old.present and current ~= old.value then
+        self.map:set(section, old.field, old.value)
+      elseif not old.present and current ~= nil then
+        self.map:del(section, old.field)
+      end
+    end
+    self:add_error(section, "write", translate("The node update could not be staged safely."))
+    return false
+  end
+
+  local changed = false
+  if self.map:get(section, self.option) ~= value then
+    if not ListValue.write(self, section, value) then return fail() end
+    changed = true
+  end
+  for _, field in ipairs(cleanup) do
+    if self.map:get(section, field) ~= nil then
+      if not self.map:del(section, field) then return fail() end
+      changed = true
+    end
+  end
+  return changed
+end
+
 function protocol.write(self, section, value)
-  local changed = ListValue.write(self, section, value) and true or false
+  local cleanup = {}
   local keep = compatible_fields[value] or {}
   for _, field in ipairs(protocol_fields) do
     local submitted = self.map:formvalue("cbid.xc." .. section .. "." .. field)
     if (not keep[field] or submitted == nil) and self.map:get(section, field) ~= nil then
-      changed = self.map:del(section, field) or changed
+      cleanup[#cleanup + 1] = field
     end
   end
-  return changed
+  return write_transition(self, section, value, cleanup)
 end
 
 function protocol.validate(self, value, section)
@@ -180,11 +218,11 @@ function transport.validate(self, value, section)
   return value
 end
 function transport.write(self, section, value)
-  local changed = ListValue.write(self, section, value) and true or false
-  if value ~= "ws" then changed = self.map:del(section, "ws_host") or changed; changed = self.map:del(section, "ws_path") or changed end
-  if value ~= "grpc" then changed = self.map:del(section, "grpc_service_name") or changed end
-  if value ~= "tcp" then changed = self.map:del(section, "flow") or changed end
-  return changed
+  local cleanup = {}
+  if value ~= "ws" then cleanup[#cleanup + 1] = "ws_host"; cleanup[#cleanup + 1] = "ws_path" end
+  if value ~= "grpc" then cleanup[#cleanup + 1] = "grpc_service_name" end
+  if value ~= "tcp" then cleanup[#cleanup + 1] = "flow" end
+  return write_transition(self, section, value, cleanup)
 end
 
 local security = node:option(ListValue, "security", translate("Security"))
@@ -202,10 +240,10 @@ function security.validate(self, value, section)
   return value
 end
 function security.write(self, section, value)
-  local changed = ListValue.write(self, section, value) and true or false
-  if value == "none" then changed = self.map:del(section, "sni") or changed; changed = self.map:del(section, "fingerprint") or changed end
-  if value ~= "reality" then changed = self.map:del(section, "public_key") or changed; changed = self.map:del(section, "short_id") or changed end
-  return changed
+  local cleanup = {}
+  if value == "none" then cleanup[#cleanup + 1] = "sni"; cleanup[#cleanup + 1] = "fingerprint" end
+  if value ~= "reality" then cleanup[#cleanup + 1] = "public_key"; cleanup[#cleanup + 1] = "short_id" end
+  return write_transition(self, section, value, cleanup)
 end
 
 local flow = node:option(ListValue, "flow", translate("Flow"))

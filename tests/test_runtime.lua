@@ -705,7 +705,8 @@ end)
 t.test("exit IP status accepts strict IPv4 and IPv6 forms and rejects malformed addresses", function()
   local valid = {
     "0.0.0.0", "255.255.255.255", "::", "::1", "2001:db8::1",
-    "2001:db8:0:1:2:3:4:5", "::ffff:192.0.2.1", "2001:db8::192.0.2.1"
+    "2001:db8:0:1:2:3:4:5", "1:2:3:4:5:6:7:8", "1:2:3:4:5:6:7::",
+    "::1:2:3:4:5:6:7", "::ffff:192.0.2.1", "2001:db8::192.0.2.1", "1:2:3:4:5::192.0.2.1"
   }
   for _, address in ipairs(valid) do
     local state = fixture({ exit_ip = address })
@@ -714,6 +715,7 @@ t.test("exit IP status accepts strict IPv4 and IPv6 forms and rejects malformed 
   local invalid = {
     ":::1", "1:::2", ":1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:",
     "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3", "2001:db8::g",
+    "1:2:3:4:5:6:7:8::", "::1:2:3:4:5:6:7:8", "1:2:3:4:5:6::192.0.2.1",
     "::ffff:192.0.2.999", "::ffff:192.0.2", "192.0.2.1::", "2001:db8:192.0.2.1::1",
     "01.2.3.4", "1.2.3.4.5"
   }

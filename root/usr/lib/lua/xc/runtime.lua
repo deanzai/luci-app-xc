@@ -585,7 +585,8 @@ local function valid_observed_ip(value)
       units = units + 1
     end
   end
-  return first_double and units < 8 or units == 8
+  if first_double then return units < 8 end
+  return units == 8
 end
 
 function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)

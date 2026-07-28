@@ -192,7 +192,8 @@ t.test("conditional fields depend on both protocol and security or transport", f
   end
 end)
 
-local function load_node_editor(config)
+local function load_node_editor(config, faults)
+  faults = faults or {}
   local base = {}
   function base:value(key)
     self.keylist = self.keylist or {}
@@ -253,11 +254,13 @@ local function load_node_editor(config)
   end
   function map:set(_, option, value)
     if self.values[option] == value then return false end
+    if faults.set == option then return false end
     self.values[option] = value
     return true
   end
   function map:del(_, option)
     if self.values[option] == nil then return false end
+    if faults.del == option then return false end
     self.values[option] = nil
     return true
   end
@@ -392,6 +395,44 @@ t.test("LuCI parse marks custom ListValue transitions changed and leaves no-op s
   t.eq(submit(map, { enabled = "1", name = "Node", protocol = "vless", server = "edge.invalid", port = "443",
     uuid = uuid, encryption = "none", transport = "tcp", security = "none" }), true)
   t.eq(map.section_model.changed, false, "no-op submission was falsely marked changed")
+end)
+
+t.test("custom ListValue transitions fail visibly and restore partial staged mutations", function()
+  local uuid = "11111111-1111-1111-1111-111111111111"
+  local function reality_config()
+    return { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", server = "edge.invalid",
+      port = "443", uuid = uuid, encryption = "none", transport = "tcp", security = "reality",
+      sni = "edge.invalid", public_key = string.rep("A", 43), short_id = "ab" }
+  end
+  local config = reality_config()
+  local map = load_node_editor(config, { set = "security" })
+  t.eq(map.options.security:write("node_1", "tls"), false)
+  t.eq(config.security, "reality"); t.eq(config.public_key, string.rep("A", 43))
+  t.eq(map.errors.security, "write"); t.eq(map.save, false)
+
+  config = reality_config()
+  map = load_node_editor(config, { del = "public_key" })
+  t.eq(map.options.security:write("node_1", "tls"), false)
+  t.eq(config.security, "reality"); t.eq(config.public_key, string.rep("A", 43)); t.eq(config.short_id, "ab")
+  t.eq(map.errors.security, "write"); t.eq(map.save, false)
+
+  config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", server = "edge.invalid",
+    port = "443", uuid = uuid, encryption = "none", transport = "ws", security = "none",
+    ws_host = "edge.invalid", ws_path = "/ws" }
+  map = load_node_editor(config, { del = "ws_path" })
+  t.eq(map.options.transport:write("node_1", "tcp"), false)
+  t.eq(config.transport, "ws"); t.eq(config.ws_host, "edge.invalid"); t.eq(config.ws_path, "/ws")
+  t.eq(map.errors.transport, "write"); t.eq(map.save, false)
+end)
+
+t.test("custom ListValue writers treat absent cleanup as no-op and report genuine changes only", function()
+  local config = { protocol = "vless", security = "tls", sni = "edge.invalid" }
+  local map = load_node_editor(config)
+  local security = map.options.security
+  t.eq(security:write("node_1", "tls"), false)
+  t.eq(map.errors.security, nil)
+  t.eq(security:write("node_1", "none"), true)
+  t.eq(config.security, "none"); t.eq(config.sni, nil)
 end)
 
 t.test("protocol writes remove incompatible UCI fields and leave schema-valid nodes", function()
