@@ -35,6 +35,10 @@ local fingerprints = {
 local vmess_securities = {
   auto = true, ["aes-128-gcm"] = true, ["chacha20-poly1305"] = true
 }
+local vless_flows = {
+  ["xtls-rprx-vision"] = true,
+  ["xtls-rprx-vision-udp443"] = true
+}
 local shadowsocks_methods = {
   ["aes-128-gcm"] = true,
   ["aead_aes_128_gcm"] = true,
@@ -235,6 +239,7 @@ local function vnext_outbound(node, tag)
     if not optional_safe_string(node.encryption) or not optional_safe_string(node.flow) then return structured_error() end
     local encryption = node.encryption or "none"
     if encryption ~= "none" then return unsupported_error() end
+    if node.flow and node.flow ~= "" and not vless_flows[node.flow] then return unsupported_error() end
     user.encryption = encryption
     if node.flow and node.flow ~= "" then user.flow = node.flow end
   else
@@ -341,18 +346,35 @@ local function collect_encode_strings(value, depth, state)
   end
   if state.seen[value] then return false end
   state.seen[value] = true
+  local shape, maximum, count = nil, 0, 0
   for key, item in pairs(value) do
     state.members = state.members + 1
     if state.members > ENCODE_MAX_MEMBERS then return false end
     local key_kind = type(key)
     if key_kind == "string" then
+      if shape == "array" then return false end
+      shape = "object"
       state.bytes = state.bytes + #key
       state.strings[key] = true
-    elseif key_kind ~= "number" or key ~= math.floor(key) or key < 1 then
+    elseif key_kind == "number" then
+      if shape == "object"
+        or key ~= key
+        or key == math.huge
+        or key == -math.huge
+        or key ~= math.floor(key)
+        or key < 1
+        or key > ENCODE_MAX_MEMBERS then
+        return false
+      end
+      shape = "array"
+      count = count + 1
+      if key > maximum then maximum = key end
+    else
       return false
     end
     if state.bytes > 1048576 or not collect_encode_strings(item, depth + 1, state) then return false end
   end
+  if shape == "array" and maximum ~= count then return false end
   state.seen[value] = nil
   return true
 end

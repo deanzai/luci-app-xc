@@ -334,6 +334,33 @@ t.test("rejects an encoder that does not emit exactly one private raw marker", f
   t.eq(err:find(secret, 1, true), nil)
 end)
 
+t.test("rejects non-JSON table shapes before calling the adapter", function()
+  local invalid_tables = {
+    { [1000000000] = "sparse" },
+    { [1] = "numeric", ["1"] = "string" },
+    { [1] = "first", [3] = "hole" },
+    { [1] = "array", named = "object" },
+    { [math.huge] = "positive infinity" },
+    { [-math.huge] = "negative infinity" },
+    { [1.5] = "fractional" },
+    { [0] = "zero" },
+    { [-1] = "negative" },
+    { [100000000000000000000] = "huge" }
+  }
+  for _, value in ipairs(invalid_tables) do
+    local calls = 0
+    local encoded, err = generator.encode(value, {
+      stringify = function()
+        calls = calls + 1
+        return "{}"
+      end
+    })
+    t.eq(encoded, nil)
+    t.contains(err, "input")
+    t.eq(calls, 0)
+  end
+end)
+
 t.test("emits representative configs accepted by Xray when available", function()
   local xray = os.getenv("XRAY_BIN")
   if not xray or xray == "" then
@@ -341,25 +368,40 @@ t.test("emits representative configs accepted by Xray when available", function(
     xray = "xray"
   end
   local cases = {
-    assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
       protocol = "vless", server = "reality.invalid", port = 443,
       uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
       transport = "tcp", security = "reality", sni = "cover.invalid",
       public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
-    })),
-    assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    })), accepted = true },
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+      protocol = "vless", server = "reality.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision-udp443",
+      transport = "tcp", security = "reality", sni = "cover.invalid",
+      public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
+    })), accepted = true },
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
       protocol = "raw", raw_outbound = '{"protocol":"freedom","tag":"old","settings":{"domainStrategy":"UseIP"}}'
-    }))
+    })), accepted = true }
   }
-  for index, cfg in ipairs(cases) do
-    local encoded = assert(generator.encode(cfg, luci_json))
+  local invalid_flow = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    protocol = "vless", server = "reality.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
+    transport = "tcp", security = "reality", sni = "cover.invalid",
+    public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
+  }))
+  invalid_flow.outbounds[1].settings.vnext[1].users[1].flow = "invalid-flow"
+  cases[#cases + 1] = { config = invalid_flow, accepted = false }
+
+  for index, case in ipairs(cases) do
+    local encoded = assert(generator.encode(case.config, luci_json))
     local path = "tests/tmp/generator-xray-" .. index .. ".json"
     local handle = assert(io.open(path, "wb"))
     assert(handle:write(encoded))
     handle:close()
     local status = os.execute("'" .. xray:gsub("'", "'\\''") .. "' run -test -c " .. path .. " >/dev/null 2>&1")
     os.remove(path)
-    t.eq(status, 0)
+    if case.accepted then t.eq(status, 0) else t.truthy(status ~= 0) end
   end
 end)
 
@@ -433,6 +475,18 @@ t.test("validates Reality public keys short IDs and fingerprints", function()
 end)
 
 t.test("uses only Xray 24 and 26 common structured allowlists", function()
+  for _, flow in ipairs({ "", "xtls-rprx-vision", "xtls-rprx-vision-udp443" }) do
+    t.truthy(generator.build_outbound({
+      protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "none", flow = flow, transport = "tcp", security = "tls",
+      sni = "vless.invalid"
+    }, "proxy-selected"))
+  end
+  t.truthy(generator.build_outbound({
+    protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
+    encryption = "none", transport = "tcp", security = "tls", sni = "vless.invalid"
+  }, "proxy-selected"))
+
   for _, method in ipairs({ "aes-128-gcm", "aes-256-gcm", "chacha20-poly1305", "xchacha20-poly1305" }) do
     t.truthy(generator.build_outbound({
       protocol = "shadowsocks", server = "ss.invalid", port = 8388,
@@ -454,6 +508,16 @@ t.test("uses only Xray 24 and 26 common structured allowlists", function()
   end
 
   local unsupported = {
+    {
+      protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "none", flow = "xtls-rprx-direct", transport = "tcp",
+      security = "tls", sni = "vless.invalid"
+    },
+    {
+      protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
+      encryption = "none", flow = "invalid-flow", transport = "tcp",
+      security = "tls", sni = "vless.invalid"
+    },
     {
       protocol = "vless", server = "vless.invalid", port = 443, uuid = UUID_ONE,
       encryption = "auto", transport = "tcp", security = "none"
