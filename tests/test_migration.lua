@@ -2,6 +2,7 @@ local t = require "testlib"
 local schema = require "xc.schema"
 local MIGRATION_CANDIDATE = "/var/etc/xc/migration-candidate.json"
 local MIGRATION_MARKER = "/etc/xc/migration-complete"
+local TAKEOVER_MARKER = "/etc/xc/takeover-complete"
 
 local function read_file(path)
   local handle = assert(io.open(path, "rb"))
@@ -250,6 +251,17 @@ t.test("legacy migration never replaces an established XC configuration without 
   t.eq(state.globals[1].active_node, "custom")
   t.truthy(state.nodes.custom)
   t.eq(table.concat(state.events, "|"):find("stage_replace", 1, true), nil)
+  t.contains(state.files[MIGRATION_MARKER], "xc-migration-v1\nlegacy-backup-1\n14\n")
+end)
+
+t.test("established XC adoption fails closed when its source marker cannot be written", function()
+  local state = fixture({ marker_write_fail = true })
+  state.globals[1] = { enabled = "0", active_node = "custom" }
+  state.nodes.custom = { id = "custom", name = "customized", enabled = true }
+  t.eq(load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, state.deps), 1)
+  t.eq(state.commits, 0)
+  t.eq(state.reverts, 0)
+  t.eq(state.files[MIGRATION_MARKER], nil)
 end)
 
 t.test("migration removes its bounded candidate on every terminal path", function()
@@ -375,6 +387,9 @@ t.test("lifecycle files contain guarded recovery, takeover, and bounded backup c
   t.contains(hotplug, '"$ACTION" = "ifupdate"')
   local defaults = read_file("root/etc/uci-defaults/luci-xc")
   t.contains(defaults, "if [ ! -f /etc/xc/migration-complete ]; then")
+  t.contains(defaults, "/etc/xc/takeover-complete")
+  t.eq(defaults:find("/etc/init.d/xc start || takeover_failed", 1, true), nil)
+  t.eq(defaults:find("/etc/init.d/xc-xray start || restore_failed", 1, true), nil)
   t.truthy(defaults:find("migrate%-legacy") < defaults:find("xc%-xray disable"))
   t.eq(defaults:find("/usr/bin/xc render", 1, true), nil)
   t.eq(defaults:find("/usr/bin/xray run", 1, true), nil)
@@ -406,6 +421,9 @@ t.test("lifecycle files contain guarded recovery, takeover, and bounded backup c
   t.contains(makefile, "define Package/$(PKG_NAME)/postinst")
   t.contains(makefile, 'chmod 0700 "$$root/etc/xc" "$$root/etc/xc/rollback" "$$root/var/etc/xc"')
   t.contains(makefile, 'chmod 0600 "$$root/etc/config/xc"')
+  t.contains(makefile, '(. /etc/uci-defaults/luci-xc) && rm -f /etc/uci-defaults/luci-xc')
+  t.contains(makefile, 'rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*')
+  t.contains(makefile, '/etc/init.d/rpcd reload')
   t.contains(makefile, 'touch "$$backup/complete"')
   t.eq(makefile:find("$$$$backup", 1, true), nil)
   t.eq(makefile:find("cp %-r"), nil)
@@ -444,11 +462,65 @@ t.test("expanded postinst provisions rollback and config modes in an offline roo
   os.execute("rm -rf '" .. root .. "'")
   assert(os.execute("mkdir -p '" .. root .. "/etc/config'") == 0)
   write_file(root .. "/etc/config/xc", "config package 'xc'\n")
+  assert(os.execute("mkdir -p '" .. root .. "/etc/uci-defaults' '" .. root .. "/etc/init.d' '" .. root .. "/tmp/luci-modulecache'") == 0)
+  write_file(root .. "/etc/uci-defaults/luci-xc", "#!/bin/sh\nexit 7\n")
+  write_file(root .. "/etc/init.d/rpcd", "#!/bin/sh\nexit 7\n")
+  write_file(root .. "/tmp/luci-indexcache.1", "cache")
+  assert(os.execute("chmod 0755 '" .. root .. "/etc/uci-defaults/luci-xc' '" .. root .. "/etc/init.d/rpcd'") == 0)
   assert(os.execute("chmod 0644 '" .. root .. "/etc/config/xc'") == 0)
   write_file("tests/tmp/postinst-expanded.sh", postinst)
   assert(os.execute("IPKG_INSTROOT='" .. root .. "' sh tests/tmp/postinst-expanded.sh") == 0)
   t.eq(command_output("stat -c %a '" .. root .. "/etc/xc/rollback'"), "700")
   t.eq(command_output("stat -c %a '" .. root .. "/etc/config/xc'"), "600")
+  t.eq(read_file(root .. "/etc/uci-defaults/luci-xc"), "#!/bin/sh\nexit 7\n")
+  t.eq(read_file(root .. "/tmp/luci-indexcache.1"), "cache")
+end)
+
+local function live_postinst_fixture(default_status)
+  local root = "/tmp/luci-xc-live-postinst-root"
+  os.execute("rm -rf '" .. root .. "'")
+  assert(os.execute("mkdir -p '" .. root .. "/etc/config' '" .. root .. "/etc/uci-defaults' '" .. root ..
+    "/etc/init.d' '" .. root .. "/tmp/luci-modulecache' '" .. root .. "/bin'") == 0)
+  write_file(root .. "/etc/config/xc", "config package 'xc'\n")
+  write_file(root .. "/etc/uci-defaults/luci-xc", "#!/bin/sh\nprintf 'defaults\\n' >>\"$EVENTS\"\nexit " .. tostring(default_status or 0) .. "\n")
+  write_file(root .. "/etc/init.d/rpcd", "#!/bin/sh\nprintf 'rpcd:%s\\n' \"$*\" >>\"$EVENTS\"\nexit 0\n")
+  write_file(root .. "/bin/killall", "#!/bin/sh\nprintf 'killall:%s\\n' \"$*\" >>\"$EVENTS\"\nexit 0\n")
+  write_file(root .. "/tmp/luci-indexcache", "cache")
+  write_file(root .. "/tmp/luci-indexcache.1", "cache")
+  assert(os.execute("chmod 0755 '" .. root .. "/etc/uci-defaults/luci-xc' '" .. root .. "/etc/init.d/rpcd' '" .. root .. "/bin/killall'") == 0)
+  local source = make_script("postinst")
+  for _, mapping in ipairs({
+    { "/etc/uci-defaults/luci-xc", root .. "/etc/uci-defaults/luci-xc" },
+    { "/etc/init.d/rpcd", root .. "/etc/init.d/rpcd" },
+    { "/tmp/luci-indexcache", root .. "/tmp/luci-indexcache" },
+    { "/tmp/luci-modulecache", root .. "/tmp/luci-modulecache" },
+    { "/etc/config/xc", root .. "/etc/config/xc" },
+    { "/var/etc/xc", root .. "/var/etc/xc" },
+    { "/etc/xc", root .. "/etc/xc" }
+  }) do source = replace_plain(source, mapping[1], mapping[2]) end
+  write_file("tests/tmp/postinst-live-expanded.sh", source)
+  return root
+end
+
+t.test("expanded live postinst runs and removes defaults then refreshes LuCI and rpcd", function()
+  local root = live_postinst_fixture(0)
+  local command = "EVENTS='" .. root .. "/events' PATH='" .. root .. "/bin:'$PATH sh tests/tmp/postinst-live-expanded.sh"
+  t.eq(os.execute(command), 0)
+  t.eq(io.open(root .. "/etc/uci-defaults/luci-xc", "rb"), nil)
+  t.eq(io.open(root .. "/tmp/luci-indexcache", "rb"), nil)
+  t.eq(io.open(root .. "/tmp/luci-indexcache.1", "rb"), nil)
+  t.eq(command_output("test ! -d '" .. root .. "/tmp/luci-modulecache' && printf removed"), "removed")
+  local events = read_file(root .. "/events")
+  t.contains(events, "defaults\n")
+  t.contains(events, "rpcd:reload\n")
+end)
+
+t.test("expanded live postinst retains a failing defaults script and aborts maintenance", function()
+  local root = live_postinst_fixture(1)
+  local command = "EVENTS='" .. root .. "/events' PATH='" .. root .. "/bin:'$PATH sh tests/tmp/postinst-live-expanded.sh"
+  t.truthy(os.execute(command) ~= 0)
+  t.truthy(io.open(root .. "/etc/uci-defaults/luci-xc", "rb"))
+  t.eq(read_file(root .. "/events"), "defaults\n")
 end)
 
 local SERVICE_SCRIPT = [[#!/bin/sh
@@ -472,6 +544,7 @@ case "$action" in
 esac
 case "$action" in enabled|running) exit $? ;; esac
 printf '%s %s\n' "$enabled" "$running" >"$state"
+if [ "$RETURN_FAILURE_AFTER_SERVICE" = "$name" ] && [ "$RETURN_FAILURE_AFTER_ACTION" = "$action" ]; then exit 1; fi
 ]]
 
 local function takeover_fixture(old_enabled, old_running)
@@ -523,6 +596,16 @@ t.test("uci-default rejects a swallowed procd start failure and restores legacy"
   t.eq(read_file(root .. "/state/xc"), "0 0\n")
 end)
 
+t.test("uci-default accepts a nonzero procd start request once the new service is running", function()
+  local root = takeover_fixture(1, 1)
+  local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
+    "/state' RETURN_FAILURE_AFTER_SERVICE='xc' RETURN_FAILURE_AFTER_ACTION='start' sh tests/tmp/uci-default-expanded.sh"
+  t.eq(os.execute(command), 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "0 0\n")
+  t.eq(read_file(root .. "/state/xc"), "1 1\n")
+  t.truthy(io.open(root .. TAKEOVER_MARKER, "rb"))
+end)
+
 t.test("uci-default does not mistake unsupported running help for a stopped legacy process", function()
   local root = takeover_fixture(1, 0)
   local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
@@ -535,12 +618,22 @@ end)
 t.test("uci-default detects a running non-procd legacy process by its exact config argument", function()
   local root = takeover_fixture(1, 1)
   assert(os.execute("mkdir -p '" .. root .. "/proc/123'") == 0)
-  write_file(root .. "/proc/123/cmdline", "/usr/bin/xray\0run\0-c\0" .. root .. "/etc/xc/config.json\0")
+  write_file(root .. "/proc/123/cmdline", root .. "/usr/bin/xray\0run\0-c\0" .. root .. "/etc/xc/config.json\0")
   local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
     "/state' HELP_RUNNING_SERVICE='xc-xray' HELP_RUNNING_STATUS='1' FAIL_SERVICE='xc' FAIL_ACTION='start' sh tests/tmp/uci-default-expanded.sh"
   t.truthy(os.execute(command) ~= 0)
   t.eq(read_file(root .. "/state/xc-xray"), "1 1\n")
   t.eq(read_file(root .. "/state/xc"), "0 0\n")
+end)
+
+t.test("uci-default does not treat a non-Xray process reading the legacy config as running", function()
+  local root = takeover_fixture(1, 0)
+  assert(os.execute("mkdir -p '" .. root .. "/proc/124'") == 0)
+  write_file(root .. "/proc/124/cmdline", "/bin/cat\0" .. root .. "/etc/xc/config.json\0")
+  local command = "PATH='" .. root .. "/bin:'$PATH STATE_DIR='" .. root ..
+    "/state' HELP_RUNNING_SERVICE='xc-xray' FAIL_SERVICE='xc' FAIL_ACTION='start' sh tests/tmp/uci-default-expanded.sh"
+  t.truthy(os.execute(command) ~= 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "1 0\n")
 end)
 
 t.test("uci-default completed migration marker skips migration but resumes takeover", function()
@@ -549,4 +642,14 @@ t.test("uci-default completed migration marker skips migration but resumes takeo
   assert(os.execute("STATE_DIR='" .. root .. "/state' sh tests/tmp/uci-default-expanded.sh") == 0)
   t.eq(read_file(root .. "/state/xc-xray"), "0 0\n")
   t.eq(read_file(root .. "/state/xc"), "1 1\n")
+  t.truthy(io.open(root .. TAKEOVER_MARKER, "rb"))
+end)
+
+t.test("uci-default completed takeover preserves later user-disabled service state", function()
+  local root = takeover_fixture(0, 0)
+  write_file(root .. MIGRATION_MARKER, "xc-migration-v1\nsource\n1\n00000000\n")
+  write_file(root .. TAKEOVER_MARKER, "xc-takeover-v1\n")
+  assert(os.execute("STATE_DIR='" .. root .. "/state' sh tests/tmp/uci-default-expanded.sh") == 0)
+  t.eq(read_file(root .. "/state/xc-xray"), "0 0\n")
+  t.eq(read_file(root .. "/state/xc"), "0 0\n")
 end)

@@ -22,6 +22,8 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.contains(source, "O_NOFOLLOW")
   t.contains(source, "MONOTONIC")
   t.contains(source, 'nixio.exec(unpack(argv))')
+  t.contains(source, "null:close()")
+  t.truthy(source:find("null:close()", 1, true) < source:find("nixio.exec(unpack(argv))", 1, true))
   t.contains(source, 'nixio.open("/proc/uptime", "r")')
   t.contains(source, "setblocking(false)")
   t.contains(source, "nixio.poll")

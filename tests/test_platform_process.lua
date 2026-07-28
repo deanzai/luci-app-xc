@@ -3,8 +3,9 @@ local platform = require "xc.platform"
 
 local XRAY = { "/usr/bin/xray", "run", "-test", "-c", "/var/etc/xc/config.json" }
 
-local function process_fixture(wait_results)
-  local state = { now = 0, events = {}, wait_index = 0, reaped = false }
+local function process_fixture(wait_results, options)
+  options = options or {}
+  local state = { now = 0, events = {}, wait_index = 0, reaped = false, killed = false }
   local nixio = {
     stdout = 1, stderr = 2,
     fork = function() state.events[#state.events + 1] = "fork"; return 42 end,
@@ -12,11 +13,15 @@ local function process_fixture(wait_results)
       state.events[#state.events + 1] = "wait:" .. tostring(pid) .. ":" .. tostring(mode)
       if mode == nil then state.reaped = true; return pid, "signaled", 9 end
       state.wait_index = state.wait_index + 1
-      local value = wait_results[state.wait_index] or { false }
+      local value = state.killed and options.after_kill or wait_results[state.wait_index] or { false }
       if value[1] == pid then state.reaped = true end
       return unpack(value)
     end,
-    kill = function(pid, signal) state.events[#state.events + 1] = "kill:" .. pid .. ":" .. signal; return true end
+    kill = function(pid, signal)
+      state.events[#state.events + 1] = "kill:" .. pid .. ":" .. signal
+      if signal == 9 then state.killed = true end
+      return true
+    end
   }
   local adapters = platform.new({
     nixio = nixio, fs = {}, cursor = { foreach = function() end }, uci_module = {},
@@ -35,27 +40,37 @@ t.test("child execution polls nohang and reaps a successful exit before deadline
   t.eq(table.concat(state.events, "|"):find("kill:", 1, true), nil)
 end)
 
-t.test("child timeout sends TERM then KILL and performs a final reap", function()
-  local state, exec = process_fixture({ { false }, { false }, { false }, { false }, { false }, { false } })
+t.test("child timeout sends TERM then KILL and reaps with bounded nohang polling", function()
+  local state, exec = process_fixture({ { false } }, { after_kill = { 42, "signaled", 9 } })
   t.eq(exec.run(XRAY, 0.15), false)
   local events = table.concat(state.events, "|")
   t.contains(events, "kill:42:15")
   t.contains(events, "kill:42:9")
-  t.contains(events, "wait:42:nil")
+  t.eq(events:find("wait:42:nil", 1, true), nil)
   t.eq(state.reaped, true)
 end)
 
 t.test("permanent wait errors fail and still terminate and reap the child", function()
-  local state, exec = process_fixture({ { nil, "ECHILD" } })
+  local state, exec = process_fixture({ { nil, "ECHILD" } }, { after_kill = { 42, "signaled", 9 } })
   t.eq(exec.run(XRAY, 1), false)
   local events = table.concat(state.events, "|")
   t.contains(events, "kill:42:15")
-  t.contains(events, "wait:42:nil")
+  t.eq(events:find("wait:42:nil", 1, true), nil)
   t.eq(state.reaped, true)
 end)
 
-t.test("exec run has a bounded default deadline", function()
+t.test("SIGKILL does not permit an unbounded blocking reap when the child remains alive", function()
   local state, exec = process_fixture({ { false } })
+  t.eq(exec.run(XRAY, 0.15), false)
+  local events = table.concat(state.events, "|")
+  t.contains(events, "kill:42:9")
+  t.eq(events:find("wait:42:nil", 1, true), nil)
+  t.eq(state.reaped, false)
+  t.truthy(state.now < 3)
+end)
+
+t.test("exec run has a bounded default deadline", function()
+  local state, exec = process_fixture({ { false } }, { after_kill = { 42, "signaled", 9 } })
   state.now = 100
   t.eq(exec.run(XRAY), false)
   t.contains(table.concat(state.events, "|"), "kill:42:15")

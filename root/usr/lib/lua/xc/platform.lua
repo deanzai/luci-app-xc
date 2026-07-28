@@ -59,7 +59,12 @@ local function terminate_and_reap(nixio, pid, now, sleep)
     sleep(0.05)
   end
   pcall(nixio.kill, pid, 9)
-  pcall(nixio.waitpid, pid)
+  local reap_deadline = now() + 1
+  while now() < reap_deadline do
+    local finished = poll_child(nixio, pid)
+    if finished == true or finished == nil then return false end
+    sleep(0.05)
+  end
   return false
 end
 
@@ -86,7 +91,11 @@ local function spawn(nixio, argv, deadline, now, sleep)
   local pid = nixio.fork()
   if pid == 0 then
     local null = nixio.open("/dev/null", "w")
-    if null then nixio.dup(null, nixio.stdout); nixio.dup(null, nixio.stderr) end
+    if null then
+      nixio.dup(null, nixio.stdout)
+      nixio.dup(null, nixio.stderr)
+      null:close()
+    end
     nixio.exec(unpack(argv))
     os.exit(127)
   end

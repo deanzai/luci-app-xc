@@ -160,3 +160,38 @@ Check all ten review findings plus IPv6 curl brackets against tests and the cach
 - [ ] **Step 3: Commit**
 
 Stage only scoped files and create one focused Task 6 quality-hardening commit. Report RED/GREEN evidence, changed files, SHA, and residual target-only risks.
+
+### Task 6: Formal re-review follow-up
+
+**Files:**
+- Modify: `Makefile`
+- Modify: `root/etc/uci-defaults/luci-xc`
+- Modify: `root/usr/lib/lua/xc/cli.lua`
+- Modify: `root/usr/lib/lua/xc/platform.lua`
+- Modify: `tests/test_migration.lua`
+- Modify: `tests/test_platform_process.lua`
+- Modify: `tests/test_platform_static.lua`
+
+- [x] **Step 1: Verify upstream LuCI postinst behavior**
+
+Compare `luci.mk` on OpenWrt 21.02, 22.03, 23.05, and 24.10. Preserve live-root defaults execution/removal, LuCI cache invalidation, and rpcd refresh semantics while keeping offline-root postinst limited to rooted permission provisioning.
+
+- [x] **Step 2: Separate migration and takeover completion**
+
+Keep `migration-complete` source-bound to the migrated or adopted snapshot. Write an independent private `takeover-complete` marker only after bounded new-service running checks; future upgrades must skip takeover and preserve a user's later enabled/running choices.
+
+- [x] **Step 3: Treat service state as authoritative**
+
+Do not trust procd start request return codes as final state. Check new and restored services with bounded running probes, including the case where a start request returns nonzero after the service became running.
+
+- [x] **Step 4: Bound final child reaping and close inherited descriptors**
+
+After SIGKILL use only bounded `waitpid(..., 'nohang')` polling and return if the child cannot yet be reaped. Close the original `/dev/null` descriptor after duplicating it to stdout and stderr.
+
+- [x] **Step 5: Tighten legacy process fallback**
+
+Require both an exact `/usr/bin/xray` argv zero and an exact `/etc/xc/config.json` argument while scanning a bounded number of `/proc` command lines.
+
+- [x] **Step 6: Run RED then GREEN**
+
+The seven new behavioral tests and strengthened contracts produced 13 expected failures on `d341a6d`; the minimal implementation passes the full 154-test suite.

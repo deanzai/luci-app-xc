@@ -185,7 +185,11 @@ local function migrate_legacy(directory, deps)
 
       local existing_call, existing = pcall(deps.uci.list_nodes)
       if not existing_call or type(existing) ~= "table" then return response(false, "migration_failed") end
-      if #existing > 0 then return response(true, "migrated", { existing_config = true }) end
+      if #existing > 0 then
+        local marker_call, marker_written = pcall(capability.write, MIGRATION_MARKER, marker_text)
+        if not marker_call or not marker_written then return response(false, "migration_failed") end
+        return response(true, "migrated", { existing_config = true })
+      end
 
       local global = legacy_global(deps.uci.get_global(), active)
       dirty = true
