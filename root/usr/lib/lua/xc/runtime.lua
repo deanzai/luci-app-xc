@@ -551,21 +551,41 @@ function Runtime:_service_state()
   return state
 end
 
-local function valid_observed_ip(value)
+local function valid_ipv4(value)
   local octets = { value:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$") }
-  if #octets == 4 then
-    for _, octet in ipairs(octets) do if tonumber(octet) > 255 then return false end end
-    return true
+  if #octets ~= 4 then return false end
+  for _, octet in ipairs(octets) do
+    local number = tonumber(octet)
+    if number > 255 or tostring(number) ~= octet then return false end
   end
-  if #value > 64 or not value:find(":", 1, true) or not value:match("^[0-9A-Fa-f:]+$") then return false end
-  local compressed = value:find("::", 1, true) ~= nil
-  if compressed and value:gsub("::", "", 1):find("::", 1, true) then return false end
-  local groups = 0
+  return true
+end
+
+local function valid_observed_ip(value)
+  if valid_ipv4(value) then return true end
+  if #value > 64 or not value:find(":", 1, true) or not value:match("^[0-9A-Fa-f:.]+$") then return false end
+  if value:find(":::", 1, true) then return false end
+  local first_double = value:find("::", 1, true)
+  if first_double and value:find("::", first_double + 2, true) then return false end
+  if value:sub(1, 1) == ":" and value:sub(1, 2) ~= "::" then return false end
+  if value:sub(-1) == ":" and value:sub(-2) ~= "::" then return false end
+
+  local units = 0
+  if value:find(".", 1, true) then
+    local prefix, tail = value:match("^(.*:)([^:]+)$")
+    if not prefix or not valid_ipv4(tail) then return false end
+    value = prefix .. "v4"
+  end
   for group in value:gmatch("[^:]+") do
-    if #group > 4 then return false end
-    groups = groups + 1
+    if group == "v4" then
+      units = units + 2
+    elseif #group < 1 or #group > 4 or not group:match("^[0-9A-Fa-f]+$") then
+      return false
+    else
+      units = units + 1
+    end
   end
-  return compressed and groups < 8 or groups == 8
+  return first_double and units < 8 or units == 8
 end
 
 function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)
@@ -747,7 +767,7 @@ function Runtime:status()
       http = action_ok(self.exec.listener_ready("http", address, tonumber(global.http_port), listener_deadline))
     }
     local exit_ip
-    if type(self.exec.observe_exit_ip) == "function" and type(global.health_url) == "string" then
+    if service == "running" and listeners.socks and type(self.exec.observe_exit_ip) == "function" and type(global.health_url) == "string" then
       local observed, value = pcall(self.exec.observe_exit_ip, "socks", address, tonumber(global.socks_port), global.health_url, listener_deadline)
       if observed and type(value) == "string" then
         value = value:match("^%s*(.-)%s*$")

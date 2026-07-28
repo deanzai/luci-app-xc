@@ -281,7 +281,7 @@ local function fixture(options)
       if options.exit_ip_throw then error("password=exit-secret") end
       return options.exit_ip
     end,
-    service_state = function() return "running" end
+    service_state = function() return options.service_state or "running" end
   }
   state.runtime = assert(runtime.new({
     uci = uci, fs = fs, exec = exec, json = { stringify = stringify },
@@ -700,6 +700,39 @@ t.test("status observes a bounded whitelisted exit IP through the local proxy", 
   local thrown_fixture = fixture({ exit_ip_throw = true })
   local thrown = thrown_fixture.runtime:status()
   t.eq(thrown.ok, true); t.eq(thrown.exit_ip, nil)
+end)
+
+t.test("exit IP status accepts strict IPv4 and IPv6 forms and rejects malformed addresses", function()
+  local valid = {
+    "0.0.0.0", "255.255.255.255", "::", "::1", "2001:db8::1",
+    "2001:db8:0:1:2:3:4:5", "::ffff:192.0.2.1", "2001:db8::192.0.2.1"
+  }
+  for _, address in ipairs(valid) do
+    local state = fixture({ exit_ip = address })
+    t.eq(state.runtime:status().exit_ip, address, "rejected valid address " .. address)
+  end
+  local invalid = {
+    ":::1", "1:::2", ":1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:",
+    "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3", "2001:db8::g",
+    "::ffff:192.0.2.999", "::ffff:192.0.2", "192.0.2.1::", "2001:db8:192.0.2.1::1",
+    "01.2.3.4", "1.2.3.4.5"
+  }
+  for _, address in ipairs(invalid) do
+    local state = fixture({ exit_ip = address })
+    t.eq(state.runtime:status().exit_ip, nil, "accepted malformed address " .. address)
+  end
+end)
+
+t.test("status skips exit IP observation unless service and SOCKS listener are healthy", function()
+  local stopped = fixture({ service_state = "stopped", exit_ip = "203.0.113.9" })
+  local status = stopped.runtime:status()
+  t.eq(status.service, "stopped"); t.eq(status.exit_ip, nil)
+  t.eq(event_index(stopped.events, "exec:exit_ip:socks:192.168.6.1:7890"), nil)
+
+  local unavailable = fixture({ listener_fail = "socks", exit_ip = "203.0.113.9" })
+  status = unavailable.runtime:status()
+  t.eq(status.listeners.socks, false); t.eq(status.exit_ip, nil)
+  t.eq(event_index(unavailable.events, "exec:exit_ip:socks:192.168.6.1:7890"), nil)
 end)
 
 t.test("every runtime Xray validation receives a finite monotonic deadline", function()

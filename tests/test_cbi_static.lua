@@ -194,72 +194,86 @@ end)
 
 local function load_node_editor(config)
   local base = {}
-  function base:value() end
+  function base:value(key)
+    self.keylist = self.keylist or {}
+    self.keylist[#self.keylist + 1] = tostring(key)
+  end
   function base:depends(condition, expected)
     self.dependencies = self.dependencies or {}
     self.dependencies[#self.dependencies + 1] = type(condition) == "table" and condition or { [condition] = expected }
   end
   function base:write(section, value)
-    self.map:set(section, self.option, value)
+    return self.map:set(section, self.option, value)
   end
-  function base:remove(section) self.map:del(section, self.option) end
-  function base:active(section)
-    if not self.dependencies or #self.dependencies == 0 then return true end
-    for _, dependency in ipairs(self.dependencies) do
-      local matched = true
-      for option, expected in pairs(dependency) do
-        local actual = self.map:formvalue("cbid.xc." .. section .. "." .. option)
-        if actual == nil then actual = self.map:get(section, option) end
-        if actual ~= expected then matched = false end
-      end
-      if matched then return true end
-    end
-    return false
+  function base:remove(section) return self.map:del(section, self.option) end
+  function base:transform(value) return value end
+  function base:validate(value)
+    if not self.is_list then return value end
+    for _, allowed in ipairs(self.keylist or {}) do if allowed == value then return value end end
+    return nil
+  end
+  function base:add_error(_, kind)
+    self.map.errors[self.option] = kind
+    self.map.save = false
   end
   function base:parse(section)
-    if not self:active(section) then return true end
     local value = self.map:formvalue("cbid.xc." .. section .. "." .. self.option)
-    if value == nil or value == "" then
-      if self.rmempty == false then self.map.errors[self.option] = "missing"; return false end
-      self:remove(section); return true
-    end
-    if self.validate then
+    local configured = self.map:get(section, self.option)
+    if value and #value > 0 then
       local valid = self:validate(value, section)
-      if valid == nil then self.map.errors[self.option] = "invalid"; return false end
-      value = valid
+      valid = self:transform(valid)
+      if valid == nil then
+        self:add_error(section, "invalid")
+      elseif valid ~= configured and self:write(section, valid) then
+        self.section.changed = true
+      end
+    elseif self.rmempty ~= false or self.optional then
+      if self:remove(section) then self.section.changed = true end
+    elseif configured ~= value then
+      self:validate(nil, section)
+      self:add_error(section, "missing")
     end
-    self:write(section, value)
-    return true
   end
 
-  local function class()
-    return setmetatable({}, { __index = base })
+  local function class(is_list)
+    return setmetatable({ is_list = is_list }, { __index = base })
   end
 
-  local map = { config = "xc", options = {}, option_order = {}, values = config, forms = {}, errors = {} }
+  local map = { config = "xc", options = {}, option_order = {}, values = config, forms = {}, errors = {}, save = true }
   function map:section()
-    local section = { map = self }
+    local section = { map = self, changed = false }
+    self.section_model = section
     function section:option(option_class, option)
-      local value = setmetatable({ map = self.map, option = option }, { __index = option_class })
+      local value = setmetatable({ map = self.map, section = self, option = option }, { __index = option_class })
       self.map.options[option] = value
       self.map.option_order[#self.map.option_order + 1] = value
       return value
     end
     return section
   end
-  function map:set(_, option, value) self.values[option] = value end
-  function map:del(_, option) self.values[option] = nil end
+  function map:set(_, option, value)
+    if self.values[option] == value then return false end
+    self.values[option] = value
+    return true
+  end
+  function map:del(_, option)
+    if self.values[option] == nil then return false end
+    self.values[option] = nil
+    return true
+  end
   function map:get(_, option) return self.values[option] end
   function map:formvalue(key) return self.forms[key] end
   function map:parse(section)
+    self.changed_after = {}
     for _, option in ipairs(self.option_order) do
-      if not option:parse(section) then return false end
+      option:parse(section)
+      self.changed_after[option.option] = self.section_model.changed
     end
-    return true
+    return self.save
   end
 
   local classes = {
-    NamedSection = {}, Flag = class(), Value = class(), ListValue = class(), TextValue = class()
+    NamedSection = {}, Flag = class(), Value = class(), ListValue = class(true), TextValue = class()
   }
   local environment = {
     arg = { "node_1" },
@@ -336,10 +350,48 @@ t.test("LuCI parse enforces visible required fields and cleans protocol and tran
   t.eq(submit(map, { enabled = "1", name = "Node", protocol = "raw", raw_outbound = '{"protocol":"freedom"}' }), true)
   t.eq(config.server, nil); t.eq(config.public_key, nil); t.eq(config.raw_outbound, '{"protocol":"freedom"}')
 
-  config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", security = "none" }
+  config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", server = "old.invalid", security = "none" }
   map = load_node_editor(config)
   t.eq(submit(map, { enabled = "1", name = "Node", protocol = "vless", security = "tls" }), false)
   t.eq(map.errors.server, "missing")
+end)
+
+t.test("LuCI parse marks custom ListValue transitions changed and leaves no-op submissions unchanged", function()
+  local uuid = "11111111-1111-1111-1111-111111111111"
+  local cases = {
+    {
+      label = "protocol", config = { protocol = "vless", server = "old.invalid", port = "443", uuid = uuid,
+        encryption = "none", transport = "tcp", security = "none" },
+      form = { protocol = "raw", raw_outbound = '{"protocol":"freedom"}' }
+    },
+    {
+      label = "transport", config = { protocol = "vless", server = "edge.invalid", port = "443", uuid = uuid,
+        encryption = "none", transport = "ws", security = "none", ws_host = "edge.invalid", ws_path = "/ws" },
+      form = { protocol = "vless", server = "edge.invalid", port = "443", uuid = uuid, encryption = "none",
+        transport = "grpc", security = "none", grpc_service_name = "svc" }
+    },
+    {
+      label = "security", config = { protocol = "vless", server = "edge.invalid", port = "443", uuid = uuid,
+        encryption = "none", transport = "tcp", security = "reality", sni = "edge.invalid",
+        public_key = string.rep("A", 43), short_id = "ab" },
+      form = { protocol = "vless", server = "edge.invalid", port = "443", uuid = uuid, encryption = "none",
+        transport = "tcp", security = "tls", sni = "edge.invalid" }
+    }
+  }
+  for _, case in ipairs(cases) do
+    case.config[".name"], case.config.enabled, case.config.name = "node_1", "1", "Node"
+    case.form.enabled, case.form.name = "1", "Node"
+    local map = load_node_editor(case.config)
+    t.eq(submit(map, case.form), true, case.label .. " transition failed validation")
+    t.eq(map.changed_after[case.label], true, case.label .. " writer did not mark the section changed")
+  end
+
+  local config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless",
+    server = "edge.invalid", port = "443", uuid = uuid, encryption = "none", transport = "tcp", security = "none" }
+  local map = load_node_editor(config)
+  t.eq(submit(map, { enabled = "1", name = "Node", protocol = "vless", server = "edge.invalid", port = "443",
+    uuid = uuid, encryption = "none", transport = "tcp", security = "none" }), true)
+  t.eq(map.section_model.changed, false, "no-op submission was falsely marked changed")
 end)
 
 t.test("protocol writes remove incompatible UCI fields and leave schema-valid nodes", function()

@@ -65,14 +65,15 @@ local compatible_fields = {
 }
 
 function protocol.write(self, section, value)
-  ListValue.write(self, section, value)
+  local changed = ListValue.write(self, section, value) and true or false
   local keep = compatible_fields[value] or {}
   for _, field in ipairs(protocol_fields) do
     local submitted = self.map:formvalue("cbid.xc." .. section .. "." .. field)
     if (not keep[field] or submitted == nil) and self.map:get(section, field) ~= nil then
-      self.map:del(section, field)
+      changed = self.map:del(section, field) or changed
     end
   end
+  return changed
 end
 
 function protocol.validate(self, value, section)
@@ -179,10 +180,11 @@ function transport.validate(self, value, section)
   return value
 end
 function transport.write(self, section, value)
-  ListValue.write(self, section, value)
-  if value ~= "ws" then self.map:del(section, "ws_host"); self.map:del(section, "ws_path") end
-  if value ~= "grpc" then self.map:del(section, "grpc_service_name") end
-  if value ~= "tcp" then self.map:del(section, "flow") end
+  local changed = ListValue.write(self, section, value) and true or false
+  if value ~= "ws" then changed = self.map:del(section, "ws_host") or changed; changed = self.map:del(section, "ws_path") or changed end
+  if value ~= "grpc" then changed = self.map:del(section, "grpc_service_name") or changed end
+  if value ~= "tcp" then changed = self.map:del(section, "flow") or changed end
+  return changed
 end
 
 local security = node:option(ListValue, "security", translate("Security"))
@@ -200,9 +202,10 @@ function security.validate(self, value, section)
   return value
 end
 function security.write(self, section, value)
-  ListValue.write(self, section, value)
-  if value == "none" then self.map:del(section, "sni"); self.map:del(section, "fingerprint") end
-  if value ~= "reality" then self.map:del(section, "public_key"); self.map:del(section, "short_id") end
+  local changed = ListValue.write(self, section, value) and true or false
+  if value == "none" then changed = self.map:del(section, "sni") or changed; changed = self.map:del(section, "fingerprint") or changed end
+  if value ~= "reality" then changed = self.map:del(section, "public_key") or changed; changed = self.map:del(section, "short_id") or changed end
+  return changed
 end
 
 local flow = node:option(ListValue, "flow", translate("Flow"))
