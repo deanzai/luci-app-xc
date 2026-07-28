@@ -121,7 +121,7 @@ local function fixture(options)
       state.events[#state.events + 1] = "commit"
       if options.commit_fail then return false end
       state.globals, state.nodes, staged = { staged.global }, staged.by_id, nil
-      return true
+      return true, options.commit_outcome
     end,
     revert = function() state.reverts = state.reverts + 1; staged = nil; return true end
   }
@@ -369,6 +369,22 @@ t.test("import preview never writes and import stages and commits once", functio
   t.eq(committed.commits, 1)
   t.eq(committed.events[1], "recover")
   t.eq(committed.events[2], "stage_nodes")
+end)
+
+t.test("CLI keeps committed imports when post-commit hardening reports a warning", function()
+  local candidate = {
+    nodes = { one = { name = "SOCKS", protocol = "socks5", address = "127.0.0.1", port = 1080 } }
+  }
+  local state = fixture({ import_value = candidate, commit_outcome = "committed_hardening_failed" })
+  t.eq(load_cli().main({ "import", "/tmp/import" }, state.deps), 0)
+  t.eq(state.commits, 1)
+  t.eq(state.reverts, 0)
+  t.truthy(next(state.nodes))
+
+  local migration = fixture({ commit_outcome = "committed_hardening_failed" })
+  t.eq(load_cli().main({ "migrate-legacy", "/etc/xc/legacy-backup-1" }, migration.deps), 0)
+  t.eq(migration.commits, 1)
+  t.eq(migration.reverts, 0)
 end)
 
 t.test("lifecycle files contain guarded recovery, takeover, and bounded backup contracts", function()

@@ -154,7 +154,7 @@ local function fixture(options)
         options.commit_failures = options.commit_failures - 1
         return false
       end
-      return options.commit_ok ~= false
+      return options.commit_ok ~= false, options.commit_outcome
     end,
     revert = function() event("uci:revert"); global.active_node = original_active; return true end
   }
@@ -350,6 +350,17 @@ t.test("switch validates before snapshot and commits only after listeners and he
   t.eq(state.health_url, "https://health.invalid/generate_204")
   t.eq(state.health_deadline, 128)
   t.eq(state.events[#state.events], "fs:unlock")
+end)
+
+t.test("runtime treats a committed hardening warning as committed state", function()
+  local state = fixture({
+    commit_outcome = "committed_hardening_failed",
+    files = { [RUNTIME] = "old-runtime" }
+  })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.eq(state.global.active_node, "new")
+  t.eq(event_index(state.events, "uci:revert"), nil)
 end)
 
 t.test("failed switch preserves the prior successful rollback generation", function()

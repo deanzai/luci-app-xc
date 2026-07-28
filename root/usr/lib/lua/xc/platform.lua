@@ -157,10 +157,13 @@ function M.new(injected)
       return values[1]
     end,
     get_node = function(id)
-      if not schema.safe_section_id(id) then return nil end
-      local section = cursor:get_all("xc", id)
-      if not section or section[".type"] ~= "node" then return nil end
-      return public_section(section)
+      if not schema.safe_section_id(id) then return nil, "invalid_id" end
+      local called, section = pcall(cursor.get_all, cursor, "xc", id)
+      if not called then return nil, "read_failed" end
+      if not section or section[".type"] ~= "node" then return nil, "missing" end
+      local node = public_section(section)
+      if not node then return nil, "read_failed" end
+      return node, "ok"
     end,
     list_nodes = function()
       local values = {}
@@ -182,10 +185,13 @@ function M.new(injected)
       return true
     end,
     commit = function()
-      if nfs.chmod("/etc/config/xc", 600) ~= true then return false end
+      if nfs.chmod("/etc/config/xc", 600) ~= true then return false, "pre_commit_failed" end
       local called, result = pcall(cursor.commit, cursor, "xc")
       local secured = nfs.chmod("/etc/config/xc", 600) == true
-      return called and (result == true or result == 0) and secured
+      if not called then return false, "commit_unknown" end
+      if result ~= true and result ~= 0 then return false, "pre_commit_failed" end
+      if not secured then return true, "committed_hardening_failed" end
+      return true, "committed"
     end,
     revert = function() cursor:revert("xc"); return true end,
     stage_replace = function(global, nodes)

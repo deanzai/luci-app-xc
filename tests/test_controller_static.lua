@@ -45,7 +45,7 @@ end)
 
 t.test("controller validates UCI section IDs and bounds request bodies before parsing", function()
   t.contains(source, 'schema.safe_section_id')
-  t.contains(source, 'adapters.uci.get_node(section_id)')
+  t.contains(source, 'pcall(adapters.uci.get_node, section_id)')
   t.contains(source, 'REQUEST_BODY_MAX = 512 * 1024')
   t.contains(source, 'http.getenv("CONTENT_LENGTH")')
   t.contains(source, 'if length_text == nil then failure("validation_failed")')

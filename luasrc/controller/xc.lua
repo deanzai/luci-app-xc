@@ -11,15 +11,31 @@ local LOG_READ_MAX = 256 * 1024
 
 local messages = {
   busy = "Another XC operation is in progress.",
+  commit_unknown = "The save result could not be confirmed.",
+  committed_hardening_failed = "The configuration was saved but its file mode could not be confirmed.",
   commit_failed = "The configuration could not be saved.",
   import_failed = "The import could not be completed.",
   internal_error = "The request could not be completed.",
   invalid_node = "The selected node is invalid.",
   method_not_allowed = "This action requires POST.",
   missing_node = "The selected node does not exist.",
+  not_implemented = "This capability is not available yet.",
   no_rollback_state = "No rollback state is available.",
   request_too_large = "The request body is too large.",
   validation_failed = "The request did not pass validation."
+}
+
+local failure_status = {
+  validation_failed = 400, invalid_node = 400,
+  missing_node = 404, no_rollback_state = 404,
+  method_not_allowed = 405, busy = 409,
+  request_too_large = 413, not_implemented = 501
+}
+
+local status_text = {
+  [400] = "Bad Request", [404] = "Not Found", [405] = "Method Not Allowed",
+  [409] = "Conflict", [413] = "Content Too Large", [500] = "Internal Server Error",
+  [501] = "Not Implemented"
 }
 
 local function respond(payload)
@@ -33,6 +49,8 @@ end
 
 local function failure(code)
   if type(code) ~= "string" or not code:match("^[a-z][a-z_]*$") then code = "internal_error" end
+  local status = failure_status[code] or 500
+  http.status(status, status_text[status])
   respond({ ok = false, code = code, message = messages[code] or "The request failed safely." })
 end
 
@@ -94,8 +112,10 @@ local function requested_node(adapters, body)
   if not called or type(value) ~= "table" then return nil, "validation_failed" end
   local section_id = value.section
   if not schema.safe_section_id(section_id) then return nil, "invalid_node" end
-  local node = adapters.uci.get_node(section_id)
-  if type(node) ~= "table" then return nil, "missing_node" end
+  local read_ok, node, outcome = pcall(adapters.uci.get_node, section_id)
+  if not read_ok then return nil, "internal_error" end
+  if node == nil and outcome == "missing" then return nil, "missing_node" end
+  if type(node) ~= "table" or outcome ~= "ok" then return nil, "internal_error" end
   return { section_id = section_id, node = node }
 end
 
@@ -152,13 +172,7 @@ function action_probe()
   if not adapters then failure("internal_error"); return end
   local selected, code = requested_node(adapters, body)
   if not selected then failure(code); return end
-  success({
-    section = selected.section_id,
-    name = type(selected.node.name) == "string" and selected.node.name or "",
-    protocol = schema.supported_protocols[selected.node.protocol] and selected.node.protocol or nil,
-    socket = false,
-    ping = false
-  })
+  failure("not_implemented")
 end
 
 function action_switch()
@@ -198,24 +212,32 @@ function action_import_commit()
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
 
-  local called, result, code = xpcall(function()
+  local called, result, code, revert_allowed = xpcall(function()
     local parsed = importer.parse(body, adapters.json)
-    if type(parsed) ~= "table" then return nil, "validation_failed" end
+    if type(parsed) ~= "table" then return nil, "validation_failed", true end
     local nodes, warnings = importer.deduplicate(parsed.nodes, adapters.uci.list_nodes())
-    if type(nodes) ~= "table" then return nil, "validation_failed" end
+    if type(nodes) ~= "table" then return nil, "validation_failed", true end
     warnings = append_warnings(parsed.warnings, warnings)
     for _, node in ipairs(nodes) do
-      if not schema.validate(node) then return nil, "validation_failed" end
+      if not schema.validate(node) then return nil, "validation_failed", true end
     end
     if #nodes > 0 then
-      if not adapters.uci.stage_nodes(nodes) then return nil, "import_failed" end
-      if not adapters.uci.commit() then return nil, "commit_failed" end
+      if not adapters.uci.stage_nodes(nodes) then return nil, "import_failed", true end
+      local committed, outcome = adapters.uci.commit()
+      if outcome == "committed_hardening_failed" then
+        return nil, "committed_hardening_failed", false
+      end
+      if not committed then
+        if outcome == "pre_commit_failed" then return nil, "commit_failed", true end
+        return nil, outcome == "commit_unknown" and outcome or "commit_unknown", false
+      end
+      if outcome ~= "committed" then return nil, "commit_unknown", false end
     end
     return { imported = #nodes, nodes = public_nodes(nodes), warnings = warnings or {} }
   end, function() return "internal_error" end)
 
   if not called or not result then
-    pcall(function() adapters.uci.revert() end)
+    if called and revert_allowed then pcall(function() adapters.uci.revert() end) end
     failure(called and code or "internal_error")
     return
   end

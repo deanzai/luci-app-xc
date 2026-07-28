@@ -122,11 +122,13 @@ end)
 t.test("credential commits enforce config mode before and after commit", function()
   local function commit_fixture(fail_chmod, throw_commit)
     local events, chmod_calls = {}, 0
+    local state = { committed = false }
     local cursor = {
       foreach = function() end,
       commit = function(_, config)
         events[#events + 1] = "commit:" .. config
         if throw_commit then error("commit-secret") end
+        state.committed = true
         return true
       end
     }
@@ -139,24 +141,70 @@ t.test("credential commits enforce config mode before and after commit", functio
       end },
       jsonc = { parse = function() end, stringify = function() return "{}" end }
     })
-    return adapters.uci, events
+    return adapters.uci, events, state
   end
 
   local uci, events = commit_fixture()
-  t.eq(uci.commit(), true)
+  local committed, outcome = uci.commit()
+  t.eq(committed, true)
+  t.eq(outcome, "committed")
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
 
   uci, events = commit_fixture(1)
-  t.eq(uci.commit(), false)
+  committed, outcome = uci.commit()
+  t.eq(committed, false)
+  t.eq(outcome, "pre_commit_failed")
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600")
 
-  uci, events = commit_fixture(2)
-  t.eq(uci.commit(), false)
+  local state
+  uci, events, state = commit_fixture(2)
+  committed, outcome = uci.commit()
+  t.eq(committed, true)
+  t.eq(outcome, "committed_hardening_failed")
+  t.eq(state.committed, true)
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
 
   uci, events = commit_fixture(nil, true)
-  local called, committed = pcall(uci.commit)
+  local called
+  called, committed, outcome = pcall(uci.commit)
   t.eq(called, true)
   t.eq(committed, false)
+  t.eq(outcome, "commit_unknown")
   t.eq(table.concat(events, "|"), "chmod:/etc/config/xc:600|commit:xc|chmod:/etc/config/xc:600")
+end)
+
+t.test("get_node distinguishes missing invalid and failed UCI reads", function()
+  local mode = "missing"
+  local cursor = {
+    foreach = function() end,
+    get_all = function(_, _, section)
+      if mode == "throw" then error("password=read-secret") end
+      if mode == "node" then return { [".name"] = section, [".type"] = "node", protocol = "socks" } end
+      return nil
+    end
+  }
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = cursor, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+
+  local node_value, outcome = adapters.uci.get_node("safe_node")
+  t.eq(node_value, nil)
+  t.eq(outcome, "missing")
+
+  node_value, outcome = adapters.uci.get_node("bad;node")
+  t.eq(node_value, nil)
+  t.eq(outcome, "invalid_id")
+
+  mode = "throw"
+  local called
+  called, node_value, outcome = pcall(adapters.uci.get_node, "safe_node")
+  t.eq(called, true)
+  t.eq(node_value, nil)
+  t.eq(outcome, "read_failed")
+
+  mode = "node"
+  node_value, outcome = adapters.uci.get_node("safe_node")
+  t.eq(type(node_value), "table")
+  t.eq(outcome, "ok")
 end)

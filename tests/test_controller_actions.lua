@@ -1,0 +1,198 @@
+local t = require "testlib"
+local real_schema = require "xc.schema"
+
+local function controller_fixture(options)
+  options = options or {}
+  local state = { reverts = 0, commits = 0 }
+  local body = options.body or "{}"
+  local http = {
+    getenv = function(name)
+      if name == "REQUEST_METHOD" then return options.method or "POST" end
+      if name == "CONTENT_LENGTH" then return tostring(options.content_length or #body) end
+    end,
+    content = function() return body end,
+    prepare_content = function(value) state.content_type = value end,
+    status = function(code) state.status = code end,
+    write_json = function(value) state.response = value end
+  }
+  local node = {
+    id = "safe_node", name = "Safe", enabled = true, protocol = "socks",
+    server = "127.0.0.1", port = 1080
+  }
+  local adapters = {
+    json = {
+      parse = function() return options.request or { section = "safe_node" } end,
+      stringify = function() return "{}" end
+    },
+    uci = {
+      get_node = options.get_node or function() return node, "ok" end,
+      list_nodes = function() return options.existing_nodes or {} end,
+      stage_nodes = function() return options.stage_ok ~= false end,
+      commit = function()
+        state.commits = state.commits + 1
+        return options.commit_ok ~= false, options.commit_outcome or "committed"
+      end,
+      revert = function() state.reverts = state.reverts + 1; return true end
+    },
+    fs = {
+      read = function() return "" end,
+      remove = function() return true end
+    }
+  }
+  local runtime_instance = options.runtime_instance or {
+    switch = function() return { ok = true, code = "switched", node = "safe_node" } end,
+    rollback = function() return { ok = true, code = "rolled_back" } end,
+    status = function() return { ok = true, service = "running", lock = "unlocked" } end
+  }
+  local importer = {
+    parse = options.import_parse or function()
+      return { nodes = options.import_nodes or { node }, warnings = {} }
+    end,
+    deduplicate = function(nodes) return nodes, {} end
+  }
+
+  local replacements = {
+    ["luci.http"] = http,
+    ["xc.schema"] = real_schema,
+    ["xc.platform"] = { new = function() return adapters end },
+    ["xc.runtime"] = { new = function() return runtime_instance end, paths = { log = "/var/log/xc.log" } },
+    ["xc.importer"] = importer
+  }
+  local saved = {}
+  for name, replacement in pairs(replacements) do saved[name], package.loaded[name] = package.loaded[name], replacement end
+  saved["luci.controller.xc"] = package.loaded["luci.controller.xc"]
+  package.loaded["luci.controller.xc"] = nil
+  assert(loadfile("luasrc/controller/xc.lua"))()
+  local controller = assert(package.loaded["luci.controller.xc"])
+  package.loaded["luci.controller.xc"] = saved["luci.controller.xc"]
+  for name in pairs(replacements) do package.loaded[name] = saved[name] end
+  return controller, state
+end
+
+t.test("controller distinguishes missing nodes from uncertain and throwing UCI reads", function()
+  local controller, state = controller_fixture({ get_node = function() return nil, "missing" end })
+  controller.action_switch()
+  t.eq(state.response.code, "missing_node")
+
+  controller, state = controller_fixture({ get_node = function() return nil, "read_failed" end })
+  controller.action_switch()
+  t.eq(state.response.code, "internal_error")
+
+  controller, state = controller_fixture({ get_node = function() return nil, "read_failed" end })
+  controller.action_probe()
+  t.eq(state.response.code, "internal_error")
+
+  controller, state = controller_fixture({ get_node = function() error("password=read-secret") end })
+  local called = pcall(controller.action_switch)
+  t.eq(called, true)
+  t.eq(state.response.code, "internal_error")
+  t.eq(state.response.message:find("read%-secret"), nil)
+end)
+
+t.test("controller never reports a fabricated probe result before probe support exists", function()
+  local controller, state = controller_fixture()
+  controller.action_probe()
+  t.eq(state.response.ok, false)
+  t.eq(state.response.code, "not_implemented")
+  t.eq(state.status, 501)
+end)
+
+t.test("controller reverts only definitely uncommitted imports", function()
+  local controller, state = controller_fixture({ commit_ok = false, commit_outcome = "pre_commit_failed" })
+  controller.action_import_commit()
+  t.eq(state.response.code, "commit_failed")
+  t.eq(state.reverts, 1)
+  t.eq(state.status, 500)
+
+  controller, state = controller_fixture({ commit_ok = false, commit_outcome = "commit_unknown" })
+  controller.action_import_commit()
+  t.eq(state.response.code, "commit_unknown")
+  t.eq(state.reverts, 0)
+  t.eq(state.status, 500)
+
+  controller, state = controller_fixture({ commit_ok = true, commit_outcome = "committed_hardening_failed" })
+  controller.action_import_commit()
+  t.eq(state.response.code, "committed_hardening_failed")
+  t.eq(state.reverts, 0)
+  t.eq(state.status, 500)
+
+  controller, state = controller_fixture({ stage_ok = false })
+  controller.action_import_commit()
+  t.eq(state.response.code, "import_failed")
+  t.eq(state.reverts, 1)
+end)
+
+t.test("controller failure envelopes use stable HTTP status codes", function()
+  local cases = {
+    {
+      expected = 405,
+      run = function()
+        local controller, state = controller_fixture({ method = "GET" })
+        controller.action_probe(); return state
+      end
+    },
+    {
+      expected = 413,
+      run = function()
+        local controller, state = controller_fixture({ content_length = 512 * 1024 + 1 })
+        controller.action_probe(); return state
+      end
+    },
+    {
+      expected = 400,
+      run = function()
+        local controller, state = controller_fixture({ request = { section = "bad;node" } })
+        controller.action_switch(); return state
+      end
+    },
+    {
+      expected = 404,
+      run = function()
+        local controller, state = controller_fixture({ get_node = function() return nil, "missing" end })
+        controller.action_switch(); return state
+      end
+    },
+    {
+      expected = 409,
+      run = function()
+        local controller, state = controller_fixture({
+          runtime_instance = {
+            switch = function() return { ok = false, code = "busy" } end,
+            rollback = function() return { ok = true } end,
+            status = function() return { ok = true, service = "running", lock = "held" } end
+          }
+        })
+        controller.action_switch(); return state
+      end
+    },
+    {
+      expected = 404,
+      run = function()
+        local controller, state = controller_fixture({
+          runtime_instance = {
+            switch = function() return { ok = true } end,
+            rollback = function() return { ok = false, code = "no_rollback_state" } end,
+            status = function() return { ok = true, service = "running", lock = "held" } end
+          }
+        })
+        controller.action_rollback(); return state
+      end
+    },
+    {
+      expected = 500,
+      run = function()
+        local controller, state = controller_fixture({ get_node = function() return nil, "read_failed" end })
+        controller.action_switch(); return state
+      end
+    }
+  }
+  for _, case in ipairs(cases) do
+    local state = case.run()
+    t.eq(state.status, case.expected)
+    t.eq(state.content_type, "application/json")
+    t.eq(state.response.ok, false)
+    t.eq(type(state.response.message), "string")
+  end
+end)
+
+return { fixture = controller_fixture }
