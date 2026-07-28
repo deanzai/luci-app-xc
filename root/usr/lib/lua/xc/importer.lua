@@ -5,6 +5,14 @@ local M = {}
 local INPUT_MAX_BYTES = 524288
 local MAX_CANDIDATES = 500
 local NAME_MAX_BYTES = 128
+local QUERY_MAX_PARAMETERS = 16
+local QUERY_KEY_MAX_BYTES = 32
+local QUERY_VALUE_MAX_BYTES = 2048
+local structured_query_keys = {
+  security = true, sni = true, pbk = true, sid = true, fp = true,
+  flow = true, type = true, host = true, path = true,
+  serviceName = true, encryption = true, net = true
+}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -104,17 +112,25 @@ end
 local function parse_query(source)
   local values = {}
   if source == nil or source == "" then return values end
-  local position = 1
+  local position, count = 1, 0
   while position <= #source do
+    count = count + 1
+    if count > QUERY_MAX_PARAMETERS then return nil, "too many URI query parameters" end
     local separator = source:find("&", position, true)
     local piece = source:sub(position, separator and separator - 1 or #source)
     if piece == "" then return nil, "invalid URI query" end
     local equals = piece:find("=", 1, true)
     local raw_key = equals and piece:sub(1, equals - 1) or piece
     local raw_value = equals and piece:sub(equals + 1) or ""
+    if #raw_key > QUERY_KEY_MAX_BYTES * 3 or #raw_value > QUERY_VALUE_MAX_BYTES * 3 then
+      return nil, "URI query parameter too large"
+    end
     local key = percent_decode(raw_key)
+    if not key or key == "" or #key > QUERY_KEY_MAX_BYTES or not structured_query_keys[key] then
+      return nil, "unsupported URI query parameter"
+    end
     local value = percent_decode(raw_value)
-    if not key or not value or key == "" or values[key] ~= nil then return nil, "invalid URI query" end
+    if not value or #value > QUERY_VALUE_MAX_BYTES or values[key] ~= nil then return nil, "invalid URI query" end
     values[key] = value
     if not separator then break end
     position = separator + 1
@@ -173,6 +189,7 @@ local function normalize_node(candidate)
   candidate.id = "import_candidate"
   local normalized, err = schema.normalize(candidate)
   if not normalized then return nil, err end
+  if not valid_name(normalized.name) then return nil, "invalid name" end
   candidate.id = "node_" .. schema.fingerprint(normalized)
   normalized, err = schema.normalize(candidate)
   if not normalized then return nil, err end
@@ -211,6 +228,8 @@ local function parse_standard_uri(scheme, body)
   elseif scheme == "trojan" then
     node.password = credential
     structured_fields(node, query)
+    if query.security == nil then node.security = "tls" end
+    if node.security == "tls" and (node.sni == nil or node.sni == "") then node.sni = host end
   end
   return normalize_node(node)
 end
@@ -322,6 +341,9 @@ local function encode_json(value, depth, seen)
   if kind == "boolean" then return value and "true" or "false" end
   if kind == "number" then
     if value ~= value or value == math.huge or value == -math.huge then return nil end
+    if value == math.floor(value) and math.abs(value) <= 9007199254740991 then
+      return string.format("%.0f", value)
+    end
     return tostring(value)
   end
   if kind ~= "table" or depth > 30 or seen[value] then return nil end
@@ -358,11 +380,47 @@ local function encode_json(value, depth, seen)
   return "{" .. table.concat(output, ",") .. "}"
 end
 
-function M.parse_outbound(table_value)
+local function unambiguous_json_table(value, seen)
+  local kind = type(value)
+  if kind == "string" or kind == "boolean" then return true end
+  if kind == "number" then
+    return value == value and value ~= math.huge and value ~= -math.huge
+      and value == math.floor(value) and math.abs(value) <= 9007199254740991
+  end
+  if kind ~= "table" or seen[value] then return false end
+  seen[value] = true
+  local count, maximum, array = 0, 0, true
+  for key in pairs(value) do
+    count = count + 1
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
+      array = false
+      if type(key) ~= "string" then seen[value] = nil; return false end
+    elseif key > maximum then
+      maximum = key
+    end
+  end
+  if count == 0 or (array and count ~= maximum) then seen[value] = nil; return false end
+  for _, child in pairs(value) do
+    if not unambiguous_json_table(child, seen) then seen[value] = nil; return false end
+  end
+  seen[value] = nil
+  return true
+end
+
+function M.parse_outbound(table_value, authoritative_source)
   if type(table_value) ~= "table" or type(table_value.protocol) ~= "string" then
     return nil, "invalid Xray outbound"
   end
-  local raw = encode_json(table_value, 0, {})
+  local raw
+  if authoritative_source ~= nil then
+    if type(authoritative_source) ~= "string" then return nil, "invalid authoritative outbound JSON" end
+    raw = authoritative_source
+  else
+    if not unambiguous_json_table(table_value, {}) then
+      return nil, "authoritative outbound JSON required"
+    end
+    raw = encode_json(table_value, 0, {})
+  end
   if not raw then return nil, "invalid Xray outbound" end
   return normalize_node({
     protocol = "raw", name = table_value.tag or table_value.protocol,
@@ -413,17 +471,36 @@ function M.deduplicate(new_nodes, existing_nodes)
   if type(new_nodes) ~= "table" or type(existing_nodes) ~= "table" then
     return nil, "invalid node list"
   end
-  local seen = {}
-  for _, node in ipairs(existing_nodes) do seen[schema.fingerprint(node)] = true end
+  local buckets, used_ids = {}, {}
+  local function remember(node)
+    local fingerprint = schema.fingerprint(node)
+    buckets[fingerprint] = buckets[fingerprint] or {}
+    buckets[fingerprint][#buckets[fingerprint] + 1] = node
+    if type(node.id) == "string" then used_ids[node.id] = true end
+  end
+  for _, node in ipairs(existing_nodes) do remember(node) end
   local nodes, warnings = {}, {}
   for _, candidate in ipairs(new_nodes) do
     local node, err = normalize_node(candidate)
     if not node then return nil, err end
     local fingerprint = schema.fingerprint(node)
-    if seen[fingerprint] then
+    local duplicate = false
+    for _, seen_node in ipairs(buckets[fingerprint] or {}) do
+      if schema.identity_equal(node, seen_node) then duplicate = true; break end
+    end
+    if duplicate then
       warnings[#warnings + 1] = "skipped duplicate node"
     else
-      seen[fingerprint] = true
+      local base_id, suffix = node.id, 2
+      while used_ids[node.id] do
+        node.id = base_id .. "_" .. tostring(suffix)
+        suffix = suffix + 1
+      end
+      if node.id ~= base_id then
+        node, err = schema.normalize(node)
+        if not node then return nil, err end
+      end
+      remember(node)
       nodes[#nodes + 1] = node
     end
   end
@@ -444,7 +521,7 @@ function M.parse(text, json_adapter)
       nodes, err = M.parse_legacy(value)
     else
       local node
-      node, err = M.parse_outbound(value)
+      node, err = M.parse_outbound(value, text)
       if node then nodes = { node } end
     end
     if not nodes then return nil, err end

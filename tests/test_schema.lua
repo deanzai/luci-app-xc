@@ -194,6 +194,22 @@ t.test("fingerprint uses only protocol identity and canonical raw JSON", functio
   t.eq(schema.fingerprint(raw_a), schema.fingerprint(raw_b))
 end)
 
+t.test("compares canonical identities without trusting a legacy hash collision", function()
+  local collision_a = assert(schema.normalize(node({ id = "ca", protocol = "socks", server = "h", port = 1, user = "RCEHK7eT96Di", password = "one" })))
+  local collision_b = assert(schema.normalize(node({ id = "cb", protocol = "socks", server = "h", port = 1, user = "3m8Z8H7ZXstB", password = "two" })))
+  t.truthy(schema.fingerprint(collision_a) ~= schema.fingerprint(collision_b))
+  t.truthy(not schema.identity_equal(collision_a, collision_b))
+
+  local equivalent = assert(schema.normalize(node({ id = "ce", protocol = "socks", server = "H", port = 1, user = "RCEHK7eT96Di", password = "different" })))
+  t.truthy(schema.identity_equal(collision_a, equivalent))
+
+  local raw_a = assert(schema.normalize(node({ id = "cra", protocol = "raw", raw_outbound = '{"protocol":"freedom","settings":{"items":[],"missing":null,"large":9007199254740993}}' })))
+  local raw_b = assert(schema.normalize(node({ id = "crb", protocol = "raw", raw_outbound = '{ "settings" : { "large" : 9007199254740993, "missing" : null, "items" : [] }, "protocol" : "freedom" }' })))
+  local raw_other = assert(schema.normalize(node({ id = "crc", protocol = "raw", raw_outbound = '{"protocol":"freedom","settings":{"items":[],"missing":null,"large":9007199254740992}}' })))
+  t.truthy(schema.identity_equal(raw_a, raw_b))
+  t.truthy(not schema.identity_equal(raw_a, raw_other))
+end)
+
 t.test("bounds raw JSON nesting without exposing secrets", function()
   local function nested(depth, body)
     return string.rep("{\"layer\":", depth) .. body .. string.rep("}", depth)

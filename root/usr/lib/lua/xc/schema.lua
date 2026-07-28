@@ -469,33 +469,24 @@ canonical_json = function(source)
   return encode(value, 0)
 end
 
-function M.fingerprint(node)
+local function identity_parts(node)
   node = node or {}
-  local hash = 0
-  local function hash_bytes(value)
-    for position = 1, #value do
-      hash = (hash * 131 + value:byte(position)) % 2147483647
-    end
-  end
-  local function hash_piece(value)
-    value = value == nil and "" or tostring(value)
-    hash_bytes(tostring(#value))
-    hash_bytes(":")
-    hash_bytes(value)
-  end
-  hash_piece(node.protocol)
-  hash_piece(node.server and node.server:lower() or nil)
-  hash_piece(node.port)
-  if node.protocol == "vless" or node.protocol == "vmess" then
-    hash_piece(node.uuid and node.uuid:lower() or nil)
-  elseif node.protocol == "trojan" then
-    hash_piece(node.password)
-  elseif node.protocol == "shadowsocks" then
-    hash_piece(node.method and node.method:lower() or nil)
-    hash_piece(node.password)
-  elseif node.protocol == "socks" then
-    hash_piece(node.user)
-  elseif node.protocol == "raw" then
+  local protocol = type(node.protocol) == "string" and node.protocol:lower() or node.protocol
+  local parts = {
+    protocol,
+    type(node.server) == "string" and node.server:lower() or node.server,
+    node.port
+  }
+  if protocol == "vless" or protocol == "vmess" then
+    parts[#parts + 1] = type(node.uuid) == "string" and node.uuid:lower() or node.uuid
+  elseif protocol == "trojan" then
+    parts[#parts + 1] = node.password
+  elseif protocol == "shadowsocks" then
+    parts[#parts + 1] = type(node.method) == "string" and node.method:lower() or node.method
+    parts[#parts + 1] = node.password
+  elseif protocol == "socks" then
+    parts[#parts + 1] = node.user
+  elseif protocol == "raw" then
     local cached = canonical_raw_cache[node]
     local canonical
     if cached and cached.source == node.raw_outbound then
@@ -506,9 +497,43 @@ function M.fingerprint(node)
         canonical_raw_cache[node] = { source = node.raw_outbound, value = canonical }
       end
     end
-    hash_piece(canonical)
+    if not canonical then return nil end
+    parts[#parts + 1] = canonical
   end
-  return string.format("%08x", hash)
+  for index, value in ipairs(parts) do parts[index] = value == nil and "" or tostring(value) end
+  return parts
+end
+
+function M.identity_equal(left, right)
+  local left_parts, right_parts = identity_parts(left), identity_parts(right)
+  if not left_parts or not right_parts or #left_parts ~= #right_parts then return false end
+  for index, value in ipairs(left_parts) do
+    if value ~= right_parts[index] then return false end
+  end
+  return true
+end
+
+function M.fingerprint(node)
+  local parts = identity_parts(node) or { "invalid" }
+  local hashes = { 0, 104729, 130363, 169087 }
+  local multipliers = { 131, 137, 149, 157 }
+  local function hash_bytes(value)
+    for position = 1, #value do
+      local byte = value:byte(position)
+      for index = 1, #hashes do
+        hashes[index] = (hashes[index] * multipliers[index] + byte) % 2147483647
+      end
+    end
+  end
+  local function hash_piece(value)
+    hash_bytes(tostring(#value))
+    hash_bytes(":")
+    hash_bytes(value)
+  end
+  for _, value in ipairs(parts) do hash_piece(value) end
+  local output = {}
+  for index, hash in ipairs(hashes) do output[index] = string.format("%08x", hash) end
+  return table.concat(output)
 end
 
 return M

@@ -7,6 +7,8 @@ local UUID_TWO = "22222222-2222-2222-2222-222222222222"
 local VMESS_JSON = '{"v":"2","ps":"Synthetic VMess","add":"vmess.invalid","port":"443","id":"' .. UUID_TWO .. '","aid":"0","scy":"auto","net":"ws","type":"none","host":"cdn.invalid","path":"/socket","tls":"tls","sni":"vmess.invalid","fp":"firefox"}'
 local VMESS_BASE64 = "eyJ2IjoiMiIsInBzIjoiU3ludGhldGljIFZNZXNzIiwiYWRkIjoidm1lc3MuaW52YWxpZCIsInBvcnQiOiI0NDMiLCJpZCI6IjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiJjZG4uaW52YWxpZCIsInBhdGgiOiIvc29ja2V0IiwidGxzIjoidGxzIiwic25pIjoidm1lc3MuaW52YWxpZCIsImZwIjoiZmlyZWZveCJ9"
 local RAW_JSON = '{"protocol":"freedom","tag":"synthetic-raw","settings":{"domainStrategy":"UseIP"}}'
+local LOSSLESS_RAW_JSON = '{"protocol":"freedom","settings":{"items":[],"missing":null,"large":9007199254740993}}'
+local EQUIVALENT_LOSSLESS_RAW_JSON = '{ "settings" : { "large" : 9007199254740993, "missing" : null, "items" : [] }, "protocol" : "freedom" }'
 
 local legacy_table = {
   reality_uk_id = "legacy_reality",
@@ -48,6 +50,9 @@ local json_adapter = {
     } end
     if text == legacy_json then return legacy_table end
     if text == RAW_JSON then return raw_table end
+    if text == LOSSLESS_RAW_JSON or text == EQUIVALENT_LOSSLESS_RAW_JSON then
+      return { protocol = "freedom", settings = { items = {}, large = 9007199254740993 } }
+    end
     return nil, "synthetic JSON parse failure"
   end
 }
@@ -164,6 +169,99 @@ t.test("wraps one raw Xray outbound object as a normalized raw node", function()
 
   local direct = assert(importer.parse_outbound(raw_table))
   t.eq(direct.protocol, "raw")
+end)
+
+t.test("preserves authoritative outbound JSON bytes and exact identity", function()
+  local result = assert(importer.parse(LOSSLESS_RAW_JSON, json_adapter))
+  local node = result.nodes[1]
+  t.eq(node.raw_outbound, LOSSLESS_RAW_JSON)
+  t.contains(node.raw_outbound, '"items":[]')
+  t.contains(node.raw_outbound, '"missing":null')
+  t.contains(node.raw_outbound, '9007199254740993')
+
+  local equivalent = assert(importer.parse(EQUIVALENT_LOSSLESS_RAW_JSON, json_adapter)).nodes[1]
+  t.eq(schema.fingerprint(node), schema.fingerprint(equivalent))
+  t.truthy(schema.identity_equal(node, equivalent))
+end)
+
+t.test("rejects ambiguous table-only raw outbound encoding", function()
+  local empty_array, array_err = importer.parse_outbound({
+    protocol = "freedom", settings = { items = {} }
+  })
+  t.eq(empty_array, nil)
+  t.contains(array_err, "authoritative")
+
+  local large_number, number_err = importer.parse_outbound({
+    protocol = "freedom", settings = { large = 9007199254740992 }
+  })
+  t.eq(large_number, nil)
+  t.contains(number_err, "authoritative")
+
+  local fractional, fractional_err = importer.parse_outbound({
+    protocol = "freedom", settings = { ratio = 0.123456789012345 }
+  })
+  t.eq(fractional, nil)
+  t.contains(fractional_err, "authoritative")
+end)
+
+t.test("encodes an unambiguous table-only safe integer exactly", function()
+  local node = assert(importer.parse_outbound({
+    protocol = "freedom", settings = { exact = 9007199254740991 }
+  }))
+  t.contains(node.raw_outbound, '"exact":9007199254740991')
+end)
+
+t.test("keeps distinct nodes from the reproduced legacy fingerprint collision", function()
+  local result = assert(importer.parse(table.concat({
+    "socks://RCEHK7eT96Di:one@collision.invalid:1080#One",
+    "socks://3m8Z8H7ZXstB:two@collision.invalid:1080#Two"
+  }, "\n"), json_adapter))
+  t.eq(#result.nodes, 2)
+  t.truthy(result.nodes[1].id ~= result.nodes[2].id)
+  t.truthy(not schema.identity_equal(result.nodes[1], result.nodes[2]))
+end)
+
+t.test("defaults bare Trojan links to TLS with host SNI", function()
+  local node = assert(importer.parse_uri("trojan://synthetic-password@trojan-default.invalid:443#Default", json_adapter))
+  t.eq(node.security, "tls")
+  t.eq(node.sni, "trojan-default.invalid")
+
+  local explicit = assert(importer.parse_uri("trojan://synthetic-password@trojan-default.invalid:443?security=none&sni=override.invalid#Explicit", json_adapter))
+  t.eq(explicit.security, "none")
+  t.eq(explicit.sni, "override.invalid")
+end)
+
+t.test("validates names supplied by schema defaults", function()
+  local long, long_err = importer.parse_uri("socks://u:p@" .. string.rep("a", 129) .. ":1080", json_adapter)
+  t.eq(long, nil)
+  t.contains(long_err, "name")
+
+  local invalid, invalid_err = importer.parse_uri("socks://u:p@" .. string.char(0xC0, 0x80) .. ":1080", json_adapter)
+  t.eq(invalid, nil)
+  t.contains(invalid_err, "name")
+end)
+
+t.test("rejects unknown structured query parameters", function()
+  local prefix = "vless://" .. UUID_ONE .. "@bounded.invalid:443?"
+  local unknown, unknown_err = importer.parse_uri(prefix .. "unknown=value", json_adapter)
+  t.eq(unknown, nil)
+  t.contains(unknown_err, "query")
+end)
+
+t.test("rejects oversized structured query values", function()
+  local prefix = "vless://" .. UUID_ONE .. "@bounded.invalid:443?"
+  local oversized, oversized_err = importer.parse_uri(prefix .. "type=ws&path=" .. string.rep("x", 2049), json_adapter)
+  t.eq(oversized, nil)
+  t.contains(oversized_err, "query")
+end)
+
+t.test("rejects a 52,000-parameter URI without retaining unknown keys", function()
+  local prefix = "vless://" .. UUID_ONE .. "@bounded.invalid:443?"
+  local parameters = {}
+  for index = 1, 52000 do parameters[index] = "k" .. index .. "=x" end
+  local excessive, excessive_err = importer.parse_uri(prefix .. table.concat(parameters, "&"), json_adapter)
+  t.eq(excessive, nil)
+  t.contains(excessive_err, "query")
 end)
 
 t.test("fails the whole mixed import when any candidate is malformed", function()
