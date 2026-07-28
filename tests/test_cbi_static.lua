@@ -85,6 +85,65 @@ t.test("node removal protection reads committed UCI and emits secret-safe errors
   t.eq(value:find("raw_outbound", 1, true), nil)
 end)
 
+local function run_remove_case(global, configured, target)
+  local removed, map, captured = nil, nil, nil
+  local cursor = {
+    get = function(_, _, section, option) return global[section] and global[section][option] end,
+    foreach = function(_, _, _, callback) for _, node in ipairs(configured) do callback(node) end end
+  }
+  local typed = {
+    create = function() return "new_node" end,
+    remove = function(_, section) removed = section; return true end
+  }
+  local base = {}; function base:value() end
+  local function class() return setmetatable({}, { __index = base }) end
+  local environment = {
+    Map = function()
+      map = { uci = cursor }
+      function map:section()
+        captured = { map = self }
+        function captured:option(option_class) return setmetatable({ map = self.map }, { __index = option_class }) end
+        return captured
+      end
+      return map
+    end,
+    TypedSection = typed, DummyValue = class(), Flag = class(), translate = function(v) return v end,
+    require = function(name)
+      if name == "luci.dispatcher" then return { build_url = function(...) return table.concat({ ... }, "/") end } end
+      if name == "luci.http" then return { redirect = function() end } end
+      if name == "luci.model.uci" then return { cursor = function() return cursor end } end
+      return require(name)
+    end
+  }
+  setmetatable(environment, { __index = _G })
+  local chunk = assert(loadfile(nodes_path)); setfenv(chunk, environment); assert(chunk())
+  local outcome = captured:remove(target)
+  return outcome, removed, map.errmessage
+end
+
+t.test("node deletion guards execute across service, active, enabled, and count states", function()
+  local nodes = {
+    { [".name"] = "one", enabled = "1" }, { [".name"] = "two", enabled = "1" },
+    { [".name"] = "off", enabled = "0" }
+  }
+  local cases = {
+    { enabled = "1", active = "one", target = "one", blocked = true },
+    { enabled = "1", active = "one", target = "two", blocked = false },
+    { enabled = "1", active = "one", target = "off", blocked = false },
+    { enabled = "0", active = "one", target = "one", blocked = false }
+  }
+  for _, case in ipairs(cases) do
+    local outcome, removed = run_remove_case({ global = { enabled = case.enabled, active_node = case.active } }, nodes, case.target)
+    t.eq(outcome == nil, case.blocked)
+    local expected_removed = case.blocked and nil or case.target
+    if case.blocked then expected_removed = nil end
+    t.eq(removed, expected_removed, "remove delegation mismatch for enabled=" .. case.enabled .. " target=" .. case.target)
+  end
+  local outcome, removed, message = run_remove_case({ global = { enabled = "1", active_node = "off" } },
+    { { [".name"] = "one", enabled = "1" }, { [".name"] = "off", enabled = "0" } }, "one")
+  t.eq(outcome, nil); t.eq(removed, nil); t.contains(message, "only enabled node")
+end)
+
 t.test("node editor covers supported structured protocols and raw outbound", function()
   local value = source(node_path)
   t.contains(value, 'Map("xc",')
@@ -136,29 +195,68 @@ end)
 local function load_node_editor(config)
   local base = {}
   function base:value() end
-  function base:depends() end
+  function base:depends(condition, expected)
+    self.dependencies = self.dependencies or {}
+    self.dependencies[#self.dependencies + 1] = type(condition) == "table" and condition or { [condition] = expected }
+  end
   function base:write(section, value)
-    return self.map:set(section, self.option, value)
+    self.map:set(section, self.option, value)
+  end
+  function base:remove(section) self.map:del(section, self.option) end
+  function base:active(section)
+    if not self.dependencies or #self.dependencies == 0 then return true end
+    for _, dependency in ipairs(self.dependencies) do
+      local matched = true
+      for option, expected in pairs(dependency) do
+        local actual = self.map:formvalue("cbid.xc." .. section .. "." .. option)
+        if actual == nil then actual = self.map:get(section, option) end
+        if actual ~= expected then matched = false end
+      end
+      if matched then return true end
+    end
+    return false
+  end
+  function base:parse(section)
+    if not self:active(section) then return true end
+    local value = self.map:formvalue("cbid.xc." .. section .. "." .. self.option)
+    if value == nil or value == "" then
+      if self.rmempty == false then self.map.errors[self.option] = "missing"; return false end
+      self:remove(section); return true
+    end
+    if self.validate then
+      local valid = self:validate(value, section)
+      if valid == nil then self.map.errors[self.option] = "invalid"; return false end
+      value = valid
+    end
+    self:write(section, value)
+    return true
   end
 
   local function class()
     return setmetatable({}, { __index = base })
   end
 
-  local map = { config = "xc", options = {}, values = config, forms = {} }
+  local map = { config = "xc", options = {}, option_order = {}, values = config, forms = {}, errors = {} }
   function map:section()
     local section = { map = self }
     function section:option(option_class, option)
       local value = setmetatable({ map = self.map, option = option }, { __index = option_class })
       self.map.options[option] = value
+      self.map.option_order[#self.map.option_order + 1] = value
       return value
     end
     return section
   end
-  function map:set(_, option, value) self.values[option] = value; return true end
-  function map:del(_, option) self.values[option] = nil; return true end
+  function map:set(_, option, value) self.values[option] = value end
+  function map:del(_, option) self.values[option] = nil end
   function map:get(_, option) return self.values[option] end
   function map:formvalue(key) return self.forms[key] end
+  function map:parse(section)
+    for _, option in ipairs(self.option_order) do
+      if not option:parse(section) then return false end
+    end
+    return true
+  end
 
   local classes = {
     NamedSection = {}, Flag = class(), Value = class(), ListValue = class(), TextValue = class()
@@ -188,6 +286,61 @@ local function load_node_editor(config)
   assert(chunk())
   return map, classes
 end
+
+local function submit(map, values)
+  for option, value in pairs(values) do map.forms["cbid.xc.node_1." .. option] = value end
+  return map:parse("node_1")
+end
+
+t.test("LuCI parse removes TLS and Reality fields during security transitions", function()
+  local base = {
+    [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless",
+    server = "edge.invalid", port = "443", uuid = "11111111-1111-1111-1111-111111111111",
+    encryption = "none", transport = "tcp"
+  }
+  local cases = {
+    { from = "tls", to = "none", stale = { sni = "edge.invalid", fingerprint = "chrome" } },
+    { from = "reality", to = "tls", visible = { sni = "tls.invalid" }, stale = { public_key = string.rep("A", 43), short_id = "ab" } },
+    { from = "reality", to = "none", stale = { sni = "edge.invalid", public_key = string.rep("A", 43), short_id = "ab" } }
+  }
+  for _, case in ipairs(cases) do
+    local config = {}; for key, value in pairs(base) do config[key] = value end
+    config.security = case.from
+    for key, value in pairs(case.stale) do config[key] = value end
+    local map = load_node_editor(config)
+    local form = { enabled = "1", name = "Node", protocol = "vless", server = "edge.invalid", port = "443",
+      uuid = base.uuid, encryption = "none", transport = "tcp", security = case.to }
+    for key, value in pairs(case.visible or {}) do form[key] = value end
+    t.eq(submit(map, form), true, case.from .. " -> " .. case.to .. " parse failed")
+    t.eq(next(map.errors), nil)
+    for key in pairs(case.stale) do
+      if not (case.visible and case.visible[key]) then t.eq(config[key], nil, "retained hidden " .. key) end
+    end
+  end
+end)
+
+t.test("LuCI parse enforces visible required fields and cleans protocol and transport transitions", function()
+  local uuid = "11111111-1111-1111-1111-111111111111"
+  local config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless",
+    server = "old.invalid", port = "443", uuid = uuid, encryption = "none", transport = "ws",
+    security = "tls", sni = "old.invalid", ws_host = "old.invalid", ws_path = "/old" }
+  local map = load_node_editor(config)
+  t.eq(submit(map, { enabled = "1", name = "Node", protocol = "vless", server = "new.invalid", port = "443",
+    uuid = uuid, encryption = "none", transport = "grpc", security = "none", grpc_service_name = "svc" }), true)
+  t.eq(config.ws_host, nil); t.eq(config.ws_path, nil); t.eq(config.sni, nil); t.eq(config.grpc_service_name, "svc")
+
+  config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", server = "old.invalid",
+    port = "443", uuid = uuid, encryption = "none", transport = "tcp", security = "reality",
+    public_key = string.rep("A", 43), short_id = "ab" }
+  map = load_node_editor(config)
+  t.eq(submit(map, { enabled = "1", name = "Node", protocol = "raw", raw_outbound = '{"protocol":"freedom"}' }), true)
+  t.eq(config.server, nil); t.eq(config.public_key, nil); t.eq(config.raw_outbound, '{"protocol":"freedom"}')
+
+  config = { [".name"] = "node_1", enabled = "1", name = "Node", protocol = "vless", security = "none" }
+  map = load_node_editor(config)
+  t.eq(submit(map, { enabled = "1", name = "Node", protocol = "vless", security = "tls" }), false)
+  t.eq(map.errors.server, "missing")
+end)
 
 t.test("protocol writes remove incompatible UCI fields and leave schema-valid nodes", function()
   local schema = require "xc.schema"
@@ -235,8 +388,7 @@ t.test("protocol writes remove incompatible UCI fields and leave schema-valid no
     for key, value in pairs(target) do
       map.forms["cbid.xc.node_1." .. key] = value
     end
-    local written = map.options.protocol:write("node_1", selected)
-    t.truthy(written, selected .. " protocol write failed")
+    map.options.protocol:write("node_1", selected)
     t.eq(config.protocol, selected)
 
     -- LuCI 21.02 parses protocol before the later target fields.
@@ -267,7 +419,7 @@ t.test("status template polls safely and reuses authenticated action routes", fu
   end
   t.contains(value, 'dispatcher.build_url("admin", "services", "xc", "status")')
   t.contains(value, 'dispatcher.build_url("admin", "services", "xc", "switch")')
-  t.contains(value, 'dispatcher.build_url("admin", "services", "xc", "probe")')
+  t.contains(value, 'dispatcher.build_url("admin", "services", "xc", "test-current")')
   t.contains(value, 'dispatcher.build_url("admin", "services", "xc", "rollback")')
   t.contains(value, "5000")
   t.contains(value, "document.hidden")
@@ -276,7 +428,6 @@ t.test("status template polls safely and reuses authenticated action routes", fu
   t.contains(value, 'encodeURIComponent(csrfToken)')
   t.contains(value, 'JSON.stringify(payload || {})')
   t.contains(value, 'xhr.setRequestHeader("Content-Type", "application/json")')
-  t.contains(value, 'data.code === "not_implemented"')
   t.contains(value, 'unavailableText')
   t.contains(value, 'data.exit_ip || unavailableText')
   t.contains(value, 'textContent')

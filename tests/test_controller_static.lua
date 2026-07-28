@@ -28,6 +28,7 @@ t.test("controller registers the authenticated XC page and action routes", funct
     { "admin", "services", "xc", "log" },
     { "admin", "services", "xc", "status" },
     { "admin", "services", "xc", "probe" },
+    { "admin", "services", "xc", "test-current" },
     { "admin", "services", "xc", "switch" },
     { "admin", "services", "xc", "rollback" },
     { "admin", "services", "xc", "import-preview" },
@@ -40,7 +41,7 @@ t.test("controller registers the authenticated XC page and action routes", funct
 end)
 
 t.test("controller marks every mutating or body-consuming action POST only", function()
-  for _, action in ipairs({ "probe", "switch", "rollback", "import-preview", "import-commit", "clear-log" }) do
+  for _, action in ipairs({ "probe", "test-current", "switch", "rollback", "import-preview", "import-commit", "clear-log" }) do
     local declaration = 'post_entry({ "admin", "services", "xc", "' .. action .. '" }'
     t.contains(source, declaration, action .. " must use the POST-only route helper")
   end

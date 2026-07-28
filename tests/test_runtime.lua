@@ -275,6 +275,12 @@ local function fixture(options)
       end
       return not options.health_fail or options.health_fail ~= kind
     end,
+    observe_exit_ip = function(kind, address, port, health_url, deadline)
+      event("exec:exit_ip:" .. kind .. ":" .. address .. ":" .. tostring(port))
+      state.exit_ip_url, state.exit_ip_deadline = health_url, deadline
+      if options.exit_ip_throw then error("password=exit-secret") end
+      return options.exit_ip
+    end,
     service_state = function() return "running" end
   }
   state.runtime = assert(runtime.new({
@@ -676,6 +682,24 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(stringify(status):find("https://", 1, true), nil)
   t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
   t.eq(stringify(tested):find("raw-secret-runtime", 1, true), nil)
+end)
+
+t.test("status observes a bounded whitelisted exit IP through the local proxy", function()
+  local valid = fixture({ exit_ip = "203.0.113.9\n" })
+  local status = valid.runtime:status()
+  t.eq(status.exit_ip, "203.0.113.9")
+  t.eq(valid.exit_ip_url, valid.global.health_url)
+  t.eq(valid.exit_ip_deadline, 125)
+  t.truthy(event_index(valid.events, "exec:exit_ip:socks:192.168.6.1:7890"))
+
+  for _, unsafe in ipairs({ "", "203.0.113.9 secret", "https://credential.invalid", "999.1.1.1", "::::", "1:2", string.rep("1", 200) }) do
+    local failed_fixture = fixture({ exit_ip = unsafe })
+    local failed = failed_fixture.runtime:status()
+    t.eq(failed.ok, true); t.eq(failed.exit_ip, nil)
+  end
+  local thrown_fixture = fixture({ exit_ip_throw = true })
+  local thrown = thrown_fixture.runtime:status()
+  t.eq(thrown.ok, true); t.eq(thrown.exit_ip, nil)
 end)
 
 t.test("every runtime Xray validation receives a finite monotonic deadline", function()

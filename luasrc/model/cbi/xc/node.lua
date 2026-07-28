@@ -65,16 +65,14 @@ local compatible_fields = {
 }
 
 function protocol.write(self, section, value)
-  local written = ListValue.write(self, section, value)
-  if not written then return written end
+  ListValue.write(self, section, value)
   local keep = compatible_fields[value] or {}
   for _, field in ipairs(protocol_fields) do
     local submitted = self.map:formvalue("cbid.xc." .. section .. "." .. field)
     if (not keep[field] or submitted == nil) and self.map:get(section, field) ~= nil then
-      if not self.map:del(section, field) then return false end
+      self.map:del(section, field)
     end
   end
-  return written
 end
 
 function protocol.validate(self, value, section)
@@ -180,6 +178,12 @@ function transport.validate(self, value, section)
   end
   return value
 end
+function transport.write(self, section, value)
+  ListValue.write(self, section, value)
+  if value ~= "ws" then self.map:del(section, "ws_host"); self.map:del(section, "ws_path") end
+  if value ~= "grpc" then self.map:del(section, "grpc_service_name") end
+  if value ~= "tcp" then self.map:del(section, "flow") end
+end
 
 local security = node:option(ListValue, "security", translate("Security"))
 for _, value in ipairs({ "vless", "vmess", "trojan" }) do
@@ -194,6 +198,11 @@ function security.validate(self, value, section)
     return nil, translate("Reality is supported only for structured VLESS nodes; use protocol=raw.")
   end
   return value
+end
+function security.write(self, section, value)
+  ListValue.write(self, section, value)
+  if value == "none" then self.map:del(section, "sni"); self.map:del(section, "fingerprint") end
+  if value ~= "reality" then self.map:del(section, "public_key"); self.map:del(section, "short_id") end
 end
 
 local flow = node:option(ListValue, "flow", translate("Flow"))

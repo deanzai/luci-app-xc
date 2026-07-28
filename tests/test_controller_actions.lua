@@ -46,7 +46,8 @@ local function controller_fixture(options)
   local runtime_instance = options.runtime_instance or {
     switch = function() return { ok = true, code = "switched", node = "safe_node" } end,
     rollback = function() return { ok = true, code = "rolled_back" } end,
-    status = function() return { ok = true, service = "running", lock = "unlocked" } end
+    status = function() return { ok = true, service = "running", lock = "unlocked" } end,
+    test_current = options.test_current or function() return { ok = true, code = "test_passed" } end
   }
   local importer = {
     parse = options.import_parse or function()
@@ -99,6 +100,30 @@ t.test("controller never reports a fabricated probe result before probe support 
   t.eq(state.response.ok, false)
   t.eq(state.response.code, "not_implemented")
   t.eq(state.status, 501)
+end)
+
+t.test("authenticated current-node health action reports stable success and failure envelopes", function()
+  local controller, state = controller_fixture({ test_current = function() return { ok = true, code = "test_passed" } end })
+  controller.action_test_current()
+  t.eq(state.response.ok, true); t.eq(state.response.data.code, "test_passed"); t.eq(state.status, nil)
+
+  controller, state = controller_fixture({ test_current = function() return { ok = false, code = "test_failed" } end })
+  controller.action_test_current()
+  t.eq(state.response.ok, false); t.eq(state.response.code, "test_failed"); t.eq(state.status, 502)
+
+  controller, state = controller_fixture({ method = "GET" })
+  controller.action_test_current()
+  t.eq(state.response.code, "method_not_allowed"); t.eq(state.status, 405)
+end)
+
+t.test("status exposes only a sanitized exit IP from runtime", function()
+  local controller, state = controller_fixture({ runtime_instance = {
+    switch = function() return { ok = true } end, rollback = function() return { ok = true } end,
+    test_current = function() return { ok = true } end,
+    status = function() return { ok = true, service = "running", lock = "unlocked", exit_ip = "203.0.113.9" } end
+  } })
+  controller.action_status()
+  t.eq(state.response.data.exit_ip, "203.0.113.9")
 end)
 
 t.test("controller reverts only definitely uncommitted imports", function()

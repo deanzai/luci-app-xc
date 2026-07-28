@@ -18,10 +18,12 @@ local messages = {
   internal_error = "The request could not be completed.",
   invalid_node = "The selected node is invalid.",
   method_not_allowed = "This action requires POST.",
+  missing_runtime = "No active runtime configuration is available.",
   missing_node = "The selected node does not exist.",
   not_implemented = "This capability is not available yet.",
   no_rollback_state = "No rollback state is available.",
   request_too_large = "The request body is too large.",
+  test_failed = "The current node health test failed.",
   validation_failed = "The request did not pass validation."
 }
 
@@ -29,13 +31,14 @@ local failure_status = {
   validation_failed = 400, invalid_node = 400,
   missing_node = 404, no_rollback_state = 404,
   method_not_allowed = 405, busy = 409,
-  request_too_large = 413, not_implemented = 501
+  request_too_large = 413, not_implemented = 501,
+  missing_runtime = 404, test_failed = 502
 }
 
 local status_text = {
   [400] = "Bad Request", [404] = "Not Found", [405] = "Method Not Allowed",
   [409] = "Conflict", [413] = "Content Too Large", [500] = "Internal Server Error",
-  [501] = "Not Implemented"
+  [501] = "Not Implemented", [502] = "Bad Gateway"
 }
 
 local function respond(payload)
@@ -73,6 +76,7 @@ function index()
 
   entry({ "admin", "services", "xc", "status" }, call("action_status")).leaf = true
   post_entry({ "admin", "services", "xc", "probe" }, "action_probe")
+  post_entry({ "admin", "services", "xc", "test-current" }, "action_test_current")
   post_entry({ "admin", "services", "xc", "switch" }, "action_switch")
   post_entry({ "admin", "services", "xc", "rollback" }, "action_rollback")
   post_entry({ "admin", "services", "xc", "import-preview" }, "action_import_preview")
@@ -161,8 +165,18 @@ function action_status()
     socks_port = status.listen and status.listen.socks_port,
     http_port = status.listen and status.listen.http_port,
     lock_state = status.lock,
+    exit_ip = status.exit_ip,
     last_error = status.last_error
   })
+end
+
+function action_test_current()
+  if not request_body(false) then return end
+  local _, runtime_instance = new_backend()
+  if not runtime_instance then failure("internal_error"); return end
+  local called, result = pcall(function() return runtime_instance:test_current() end)
+  if not called then failure("internal_error"); return end
+  runtime_response(result)
 end
 
 function action_probe()

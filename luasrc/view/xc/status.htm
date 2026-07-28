@@ -27,7 +27,7 @@ local util = require "luci.util"
 
   var statusUrl = "<%=dispatcher.build_url("admin", "services", "xc", "status")%>";
   var switchUrl = "<%=dispatcher.build_url("admin", "services", "xc", "switch")%>";
-  var probeUrl = "<%=dispatcher.build_url("admin", "services", "xc", "probe")%>";
+  var testCurrentUrl = "<%=dispatcher.build_url("admin", "services", "xc", "test-current")%>";
   var rollbackUrl = "<%=dispatcher.build_url("admin", "services", "xc", "rollback")%>";
   var csrfToken = "<%=token%>";
   var unavailableText = <%=util.serialize_json(translate("Unavailable"))%>;
@@ -35,10 +35,15 @@ local util = require "luci.util"
   var statusRequest = null;
   var activeSection = null;
   var actionBusy = false;
+  var awaitingRefresh = false;
+  var statusGeneration = 0;
 
   function element(id) { return document.getElementById(id); }
   function text(id, value) { element(id).textContent = value == null || value === "" ? "-" : String(value); }
-  function endpoint(address, port) { return address && port ? address + ":" + port : "-"; }
+  function endpoint(address, port) {
+    if (!address || !port) return "-";
+    return (String(address).indexOf(":") !== -1 ? "[" + address + "]" : address) + ":" + port;
+  }
 
   function setButtons(disabled) {
     element("xc-restart").disabled = disabled || !activeSection;
@@ -77,13 +82,24 @@ local util = require "luci.util"
     if (!document.hidden) pollTimer = window.setTimeout(pollStatus, 5000);
   }
 
-  function pollStatus() {
-    if (document.hidden || statusRequest !== null) { schedulePoll(); return; }
+  function pollStatus(force) {
+    if (document.hidden) { if (force) awaitingRefresh = true; schedulePoll(); return; }
+    if (statusRequest !== null) {
+      if (!force) { schedulePoll(); return; }
+      statusGeneration += 1;
+      var stale = statusRequest;
+      statusRequest = null;
+      stale.onreadystatechange = null;
+      stale.abort();
+    }
     var xhr = new XMLHttpRequest();
+    var generation = ++statusGeneration;
     statusRequest = xhr;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
+      if (generation !== statusGeneration || statusRequest !== xhr) return;
       statusRequest = null;
+      if (awaitingRefresh) { awaitingRefresh = false; actionBusy = false; }
       renderStatus(parseResponse(xhr));
       schedulePoll();
     };
@@ -100,7 +116,6 @@ local util = require "luci.util"
     var separator = url.indexOf("?") === -1 ? "?" : "&";
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      actionBusy = false;
       var data = parseResponse(xhr);
       if (data.code === "not_implemented") {
         text("xc-action-result", data.message || "Health testing is not implemented yet");
@@ -110,8 +125,8 @@ local util = require "luci.util"
         text("xc-action-result", data.message || data.code || "Operation failed");
       }
       if (callback) callback(data);
-      setButtons(false);
-      pollStatus();
+      awaitingRefresh = true;
+      pollStatus(true);
     };
     xhr.open("POST", url + separator + "token=" + encodeURIComponent(csrfToken), true);
     xhr.setRequestHeader("Content-Type", "application/json");
@@ -122,7 +137,7 @@ local util = require "luci.util"
     if (activeSection) mutation(switchUrl, { section: activeSection });
   };
   element("xc-health").onclick = function() {
-    if (activeSection) mutation(probeUrl, { section: activeSection });
+    if (activeSection) mutation(testCurrentUrl, {});
   };
   element("xc-rollback").onclick = function() { mutation(rollbackUrl, {}); };
 
@@ -130,8 +145,15 @@ local util = require "luci.util"
     if (document.hidden) {
       if (pollTimer !== null) window.clearTimeout(pollTimer);
       pollTimer = null;
+      if (statusRequest !== null) {
+        statusGeneration += 1;
+        var stale = statusRequest;
+        statusRequest = null;
+        stale.onreadystatechange = null;
+        stale.abort();
+      }
     } else {
-      pollStatus();
+      pollStatus(awaitingRefresh);
     }
   });
 

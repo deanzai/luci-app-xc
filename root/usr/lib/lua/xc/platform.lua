@@ -124,6 +124,23 @@ function M.new(injected)
   local spawn_process = injected.spawn or function(argv, deadline)
     return spawn(nixio, argv, deadline, now_process, sleep_process)
   end
+  local capture_process = injected.capture or function(argv, deadline, maximum)
+    if not valid_argv(argv) or type(maximum) ~= "number" or maximum < 1 or maximum > 1024 then return nil end
+    generation_sequence = generation_sequence + 1
+    local temporary = "/var/etc/xc/.observe-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence)
+    if nfs.stat(temporary) then return nil end
+    local command = {}
+    for index = 1, #argv - 1 do command[#command + 1] = argv[index] end
+    command[#command + 1] = "--output"; command[#command + 1] = temporary; command[#command + 1] = argv[#argv]
+    if not spawn_process(command, deadline) then nfs.unlink(temporary); return nil end
+    local handle = nixio.open(temporary, nixio.open_flags("rdonly") + O_NOFOLLOW)
+    if not handle then nfs.unlink(temporary); return nil end
+    local value = handle:read(maximum + 1)
+    local closed = handle:close()
+    nfs.unlink(temporary)
+    if closed ~= true or type(value) ~= "string" or #value > maximum then return nil end
+    return value
+  end
 
   local function foreach(section_type, callback)
     cursor:foreach("xc", section_type, callback)
@@ -456,13 +473,24 @@ function M.new(injected)
     health_check = function(kind, address, port, url, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)
         or type(url) ~= "string" or not url:match("^https?://") then return false end
-      local remaining = math.floor(deadline - M.now(nixio))
+      local remaining = math.floor(deadline - now_process())
       if remaining < 1 then return false end
       local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
       local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
       local proxy = kind == "socks" and (host .. ":" .. tostring(port)) or ("http://" .. host .. ":" .. tostring(port))
       return spawn_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
         "--connect-timeout", tostring(math.min(remaining, 5)), proxy_flag, proxy, url }, deadline)
+    end,
+    observe_exit_ip = function(kind, address, port, url, deadline)
+      if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)
+        or type(url) ~= "string" or not url:match("^https?://") then return nil end
+      local remaining = math.floor(deadline - now_process())
+      if remaining < 1 then return nil end
+      local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
+      local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
+      local proxy = kind == "socks" and (host .. ":" .. tostring(port)) or ("http://" .. host .. ":" .. tostring(port))
+      return capture_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
+        "--connect-timeout", tostring(math.min(remaining, 5)), "--max-filesize", "128", proxy_flag, proxy, url }, deadline, 128)
     end
   }
 

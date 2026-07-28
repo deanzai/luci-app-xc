@@ -551,6 +551,23 @@ function Runtime:_service_state()
   return state
 end
 
+local function valid_observed_ip(value)
+  local octets = { value:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$") }
+  if #octets == 4 then
+    for _, octet in ipairs(octets) do if tonumber(octet) > 255 then return false end end
+    return true
+  end
+  if #value > 64 or not value:find(":", 1, true) or not value:match("^[0-9A-Fa-f:]+$") then return false end
+  local compressed = value:find("::", 1, true) ~= nil
+  if compressed and value:gsub("::", "", 1):find("::", 1, true) then return false end
+  local groups = 0
+  for group in value:gmatch("[^:]+") do
+    if #group > 4 then return false end
+    groups = groups + 1
+  end
+  return compressed and groups < 8 or groups == 8
+end
+
 function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)
   local generation = self.fs.allocate_generation("/etc/xc/rollback")
   if not valid_token(generation) then error("generation allocation failed", 0) end
@@ -729,6 +746,14 @@ function Runtime:status()
       socks = action_ok(self.exec.listener_ready("socks", address, tonumber(global.socks_port), listener_deadline)),
       http = action_ok(self.exec.listener_ready("http", address, tonumber(global.http_port), listener_deadline))
     }
+    local exit_ip
+    if type(self.exec.observe_exit_ip) == "function" and type(global.health_url) == "string" then
+      local observed, value = pcall(self.exec.observe_exit_ip, "socks", address, tonumber(global.socks_port), global.health_url, listener_deadline)
+      if observed and type(value) == "string" then
+        value = value:match("^%s*(.-)%s*$")
+        if valid_observed_ip(value) then exit_ip = value end
+      end
+    end
     local output = result(true, "status", {
       active_node = safe_active,
       active_state = active_state,
@@ -736,6 +761,7 @@ function Runtime:status()
       service = service, operation = shared_operation, lock = lock_state, recovery_required = recovery_required,
       listen = { address = sanitize_text(address, 64), socks_port = tonumber(global.socks_port), http_port = tonumber(global.http_port) },
       listeners = listeners,
+      exit_ip = exit_ip,
       last_error = shared_error
     })
     if safe_active then

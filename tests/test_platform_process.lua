@@ -93,3 +93,23 @@ t.test("curl proxy argv brackets IPv6 literals", function()
   t.eq(calls[1].deadline, 20)
   t.eq(calls[2].deadline, 20)
 end)
+
+t.test("exit IP observation uses fixed curl argv, bounded output, and injected capture", function()
+  local calls = {}
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }, now = function() return 10 end,
+    capture = function(argv, deadline, maximum)
+      calls[#calls + 1] = { argv = argv, deadline = deadline, maximum = maximum }
+      return "203.0.113.7\n"
+    end
+  })
+  t.eq(adapters.exec.observe_exit_ip("socks", "fd00::1", 7890, "https://health.invalid/ip", 12), "203.0.113.7\n")
+  t.eq(calls[1].deadline, 12); t.eq(calls[1].maximum, 128)
+  t.eq(calls[1].argv[1], "/usr/bin/curl")
+  t.eq(calls[1].argv[#calls[1].argv - 1], "[fd00::1]:7890")
+  t.eq(calls[1].argv[#calls[1].argv], "https://health.invalid/ip")
+  t.eq(table.concat(calls[1].argv, "|"):find("192.168.6.1:7890", 1, true), nil)
+  t.eq(adapters.exec.observe_exit_ip("socks", "127.0.0.1", 7890, "file:///secret", 12), nil)
+  t.eq(adapters.exec.observe_exit_ip("socks", "127.0.0.1", 7890, "https://health.invalid", 10), nil)
+end)
