@@ -86,6 +86,7 @@ local function fixture(options)
   for _, value in ipairs(nodes) do by_id[value.id] = value end
   local original_active = global.active_node
   local state = { events = events, files = files, global = global }
+  local generation_count = 0
   local function event(value) events[#events + 1] = value end
   local uci = {
     get_global = function() event("uci:get_global"); return global end,
@@ -120,6 +121,18 @@ local function fixture(options)
       return { path = path, kernel_flock = true }
     end,
     release_lock = function() event("fs:unlock"); return options.release_ok ~= false end,
+    lock_state = function() return options.busy and "held" or "unlocked" end,
+    allocate_generation = function()
+      generation_count = generation_count + 1
+      return options.generation or ("123-" .. generation_count)
+    end,
+    list_generation_files = function() return {} end,
+    remove_generation = function(directory, generation)
+      event("fs:remove_generation:" .. generation)
+      files[directory .. "/generation-" .. generation .. ".config"] = nil
+      files[directory .. "/generation-" .. generation .. ".active"] = nil
+      return true
+    end,
     read = function(path, maximum) event("fs:read:" .. path); if maximum and files[path] and #files[path] > maximum then return nil end; return files[path] end,
     exists = function(path) event("fs:exists:" .. path); return files[path] ~= nil end,
     write_temp = function(path, content)
@@ -131,7 +144,7 @@ local function fixture(options)
     chmod = function(path, mode) event("fs:chmod:" .. path .. ":" .. tostring(mode)); return true end,
     fsync = function(handle)
       event("fs:fsync:" .. handle.path)
-      if options.throw_fsync or (options.fsync_failures or 0) > 0 then
+      if options.throw_fsync or options.fsync_fail_path == handle.path or (options.fsync_failures or 0) > 0 then
         if options.fsync_failures then options.fsync_failures = options.fsync_failures - 1 end
         error("raw adapter exception {secret}")
       end
@@ -368,7 +381,7 @@ t.test("adapter exceptions release the lock and return generic secret-safe error
 end)
 
 t.test("atomic write failures close and remove temporary files", function()
-  local state = fixture({ throw_fsync = true })
+  local state = fixture({ fsync_fail_path = RUNTIME .. ".candidate.tmp.123" })
   local result = state.runtime:switch("new")
   t.eq(result.ok, false)
   t.eq(result.code, "internal_error")
