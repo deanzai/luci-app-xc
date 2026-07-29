@@ -27,9 +27,17 @@ end)
 
 t.test("log page uses a permission-independent SimpleForm shell", function()
   local value = source(log_path)
+  local compact = value:gsub("%s+", "")
   t.contains(value, 'SimpleForm("xc_log"')
   t.contains(value, 'm:section(SimpleSection)')
   t.contains(value, 'section.template = "xc/log"')
+  t.truthy(
+    compact:find("m.submit=false", 1, true)
+      and compact:find("m.reset=false", 1, true)
+      and compact:find("m.cancel=false", 1, true)
+    or compact:find("m.submit,m.reset,m.cancel=false,false,false", 1, true),
+    "log form must explicitly disable submit, reset, and cancel controls"
+  )
   t.eq(value:find('Map("xc"', 1, true), nil)
 end)
 
