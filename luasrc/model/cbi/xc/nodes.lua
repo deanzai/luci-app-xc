@@ -84,6 +84,14 @@ local port = nodes:option(DummyValue, "port", translate("Port"))
 port.datatype = "port"
 port.default = "-"
 
+local latency = nodes:option(DummyValue, "_latency", translate("Latency"))
+latency.template = "xc/ping_latency"
+function latency.cfgvalue(self, section)
+  if not probe_reader then return nil end
+  local ok, cached = pcall(probe_reader.cached, probe_reader, section)
+  return ok and cached or nil
+end
+
 local probe = nodes:option(DummyValue, "_probe", translate("Probe"))
 probe.template = "xc/ping"
 function probe.cfgvalue(self, section)

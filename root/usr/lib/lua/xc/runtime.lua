@@ -18,6 +18,9 @@ local MIGRATION_MARKER_PATH = "/etc/xc/migration-complete"
 local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local LOG_LOCK_PATH = "/var/lock/xc-log.lock"
+local LOG_LEVEL_DEBUG = "debug"
+local LOG_LEVEL_INFO = "info"
+local LOG_LEVEL_ERROR = "error"
 local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
 local VALIDATION_TIMEOUT = 30
 local sanitize_text
@@ -293,6 +296,7 @@ function Runtime:_render_locked(section_id, output_path)
   local encoded, node_id, encode_error = self:_encode(section_id)
   if encode_error then return encode_error end
   self:_atomic_write(output_path, encoded)
+  self:log("configuration rendered", { node = node_id }, LOG_LEVEL_DEBUG)
   return result(true, "rendered", { node = node_id, path = output_path })
 end
 
@@ -629,6 +633,9 @@ end
 
 function Runtime:_switch_locked(section_id)
   local encoded, node_id, encode_error = self:_encode(section_id)
+  if encode_error then
+    self:log("switch failed: encode error", { section = section_id, code = encode_error.code }, LOG_LEVEL_ERROR)
+  end
   if encode_error then return encode_error end
   self:_atomic_write(CANDIDATE_PATH, encoded)
   local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
@@ -667,6 +674,7 @@ function Runtime:_switch_locked(section_id)
     transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
     local old = assert(self:_read_generation(transaction))
     if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
+    self:log("switched to node", { node = node_id, outcome = commit_outcome }, LOG_LEVEL_INFO)
     return result(true, "switched", { node = node_id, commit_outcome = commit_outcome })
   end, function() return result(false, "internal_error") end)
   if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
@@ -851,7 +859,9 @@ local function sensitive_key(key)
   return false
 end
 
-function Runtime:log(message, fields)
+function Runtime:log(message, fields, level)
+  if level == nil then level = LOG_LEVEL_INFO end
+  if level ~= LOG_LEVEL_DEBUG and level ~= LOG_LEVEL_INFO and level ~= LOG_LEVEL_ERROR then level = LOG_LEVEL_INFO end
   local acquired, lock = pcall(self.fs.acquire_lock, LOG_LOCK_PATH)
   if not acquired or not lock then self.last_error = acquired and "busy" or "lock_error"; return result(false, acquired and "busy" or "internal_error") end
   local ok, value = xpcall(function()
@@ -875,7 +885,7 @@ function Runtime:log(message, fields)
         count = count + 1
       end
     end
-    local entry = { time = self.now(), message = sanitize_text(message, 512), fields = safe_fields }
+    local entry = { time = self.now(), level = level, message = sanitize_text(message, 512), fields = safe_fields }
     local encoded = generator.encode(entry, self.json)
     if type(encoded) ~= "string" then encoded = '{"message":"log entry redacted"}' end
     if #encoded > 2047 then encoded = '{"message":"log entry truncated"}' end

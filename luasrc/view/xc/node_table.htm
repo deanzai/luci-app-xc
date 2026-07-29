@@ -9,6 +9,12 @@ local probe_concurrency = self.probe_concurrency or 3
   <input id="xc-probe-stop" class="cbi-button cbi-button-reset" type="button" value="<%:Stop probing%>" />
   <span id="xc-probe-state"></span>
 </div>
+<style type="text/css">
+  .xc-latency-cell { text-align: center; min-width: 5em; }
+  .xc-probe-cell { white-space: nowrap; min-width: 5em; text-align: center; }
+  .xc-probe-row .xc-socket { display: inline-block; margin-right: 0.3em; }
+  .xc-probe-row .xc-probe-one { font-size: smaller; padding: 0.15em 0.5em; }
+</style>
 <script type="text/javascript">
 (function() {
   "use strict";
@@ -46,17 +52,21 @@ local probe_concurrency = self.probe_concurrency or 3
     var latency = row.querySelector(".xc-latency");
     var socket = row.querySelector(".xc-socket");
     if (!payload || payload.ok !== true || !payload.data) {
-      latency.textContent = errorText; latency.style.color = "red";
-      socket.textContent = failText; socket.style.color = "red"; return;
+      if (latency) { latency.textContent = errorText; latency.style.color = "red"; }
+      if (socket) { socket.textContent = failText; socket.style.color = "red"; }
+      return;
     }
     var data = payload.data;
     var milliseconds = Number(data.ping);
-    if (data.outcome === "timeout") latency.textContent = timeoutText;
-    else if (!isFinite(milliseconds) || milliseconds <= 0) latency.textContent = errorText;
-    else latency.textContent = Math.floor(milliseconds) + " ms";
-    latency.style.color = color(isFinite(milliseconds) ? milliseconds : 10000);
-    socket.textContent = data.socket === "ok" ? okText : failText;
-    socket.style.color = data.socket === "ok" ? "green" : "red";
+    var text = "";
+    if (data.outcome === "timeout") text = timeoutText;
+    else if (!isFinite(milliseconds) || milliseconds <= 0) text = errorText;
+    else text = Math.floor(milliseconds) + " ms";
+    if (latency) { latency.textContent = text; latency.style.color = color(isFinite(milliseconds) ? milliseconds : 10000); }
+    if (socket) {
+      socket.textContent = data.socket === "ok" ? "✓" : "✗";
+      socket.style.color = data.socket === "ok" ? "green" : "red";
+    }
   }
 
   function request(row, id) {

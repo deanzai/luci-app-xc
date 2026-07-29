@@ -1,10 +1,8 @@
-local m = SimpleForm("xc_log", translate("Log"),
-  translate("The final 256 KiB of the XC runtime log is shown. Sensitive values are redacted before logging."))
+local m = Map("xc")
 
-m.submit = false
-m.reset = false
-
-local section = m:section(SimpleSection)
-section.template = "xc/log"
+local log = m:section(TypedSection, "_log", translate("Log"),
+  translate("XC runtime log uses JSON format. Entries older than 256 KiB are automatically trimmed."))
+log.anonymous = true
+log.template = "xc/log"
 
 return m

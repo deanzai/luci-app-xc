@@ -246,3 +246,291 @@ msgid "Invalid server response"
 msgstr "服务器响应无效"
 msgid "Health testing is not implemented yet"
 msgstr "当前尚未实现健康测试"
+
+msgid "Latency"
+msgstr "延迟"
+
+msgid "Level"
+msgstr "级别"
+
+msgid "All"
+msgstr "全部"
+
+msgid "Info"
+msgstr "信息"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Bandwidth"
+msgstr "带宽"
+
+msgid "(empty)"
+msgstr "（空）"
+
+msgid "XC runtime log uses JSON format. Entries older than 256 KiB are automatically trimmed."
+msgstr "XC 运行日志使用 JSON 格式，超出 256 KiB 的旧条目会自动裁切。"
+
+msgid "Nodes"
+msgstr "节点"
+
+msgid "Configured nodes"
+msgstr "已配置节点"
+
+msgid "Active"
+msgstr "当前"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Name"
+msgstr "名称"
+
+msgid "Protocol"
+msgstr "协议"
+
+msgid "Server"
+msgstr "服务器"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "Edit"
+msgstr "编辑"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Probe"
+msgstr "探测"
+
+msgid "Test all"
+msgstr "全部测速"
+
+msgid "Stop probing"
+msgstr "停止测速"
+
+msgid "Test"
+msgstr "测速"
+
+msgid "Testing…"
+msgstr "正在测速…"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "OK"
+msgstr "正常"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Timed out"
+msgstr "超时"
+
+msgid "Import"
+msgstr "导入"
+
+msgid "Preview"
+msgstr "预览"
+
+msgid "Confirm import"
+msgstr "确认导入"
+
+msgid "Loading…"
+msgstr "正在加载…"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Clear log"
+msgstr "清空日志"
+
+msgid "Clear the log?"
+msgstr "确定清空日志吗？"
+
+msgid "Log cleared"
+msgstr "日志已清空"
+
+msgid "Unable to load the log"
+msgstr "无法加载日志"
+
+msgid "Unable to clear the log"
+msgstr "无法清空日志"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Unavailable"
+msgstr "不可用"
+
+msgid "Working…"
+msgstr "正在处理…"
+
+msgid "Operation completed"
+msgstr "操作已完成"
+
+msgid "Operation failed"
+msgstr "操作失败"
+
+msgid "Rollback"
+msgstr "回滚"
+
+msgid "Test current node"
+msgstr "测试当前节点"
+
+msgid "Active node"
+msgstr "当前节点"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Switch"
+msgstr "切换"
+
+msgid "Probe all"
+msgstr "探测全部"
+
+msgid "Edit node"
+msgstr "编辑节点"
+
+msgid "Basic settings"
+msgstr "基本设置"
+
+msgid "Default"
+msgstr "默认"
+
+msgid "Alter ID"
+msgstr "Alter ID"
+
+msgid "Encryption"
+msgstr "加密"
+
+msgid "Flow"
+msgstr "流控"
+
+msgid "HTTP port"
+msgstr "HTTP 端口"
+
+msgid "Health check URL"
+msgstr "健康检查 URL"
+
+msgid "Health check timeout"
+msgstr "健康检查超时"
+
+msgid "LAN address"
+msgstr "LAN 地址"
+
+msgid "Listen address"
+msgstr "监听地址"
+
+msgid "Listen mode"
+msgstr "监听模式"
+
+msgid "Node"
+msgstr "节点"
+
+msgid "None"
+msgstr "无"
+
+msgid "Not selected"
+msgstr "未选择"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "Probe URL"
+msgstr "探测 URL"
+
+msgid "Probe concurrency"
+msgstr "并发测速数"
+
+msgid "Probe timeout"
+msgstr "测速超时"
+
+msgid "Raw outbound JSON"
+msgstr "原始出站 JSON"
+
+msgid "Reality public key"
+msgstr "Reality 公钥"
+
+msgid "Reality short ID"
+msgstr "Reality Short ID"
+
+msgid "SOCKS port"
+msgstr "SOCKS 端口"
+
+msgid "SOCKS username"
+msgstr "SOCKS 用户名"
+
+msgid "Security"
+msgstr "安全类型"
+
+msgid "Server name (SNI)"
+msgstr "服务器名称 (SNI)"
+
+msgid "Shadowsocks method"
+msgstr "Shadowsocks 加密方式"
+
+msgid "TLS fingerprint"
+msgstr "TLS 指纹"
+
+msgid "Transport"
+msgstr "传输方式"
+
+msgid "UUID"
+msgstr "UUID"
+
+msgid "WebSocket Host"
+msgstr "WebSocket Host"
+
+msgid "WebSocket path"
+msgstr "WebSocket 路径"
+
+msgid "gRPC service name"
+msgstr "gRPC 服务名称"
+
+msgid "Exit IP"
+msgstr "出口 IP"
+
+msgid "HTTP listener"
+msgstr "HTTP 监听"
+
+msgid "Local import"
+msgstr "本地导入"
+
+msgid "Manual rollback"
+msgstr "手动回滚"
+
+msgid "Restart service"
+msgstr "重启服务"
+
+msgid "Runtime status"
+msgstr "运行状态"
+
+msgid "SOCKS listener"
+msgstr "SOCKS 监听"
+
+msgid "Service"
+msgstr "服务"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Xray node switching"
+msgstr "Xray 节点切换"
+
+msgid "Log"
+msgstr "日志"
+
+msgid "Enable"
+msgstr "启用"

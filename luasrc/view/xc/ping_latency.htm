@@ -1,0 +1,13 @@
+<%
+local util = require "luci.util"
+local cached = self:cfgvalue(section)
+local ping = cached and tonumber(cached.ping) or nil
+local socket = cached and cached.socket or nil
+local function color(ms)
+  if ms < 100 then return "green"
+  elseif ms < 200 then return "#b7791f"
+  elseif ms < 300 then return "#dd6b20"
+  else return "red" end
+end
+-%>
+<span class="xc-latency" style="<%=ping and ping > 0 and 'color:' .. color(ping) or ''%>"><%=ping and ping > 0 and (math.floor(ping) .. " ms") or "--"%></span>

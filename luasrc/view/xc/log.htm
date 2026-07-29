@@ -3,12 +3,20 @@ local dispatcher = require "luci.dispatcher"
 local util = require "luci.util"
 -%>
 <div class="cbi-section">
-  <div>
+  <div style="margin-bottom:0.5em">
+    <label><%:Level%>:
+      <select id="xc-log-level">
+        <option value=""><%:All%></option>
+        <option value="error"><%:Error%></option>
+        <option value="info"><%:Info%></option>
+        <option value="debug"><%:Debug%></option>
+      </select>
+    </label>
     <input id="xc-log-refresh" type="button" class="cbi-button cbi-button-apply" value="<%:Refresh%>" />
     <input id="xc-log-clear" type="button" class="cbi-button cbi-button-negative" value="<%:Clear log%>" />
     <span id="xc-log-state"></span>
   </div>
-  <pre id="xc-log-content" style="max-height:32em;overflow:auto;white-space:pre-wrap;word-break:break-all"><%:Loading…%></pre>
+  <pre id="xc-log-content" style="max-height:32em;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:0.85em"><%:Loading…%></pre>
 </div>
 <script type="text/javascript">
 //<![CDATA[
@@ -24,27 +32,57 @@ local util = require "luci.util"
   var state = document.getElementById("xc-log-state");
   var refresh = document.getElementById("xc-log-refresh");
   var clear = document.getElementById("xc-log-clear");
+  var levelSelect = document.getElementById("xc-log-level");
 
   function response(xhr) {
     try { return JSON.parse(xhr.responseText); } catch (ignored) { return null; }
   }
 
-  function setBusy(value) { refresh.disabled = value; clear.disabled = value; }
+  function formatEntry(raw) {
+    try {
+      var entry = JSON.parse(raw);
+      var time = entry.time || "";
+      var level = (entry.level || "info").toUpperCase();
+      var msg = entry.message || "";
+      var levelColor = level === "ERROR" ? "#ff4444" : (level === "DEBUG" ? "#888888" : "#cccccc");
+      return "<span style=\"color:' + levelColor + '\">[" + level + "]</span> [" + time + "] " + escapeHtml(msg);
+    } catch (e) {
+      return escapeHtml(raw);
+    }
+  }
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
+  }
+
+  function setBusy(value) { refresh.disabled = value; clear.disabled = value; levelSelect.disabled = value; }
 
   function loadLog() {
     setBusy(true); state.textContent = "";
+    var level = levelSelect.value;
+    var url = getUrl + (level ? "?level=" + encodeURIComponent(level) : "");
     var xhr = new XMLHttpRequest();
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var payload = response(xhr);
-      if (payload && payload.ok === true && payload.data) content.textContent = payload.data.log || "";
-      else state.textContent = loadFailedText;
+      if (payload && payload.ok === true && payload.data) {
+        var log = payload.data.log || "";
+        var lines = log.split("\n").filter(function(l) { return l.trim() !== ""; });
+        var html = "";
+        for (var i = 0; i < lines.length; i++) {
+          html += formatEntry(lines[i]) + "\n";
+        }
+        content.innerHTML = html || escapeHtml(translate("(empty)"));
+      } else state.textContent = loadFailedText;
       setBusy(false);
     };
-    xhr.open("GET", getUrl, true); xhr.send(null);
+    xhr.open("GET", url, true); xhr.send(null);
   }
 
   refresh.onclick = loadLog;
+  levelSelect.onchange = loadLog;
   clear.onclick = function() {
     if (!confirm(confirmText)) return;
     setBusy(true); state.textContent = "";
@@ -52,7 +90,7 @@ local util = require "luci.util"
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var payload = response(xhr);
-      if (payload && payload.ok === true) { content.textContent = ""; state.textContent = clearedText; }
+      if (payload && payload.ok === true) { content.innerHTML = ""; state.textContent = clearedText; }
       else state.textContent = clearFailedText;
       setBusy(false);
     };
