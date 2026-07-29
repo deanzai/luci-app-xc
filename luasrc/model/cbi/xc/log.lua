@@ -1,8 +1,10 @@
-local m = Map("xc")
+local m = SimpleForm("xc_log", translate("Log"),
+  translate("XC runtime and Xray core logs are shown here. Sensitive values are redacted."))
+m.submit = false
+m.reset = false
+m.cancel = false
 
-local log = m:section(TypedSection, "_log", translate("Log"),
-  translate("XC runtime log uses JSON format. Entries older than 256 KiB are automatically trimmed."))
-log.anonymous = true
-log.template = "xc/log"
+local section = m:section(SimpleSection)
+section.template = "xc/log"
 
 return m

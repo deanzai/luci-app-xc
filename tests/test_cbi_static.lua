@@ -17,11 +17,20 @@ local settings_path = "luasrc/model/cbi/xc/settings.lua"
 local nodes_path = "luasrc/model/cbi/xc/nodes.lua"
 local node_path = "luasrc/model/cbi/xc/node.lua"
 local status_path = "luasrc/view/xc/status.htm"
+local log_path = "luasrc/model/cbi/xc/log.lua"
 
 t.test("Task 8 CBI and status files exist", function()
-  for _, path in ipairs({ settings_path, nodes_path, node_path, status_path }) do
+  for _, path in ipairs({ settings_path, nodes_path, node_path, status_path, log_path }) do
     read_file(path)
   end
+end)
+
+t.test("log page uses a permission-independent SimpleForm shell", function()
+  local value = source(log_path)
+  t.contains(value, 'SimpleForm("xc_log"')
+  t.contains(value, 'm:section(SimpleSection)')
+  t.contains(value, 'section.template = "xc/log"')
+  t.eq(value:find('Map("xc"', 1, true), nil)
 end)
 
 t.test("settings form uses exact global defaults and validation contracts", function()

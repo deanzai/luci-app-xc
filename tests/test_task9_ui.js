@@ -12,6 +12,11 @@ function script(path) {
     .replace(/<%=util\.serialize_json\(translate\("([^"]+)"\)\)%>/g, (_, text) => JSON.stringify(text));
 }
 
+const nodeTableSource = fs.readFileSync("luasrc/view/xc/node_table.htm", "utf8");
+assert.ok(nodeTableSource.includes('translate("Test")'), "single-node button uses Test");
+assert.ok(nodeTableSource.includes('value="<%:Test all%>"'), "batch button keeps Test all");
+assert.ok(nodeTableSource.includes('value="<%:Stop testing%>"'), "stop button uses Stop testing");
+
 function xhrHarness() {
   const requests = [];
   function XHR() { this.headers = {}; this.readyState = 0; requests.push(this); }
@@ -81,7 +86,7 @@ function nodeHarness(concurrency, layout, rowCount) {
     const actionBox = actions.appendChild(element("div"));
     if (index === 0) {
       const existingProbe = actionBox.appendChild(element("input"));
-      existingProbe.className = "cbi-button cbi-button-action xc-probe-one"; existingProbe.value = "Probe";
+      existingProbe.className = "cbi-button cbi-button-action xc-probe-one"; existingProbe.value = "Test";
     } else if (index === 1) {
       const existingSocket = actionBox.appendChild(element("span"));
       existingSocket.className = "xc-socket"; existingSocket.textContent = "✗";
@@ -90,7 +95,7 @@ function nodeHarness(concurrency, layout, rowCount) {
     if (index === 2) {
       for (let duplicate = 0; duplicate < 2; duplicate++) {
         const socket = actionBox.appendChild(element("span")); socket.className = "xc-socket";
-        const probe = actionBox.appendChild(element("input")); probe.className = "xc-probe-one"; probe.value = "Probe";
+        const probe = actionBox.appendChild(element("input")); probe.className = "xc-probe-one"; probe.value = "Test";
       }
     }
     const remove = actionBox.appendChild(element("input")); remove.className = "cbi-button cbi-button-remove"; remove.value = "Delete";
@@ -138,6 +143,7 @@ function nodeHarness(concurrency, layout, rowCount) {
       child.className.indexOf("xc-probe-one") >= 0 ? "Probe" : child.value), ["Socket", "Probe", "Edit", "Delete"]);
     row.section = "node_" + index; row.latency = row.querySelector(".xc-latency");
     row.socket = row.querySelector(".xc-socket"); row.button = probes[0];
+    assert.strictEqual(row.button.value, "Test", "single-node button label");
   });
   assert.strictEqual(document.querySelectorAll(".xc-probe-row").filter(row => row.parentNode === sectionRoot).length, 0,
     "probe rows are never direct children of cbi-section");
@@ -147,7 +153,7 @@ function nodeHarness(concurrency, layout, rowCount) {
     assert.strictEqual(rows[2].socket.textContent, "");
   }
   skippedRows.forEach(row => {
-    assert.strictEqual(row.querySelectorAll(".xc-probe-one").length, 0, "skipped row gets no Probe");
+    assert.strictEqual(row.querySelectorAll(".xc-probe-one").length, 0, "skipped row gets no Test button");
     assert.strictEqual(row.getAttribute("data-xc-section"), null, "skipped row is not initialized");
   });
   return { window, controls, rows, skippedRows, requests: xhr.requests };

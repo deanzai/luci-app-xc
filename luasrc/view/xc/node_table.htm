@@ -6,7 +6,7 @@ local probe_concurrency = self.probe_concurrency or 3
 <%+cbi/tblsection%>
 <div class="cbi-section-create">
   <input id="xc-probe-all" class="cbi-button cbi-button-apply" type="button" value="<%:Test all%>" />
-  <input id="xc-probe-stop" class="cbi-button cbi-button-reset" type="button" value="<%:Stop probing%>" />
+  <input id="xc-probe-stop" class="cbi-button cbi-button-reset" type="button" value="<%:Stop testing%>" />
   <span id="xc-probe-state"></span>
 </div>
 <style type="text/css">
@@ -28,7 +28,7 @@ local probe_concurrency = self.probe_concurrency or 3
   var timeoutText = <%=util.serialize_json(translate("Timed out"))%>;
   var testingText = <%=util.serialize_json(translate("Testing…"))%>;
   var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
-  var probeText = <%=util.serialize_json(translate("Probe"))%>;
+  var probeText = <%=util.serialize_json(translate("Test"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
   var allButton, stopButton, state;
 
