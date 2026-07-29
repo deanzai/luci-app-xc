@@ -1,4 +1,10 @@
 module("luci.controller.xc", package.seeall)
+local call = require("luci.dispatcher").call
+local entry = require("luci.dispatcher").entry
+local cbi = require("luci.dispatcher").cbi
+local template = require("luci.dispatcher").template
+local alias = require("luci.dispatcher").alias
+
 
 local http = require "luci.http"
 local schema = require "xc.schema"
