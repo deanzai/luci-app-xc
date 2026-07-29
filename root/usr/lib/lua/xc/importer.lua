@@ -447,19 +447,31 @@ function M.parse_legacy(table_value)
   for _, value in ipairs(source_nodes) do
     if type(value) ~= "table" then return nil, "invalid legacy node" end
     local protocol = type(value.protocol) == "string" and value.protocol:lower() or value.protocol
+    if not protocol and type(value.type) == "string" then
+      local tl = value.type:lower()
+      if tl:match("vless") then protocol = "vless"
+      elseif tl:match("vmess") then protocol = "vmess"
+      elseif tl:match("trojan") then protocol = "trojan"
+      elseif tl:match("shadowsocks") then protocol = "shadowsocks"
+      elseif tl:match("socks") or tl:match("naive") then protocol = "socks" end
+    end
     if protocol == "socks5" or protocol == "naiveproxy" then protocol = "socks" end
+    local security = value.security
+    if type(value.type) == "string" and (security == nil or security == "") then
+      if value.type:lower():match("reality") then security = "reality" end
+    end
     local node, err = normalize_node({
-      protocol = protocol, name = value.name or value.remarks or value.ps,
+      protocol = protocol, security = security, name = value.name or value.remarks or value.ps,
       server = value.server or value.address or value.add, port = value.port,
-      uuid = value.uuid, security = value.security, public_key = value.public_key or value.publicKey or value.pbk,
+      uuid = value.uuid, public_key = value.public_key or value.publicKey or value.pbk,
       short_id = value.short_id or value.shortId or value.sid, sni = value.sni or value.serverName,
       fingerprint = value.fingerprint or value.fp, flow = value.flow,
-      transport = value.transport or value.network or value.net or value.type,
+      transport = value.transport or value.network or value.net,
       ws_host = value.ws_host or value.host, ws_path = value.ws_path or value.path,
       grpc_service_name = value.grpc_service_name or value.serviceName,
       encryption = value.encryption, alter_id = value.alter_id or value.aid,
       method = value.method, user = value.user or value.username, password = value.password,
-      enabled = value.enabled
+      enabled = (value.enabled == nil) and true or value.enabled
     })
     if not node then return nil, err end
     nodes[#nodes + 1] = node

@@ -181,11 +181,15 @@ local function migrate_legacy(directory, deps)
 
   local current = trim(current_text)
   local active
-  if current and type(legacy.nodes) == "table" and legacy.nodes[current] ~= nil then
-    local keys = {}
-    for key in pairs(legacy.nodes) do keys[#keys + 1] = key end
-    table.sort(keys, function(left, right) return tostring(left) < tostring(right) end)
-    for index, key in ipairs(keys) do if tostring(key) == current then active = nodes[index].id; break end end
+  if current and type(legacy.nodes) == "table" then
+    local numeric = tonumber(current)
+    local lookup = (numeric and legacy.nodes[numeric] ~= nil) and numeric or current
+    if legacy.nodes[lookup] ~= nil then
+      local keys = {}
+      for key in pairs(legacy.nodes) do keys[#keys + 1] = key end
+      table.sort(keys, function(left, right) return tostring(left) < tostring(right) end)
+      for index, key in ipairs(keys) do if tostring(key) == tostring(lookup) then active = nodes[index].id; break end end
+    end
   end
   if not active and #nodes == 1 then active = nodes[1].id end
   return deps.runtime:exclusive("migration", function(capability)

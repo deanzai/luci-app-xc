@@ -181,7 +181,7 @@ function Runtime:_atomic_write(path, content)
     if not action_ok(self.fs.close(handle)) then error("atomic write failed", 0) end
     closed = true
     if not action_ok(self.fs.rename(temporary, path)) then error("atomic write failed", 0) end
-    if not action_ok(self.fs.fsync_dir(path:match("^(.+)/[^/]+$"))) then error("atomic write failed", 0) end
+    pcall(self.fs.fsync_dir, path:match("^(.+)/[^/]+$"))
   end, function() return false end)
   if not ok then
     if handle and not closed then pcall(self.fs.close, handle) end
