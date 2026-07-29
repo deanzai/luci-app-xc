@@ -16,13 +16,23 @@ end)
 
 t.test("node list installs safe probe and local import templates", function()
   local nodes = source("luasrc/model/cbi/xc/nodes.lua")
-  for _, path in ipairs({ "luasrc/view/xc/node_table.htm", "luasrc/view/xc/ping.htm", "luasrc/view/xc/import.htm" }) do
+  for _, path in ipairs({ "luasrc/view/xc/node_table.htm", "luasrc/view/xc/ping_latency.htm", "luasrc/view/xc/import.htm" }) do
     t.truthy(io.open(path, "rb"), "missing " .. path)
   end
   t.contains(nodes, 'nodes.template = "xc/node_table"')
-  t.contains(nodes, 'template = "xc/ping"')
+  t.eq(nodes:find(', "_probe"', 1, true), nil)
+  t.eq(nodes:find('template = "xc/ping"', 1, true), nil)
   t.contains(nodes, 'template = "xc/import"')
   t.eq(nodes:find("password", 1, true), nil); t.eq(nodes:find("raw_outbound", 1, true), nil)
+end)
+
+t.test("cached latency is a valid CBI value cell with constrained socket state", function()
+  local value = source("luasrc/view/xc/ping_latency.htm")
+  t.contains(value, "<%+cbi/valueheader%>")
+  t.contains(value, "<%+cbi/valuefooter%>")
+  t.contains(value, "data-xc-socket")
+  t.contains(value, 'socket == "ok"')
+  t.contains(value, 'socket == "fail"')
 end)
 
 t.test("node probe UI has a shared bounded queue and stale-run invalidation", function()

@@ -92,14 +92,6 @@ function latency.cfgvalue(self, section)
   return ok and cached or nil
 end
 
-local probe = nodes:option(DummyValue, "_probe", translate("Probe"))
-probe.template = "xc/ping"
-function probe.cfgvalue(self, section)
-  if not probe_reader then return nil end
-  local ok, cached = pcall(probe_reader.cached, probe_reader, section)
-  return ok and cached or nil
-end
-
 if SimpleSection then
   local import = m:section(SimpleSection)
   import.template = "xc/import"

@@ -323,7 +323,7 @@ end)
 t.test("probe and import templates translate every stable visible state and warning", function()
   local probe = read_file("luasrc/view/xc/node_table.htm")
   local import = read_file("luasrc/view/xc/import.htm")
-  for _, message in ipairs({ "Error", "Failed", "Timed out", "Testing…", "Stopped", "OK" }) do
+  for _, message in ipairs({ "Error", "Failed", "Timed out", "Testing…", "Stopped", "Probe" }) do
     t.contains(probe, 'translate("' .. message .. '")', "probe does not translate " .. message)
   end
   for _, literal in ipairs({

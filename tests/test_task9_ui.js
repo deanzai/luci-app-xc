@@ -25,27 +25,117 @@ function xhrHarness() {
   return { XHR, requests };
 }
 
-function nodeHarness(concurrency) {
+function nodeHarness(concurrency, layout, rowCount) {
+  layout = layout || "div"; rowCount = rowCount === undefined ? 6 : rowCount;
   const xhr = xhrHarness();
-  function element() { return { textContent: "", disabled: false, style: {}, className: "", onclick: null }; }
-  const controls = { "xc-probe-all": element(), "xc-probe-stop": element(), "xc-probe-state": element() };
-  const rows = [0, 1, 2, 3, 4, 5].map(index => {
-    const latency = element(), socket = element(), button = element();
-    return {
-      section: "node_" + index, latency, socket, button,
-      getAttribute: name => name === "data-xc-section" ? "node_" + index : null,
-      querySelector: selector => ({ ".xc-latency": latency, ".xc-socket": socket, ".xc-probe-one": button })[selector]
+  function hasClass(node, name) { return (" " + node.className + " ").indexOf(" " + name + " ") >= 0; }
+  function descendants(node) {
+    return node.children.reduce((all, child) => all.concat(child, descendants(child)), []);
+  }
+  function matches(node, selector) {
+    if (selector === '.cbi-section-table-row[id^="cbi-xc-"]')
+      return hasClass(node, "cbi-section-table-row") && /^cbi-xc-/.test(node.id);
+    if (selector[0] === ".") return hasClass(node, selector.slice(1));
+    if (selector === "td.cbi-section-actions") return node.tagName === "TD" && hasClass(node, "cbi-section-actions");
+    if (selector === "div") return node.tagName === "DIV";
+    if (selector === 'tr.cbi-section-table-row[id^="cbi-xc-"]')
+      return node.tagName === "TR" && hasClass(node, "cbi-section-table-row") && /^cbi-xc-/.test(node.id);
+    return false;
+  }
+  function element(tag) {
+    const node = { tagName: (tag || "div").toUpperCase(), id: "", textContent: "", disabled: false,
+      style: {}, className: "", onclick: null, parentNode: null, children: [], attributes: {},
+      classList: { add(name) { if (!hasClass(node, name)) node.className += (node.className ? " " : "") + name; } },
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+      removeChild(child) { const at = this.children.indexOf(child); if (at >= 0) this.children.splice(at, 1);
+        child.parentNode = null; return child; },
+      insertBefore(child, before) { child.parentNode = this; const at = this.children.indexOf(before);
+        this.children.splice(at < 0 ? this.children.length : at, 0, child); return child; },
+      setAttribute(name, value) { this.attributes[name] = String(value); if (name === "id") this.id = String(value); },
+      getAttribute(name) { if (name === "id") return this.id || null; return this.attributes[name] === undefined ? null : this.attributes[name]; },
+      querySelectorAll(selector) {
+        if (selector === ".cbi-section-actions > div") return descendants(this).filter(candidate =>
+          candidate.tagName === "DIV" && candidate.parentNode && hasClass(candidate.parentNode, "cbi-section-actions"));
+        if (selector === "td.cbi-section-actions > div") return descendants(this).filter(candidate =>
+          candidate.tagName === "DIV" && candidate.parentNode && matches(candidate.parentNode, "td.cbi-section-actions"));
+        return descendants(this).filter(candidate => matches(candidate, selector));
+      },
+      querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     };
+    return node;
+  }
+  const controls = { "xc-probe-all": element("input"), "xc-probe-stop": element("input"), "xc-probe-state": element("span") };
+  const sectionRoot = element("div"); sectionRoot.className = "cbi-section";
+  const table = sectionRoot.appendChild(element(layout === "native" ? "table" : "div")); table.className = "table";
+  const rowContainer = layout === "native" ? table.appendChild(element("tbody")) : table;
+  const rows = Array.from({ length: rowCount }, (_, index) => {
+    const row = element(layout === "native" ? "tr" : "div"); row.id = "cbi-xc-node_" + index; row.className = "tr cbi-section-table-row";
+    const latencyCell = row.appendChild(element(layout === "native" ? "td" : "div")); latencyCell.className = "td";
+    const latency = latencyCell.appendChild(element("span")); latency.className = "xc-latency";
+    latency.setAttribute("data-xc-socket", index === 0 ? "ok" : index === 1 ? "fail" : "");
+    const actions = row.appendChild(element(layout === "native" ? "td" : "div")); actions.className = "td cbi-section-actions";
+    const actionBox = actions.appendChild(element("div"));
+    if (index === 0) {
+      const existingProbe = actionBox.appendChild(element("input"));
+      existingProbe.className = "cbi-button cbi-button-action xc-probe-one"; existingProbe.value = "Probe";
+    } else if (index === 1) {
+      const existingSocket = actionBox.appendChild(element("span"));
+      existingSocket.className = "xc-socket"; existingSocket.textContent = "✗";
+    }
+    const edit = actionBox.appendChild(element("input")); edit.className = "cbi-button cbi-button-edit"; edit.value = "Edit";
+    if (index === 2) {
+      for (let duplicate = 0; duplicate < 2; duplicate++) {
+        const socket = actionBox.appendChild(element("span")); socket.className = "xc-socket";
+        const probe = actionBox.appendChild(element("input")); probe.className = "xc-probe-one"; probe.value = "Probe";
+      }
+    }
+    const remove = actionBox.appendChild(element("input")); remove.className = "cbi-button cbi-button-remove"; remove.value = "Delete";
+    rowContainer.appendChild(row);
+    return row;
   });
+  const roots = [sectionRoot].concat(Object.keys(controls).map(id => { controls[id].id = id; return controls[id]; }));
+  const listeners = {};
   const document = {
     getElementById: id => controls[id],
-    querySelectorAll: selector => selector === ".xc-probe-row" ? rows : [],
-    addEventListener: (name, fn) => { if (name === "DOMContentLoaded") fn(); }
+    createElement: element,
+    querySelectorAll: selector => roots.reduce((all, root) => all.concat(matches(root, selector) ? [root] : [], root.querySelectorAll(selector)), []),
+    addEventListener: (name, fn) => { listeners[name] = fn; }
   };
   const window = {};
   vm.runInNewContext(script("luasrc/view/xc/node_table.htm").replace("TEST_CONCURRENCY", String(concurrency)),
     { window, document, XMLHttpRequest: xhr.XHR, JSON, Number, Math, String, encodeURIComponent });
+  listeners.DOMContentLoaded();
+  listeners.DOMContentLoaded();
+  rows.forEach((row, index) => {
+    const actionBox = row.querySelector(".cbi-section-actions > div");
+    const probes = actionBox.querySelectorAll(".xc-probe-one");
+    const sockets = actionBox.querySelectorAll(".xc-socket");
+    assert.strictEqual(probes.length, 1, "row initialization is idempotent");
+    assert.strictEqual(sockets.length, 1, "partial initialization restores exactly one socket");
+    assert.strictEqual(row.getAttribute("data-xc-section"), "node_" + index);
+    assert.deepStrictEqual(actionBox.children.map(child => child.className.indexOf("xc-socket") >= 0 ? "Socket" :
+      child.className.indexOf("xc-probe-one") >= 0 ? "Probe" : child.value), ["Socket", "Probe", "Edit", "Delete"]);
+    row.section = "node_" + index; row.latency = row.querySelector(".xc-latency");
+    row.socket = row.querySelector(".xc-socket"); row.button = probes[0];
+  });
+  assert.strictEqual(document.querySelectorAll(".xc-probe-row").filter(row => row.parentNode === sectionRoot).length, 0,
+    "probe rows are never direct children of cbi-section");
+  if (rows.length >= 3) {
+    assert.strictEqual(rows[0].socket.textContent, "✓");
+    assert.strictEqual(rows[1].socket.textContent, "✗");
+    assert.strictEqual(rows[2].socket.textContent, "");
+  }
   return { window, controls, rows, requests: xhr.requests };
+}
+
+nodeHarness(3, "native");
+
+{
+  const h = nodeHarness(3, "div", 0);
+  h.controls["xc-probe-all"].onclick();
+  assert.strictEqual(h.requests.length, 0);
+  assert.strictEqual(h.controls["xc-probe-all"].disabled, false, "empty probe run stays idle");
+  assert.strictEqual(h.controls["xc-probe-state"].textContent, "");
 }
 
 for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["bad", 3]]) {
@@ -62,7 +152,7 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   h.requests[0].respond({ ok: true, data: { socket: "ok", ping: 99, time: 99, outcome: "tcp" } });
   assert.strictEqual(h.rows[2].latency.textContent, "99 ms");
   assert.strictEqual(h.rows[2].latency.style.color, "green");
-  assert.strictEqual(h.rows[2].socket.textContent, "OK");
+  assert.strictEqual(h.rows[2].socket.textContent, "✓");
 }
 
 for (const [ping, color] of [[100, "#b7791f"], [200, "#dd6b20"], [300, "red"]]) {

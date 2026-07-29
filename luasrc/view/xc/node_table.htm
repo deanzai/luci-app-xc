@@ -10,10 +10,12 @@ local probe_concurrency = self.probe_concurrency or 3
   <span id="xc-probe-state"></span>
 </div>
 <style type="text/css">
-  .xc-latency-cell { text-align: center; min-width: 5em; }
-  .xc-probe-cell { white-space: nowrap; min-width: 5em; text-align: center; }
+  .xc-probe-row .cbi-section-actions > div { display: flex; align-items: center; flex-wrap: nowrap; gap: 0.3em; }
   .xc-probe-row .xc-socket { display: inline-block; margin-right: 0.3em; }
   .xc-probe-row .xc-probe-one { font-size: smaller; padding: 0.15em 0.5em; }
+  @media (max-width: 768px) {
+    .xc-probe-row .cbi-section-actions > div { flex-wrap: wrap; }
+  }
 </style>
 <script type="text/javascript">
 (function() {
@@ -26,7 +28,7 @@ local probe_concurrency = self.probe_concurrency or 3
   var timeoutText = <%=util.serialize_json(translate("Timed out"))%>;
   var testingText = <%=util.serialize_json(translate("Testing…"))%>;
   var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
-  var okText = <%=util.serialize_json(translate("OK"))%>;
+  var probeText = <%=util.serialize_json(translate("Probe"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
   var allButton, stopButton, state;
 
@@ -94,7 +96,7 @@ local probe_concurrency = self.probe_concurrency or 3
   }
 
   function start(selected) {
-    if (running) return false;
+    if (running || selected.length === 0) return false;
     runId++; running = true; queue = selected.slice(0); inFlight = 0;
     allButton.disabled = true; state.textContent = testingText;
     pump(runId); return true;
@@ -106,8 +108,44 @@ local probe_concurrency = self.probe_concurrency or 3
   }
 
   function initialize() {
-    var found = document.querySelectorAll(".xc-probe-row");
-    for (var index = 0; index < found.length; index++) rows.push(found[index]);
+    var found = document.querySelectorAll('.cbi-section-table-row[id^="cbi-xc-"]');
+    rows = [];
+    for (var index = 0; index < found.length; index++) {
+      var row = found[index];
+      var match = /^cbi-xc-([A-Za-z0-9_]+)$/.exec(row.id || "");
+      var actions = row.querySelector(".cbi-section-actions > div");
+      if (!match || !actions) continue;
+      if (row.classList) row.classList.add("xc-probe-row");
+      else if (!(new RegExp("(^|\\s)xc-probe-row(\\s|$)")).test(row.className || ""))
+        row.className += (row.className ? " " : "") + "xc-probe-row";
+      row.setAttribute("data-xc-section", match[1]);
+      var buttons = actions.querySelectorAll(".xc-probe-one");
+      var sockets = actions.querySelectorAll(".xc-socket");
+      var button = buttons[0] || null;
+      var socket = sockets[0] || null;
+      for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++)
+        if (buttons[buttonIndex].parentNode === actions) actions.removeChild(buttons[buttonIndex]);
+      for (var socketIndex = 0; socketIndex < sockets.length; socketIndex++)
+        if (sockets[socketIndex].parentNode === actions) actions.removeChild(sockets[socketIndex]);
+      if (!socket) {
+        var latency = row.querySelector(".xc-latency");
+        var cachedSocket = latency ? latency.getAttribute("data-xc-socket") : "";
+        socket = document.createElement("span");
+        socket.className = "xc-socket";
+        socket.textContent = cachedSocket === "ok" ? "✓" : (cachedSocket === "fail" ? "✗" : "");
+        socket.style.color = cachedSocket === "ok" ? "green" : (cachedSocket === "fail" ? "red" : "");
+      }
+      if (!button) {
+        button = document.createElement("input");
+        button.type = "button";
+        button.className = "cbi-button cbi-button-action xc-probe-one";
+        button.value = probeText;
+      }
+      var firstAction = actions.children[0] || null;
+      actions.insertBefore(socket, firstAction);
+      actions.insertBefore(button, firstAction);
+      rows.push(row);
+    }
     allButton = document.getElementById("xc-probe-all");
     stopButton = document.getElementById("xc-probe-stop");
     state = document.getElementById("xc-probe-state");
