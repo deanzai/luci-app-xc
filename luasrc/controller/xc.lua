@@ -74,7 +74,7 @@ function index()
   entry({ "admin", "services", "xc", "settings" }, cbi("xc/settings"), _("Settings"), 10).leaf = true
   entry({ "admin", "services", "xc", "nodes" }, cbi("xc/nodes"), _("Nodes"), 20).leaf = true
   entry({ "admin", "services", "xc", "node" }, cbi("xc/node"), nil).leaf = true
-  entry({ "admin", "services", "xc", "log" }, cbi("xc/log"), _("Log"), 30).leaf = true
+  entry({ "admin", "services", "xc", "log" }, form("xc/log"), _("Log"), 30).leaf = true
 
   entry({ "admin", "services", "xc", "status" }, call("action_status")).leaf = true
   post_entry({ "admin", "services", "xc", "probe" }, "action_probe")
