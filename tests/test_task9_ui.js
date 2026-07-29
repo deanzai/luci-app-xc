@@ -22,6 +22,10 @@ function xhrHarness() {
     this.status = status || 200; this.responseText = JSON.stringify(value); this.readyState = 4;
     if (this.onreadystatechange) this.onreadystatechange();
   };
+  XHR.prototype.respondRaw = function(value, status) {
+    this.status = status || 200; this.responseText = value; this.readyState = 4;
+    if (this.onreadystatechange) this.onreadystatechange();
+  };
   return { XHR, requests };
 }
 
@@ -93,6 +97,23 @@ function nodeHarness(concurrency, layout, rowCount) {
     rowContainer.appendChild(row);
     return row;
   });
+  function skippedRow(id, withActions) {
+    const row = element(layout === "native" ? "tr" : "div");
+    row.id = id; row.className = "tr cbi-section-table-row";
+    if (withActions) {
+      const actions = row.appendChild(element(layout === "native" ? "td" : "div"));
+      actions.className = "td cbi-section-actions";
+      const actionBox = actions.appendChild(element("div"));
+      const edit = actionBox.appendChild(element("input")); edit.value = "Edit";
+      const remove = actionBox.appendChild(element("input")); remove.value = "Delete";
+    }
+    rowContainer.appendChild(row); return row;
+  }
+  const skippedRows = [
+    skippedRow("", true),
+    skippedRow("cbi-xc-bad-id", true),
+    skippedRow("cbi-xc-missing_actions", false)
+  ];
   const roots = [sectionRoot].concat(Object.keys(controls).map(id => { controls[id].id = id; return controls[id]; }));
   const listeners = {};
   const document = {
@@ -125,7 +146,11 @@ function nodeHarness(concurrency, layout, rowCount) {
     assert.strictEqual(rows[1].socket.textContent, "✗");
     assert.strictEqual(rows[2].socket.textContent, "");
   }
-  return { window, controls, rows, requests: xhr.requests };
+  skippedRows.forEach(row => {
+    assert.strictEqual(row.querySelectorAll(".xc-probe-one").length, 0, "skipped row gets no Probe");
+    assert.strictEqual(row.getAttribute("data-xc-section"), null, "skipped row is not initialized");
+  });
+  return { window, controls, rows, skippedRows, requests: xhr.requests };
 }
 
 nodeHarness(3, "native");
@@ -153,6 +178,19 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   assert.strictEqual(h.rows[2].latency.textContent, "99 ms");
   assert.strictEqual(h.rows[2].latency.style.color, "green");
   assert.strictEqual(h.rows[2].socket.textContent, "✓");
+}
+
+for (const respond of [
+  request => request.respond({ ok: false }),
+  request => request.respond({ ok: true }),
+  request => request.respondRaw("{malformed")
+]) {
+  const h = nodeHarness(1);
+  h.rows[0].button.onclick(); respond(h.requests[0]);
+  assert.strictEqual(h.rows[0].latency.textContent, "Error");
+  assert.strictEqual(h.rows[0].latency.style.color, "red");
+  assert.strictEqual(h.rows[0].socket.textContent, "Failed");
+  assert.strictEqual(h.rows[0].socket.style.color, "red");
 }
 
 for (const [ping, color] of [[100, "#b7791f"], [200, "#dd6b20"], [300, "red"]]) {
