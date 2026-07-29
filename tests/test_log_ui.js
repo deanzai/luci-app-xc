@@ -191,12 +191,26 @@ function logHarness() {
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: true, data: { entries: [{ time: 1, level: "info", source: "xc", message: "x" }] } });
+  h.document.getElementById("xc-log-level").value = "warning";
   h.document.getElementById("xc-log-clear").onclick();
   var req = h.requests[1];
   assert.ok(req);
   assert.strictEqual(req.method, "POST");
   req.respond({ ok: true });
-  assert.strictEqual(h.document.getElementById("xc-log-container").textContent, "(empty)");
+  assert.strictEqual(h.requests.length, 3, "clear success reloads the retained entries once");
+  assert.strictEqual(h.requests[2].method, "GET");
+  assert.ok(h.requests[2].url.indexOf("level=warning") >= 0, "reload keeps the selected level");
+  assert.strictEqual(h.requests.filter(function(r) { return r.method === "POST"; }).length, 1,
+    "reload does not issue a second clear");
+  h.requests[2].respond({ ok: true, data: { entries: [
+    { time: 2, display_time: "t=2", level: "warning", source: "xray", message: "still here" }
+  ]}});
+  assert.ok(h.document.getElementById("xc-log-container").textContent.indexOf("[Xray]") >= 0,
+    "retained Xray entry remains visible after clearing XC entries");
+  assert.ok(h.document.getElementById("xc-log-container").textContent.indexOf("still here") >= 0);
+  assert.strictEqual(h.document.getElementById("xc-log-state").textContent,
+    "XC entries cleared. Xray and system entries remain.");
+  assert.strictEqual(h.requests.length, 3, "reload response does not start automatic refresh");
 }());
 
 // 6. Load failure
@@ -205,5 +219,13 @@ function logHarness() {
   h.requests[0].respond({ ok: false }, 500);
   assert.ok(h.document.getElementById("xc-log-state").textContent.indexOf("Unable to load") >= 0);
 }());
+
+var levelColors = {};
+["error", "warning", "info", "debug"].forEach(function(level) {
+  var rule = logSource.match(new RegExp("\\.xc-log-" + level + "\\s*\\{[^}]*color\\s*:\\s*([^;}]+)", "i"));
+  assert.ok(rule, "template defines a visible color for " + level);
+  levelColors[rule[1].trim().toLowerCase()] = true;
+});
+assert.strictEqual(Object.keys(levelColors).length, 4, "all four log levels use different colors");
 
 console.log("PASS XC log page DOM renderer");

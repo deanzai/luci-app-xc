@@ -24,6 +24,12 @@ local level_options = {
   </div>
   <div id="xc-log-container" class="xc-log-container" style="max-height:32em;overflow:auto;font-size:0.85em;font-family:monospace;background:#111;color:#ccc;padding:0.5em;white-space:pre-wrap;word-break:break-all"></div>
 </div>
+<style type="text/css">
+#xc-log-container .xc-log-error { color: #ff6b6b; }
+#xc-log-container .xc-log-warning { color: #ffd166; }
+#xc-log-container .xc-log-info { color: #8ecae6; }
+#xc-log-container .xc-log-debug { color: #b8b8b8; }
+</style>
 <script type="text/javascript">
 //<![CDATA[
 (function() {
@@ -115,9 +121,9 @@ local level_options = {
       var payload;
       try { payload = JSON.parse(xhr.responseText); } catch (ignored) { payload = null; }
       if (payload && payload.ok === true) {
-        clearContainer();
-        addText(container, emptyText);
+        loadLog();
         state.textContent = clearOkText;
+        return;
       } else {
         state.textContent = clearFailText;
       }
