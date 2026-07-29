@@ -18,6 +18,7 @@ local nodes_path = "luasrc/model/cbi/xc/nodes.lua"
 local node_path = "luasrc/model/cbi/xc/node.lua"
 local status_path = "luasrc/view/xc/status.htm"
 local log_path = "luasrc/model/cbi/xc/log.lua"
+local config_path = "root/etc/config/xc"
 
 t.test("Task 8 CBI and status files exist", function()
   for _, path in ipairs({ settings_path, nodes_path, node_path, status_path, log_path }) do
@@ -62,6 +63,59 @@ t.test("settings form uses exact global defaults and validation contracts", func
   t.contains(value, 'listen_mode:value("lan"')
   t.eq(value:find('listen_mode:value("custom"', 1, true), nil, "runtime currently supports LAN-derived listening only")
   t.contains(value, 'listen_address.readonly = true')
+end)
+
+t.test("Xray runtime log level has an exact UCI default and ListValue contract", function()
+  local config = source(config_path)
+  t.contains(config, "\toption xray_log_level 'warning'\n")
+
+  local base = {}
+  function base:value(key, label)
+    self.values[#self.values + 1] = { key, label }
+  end
+  local classes = {
+    NamedSection = {}, SimpleSection = {}, Flag = {}, Value = {}, ListValue = base
+  }
+  local map = { options = {} }
+  function map:section()
+    local section = {}
+    function section:option(option_class, option)
+      local value = setmetatable({ option_class = option_class, values = {} }, { __index = option_class })
+      map.options[option] = value
+      return value
+    end
+    return section
+  end
+  local environment = {
+    Map = function() return map end,
+    translate = function(value) return value end,
+    require = function(name)
+      if name == "luci.model.uci" then
+        return { cursor = function() return { foreach = function() end } end }
+      end
+      return require(name)
+    end
+  }
+  for name, value in pairs(classes) do environment[name] = value end
+  setmetatable(environment, { __index = _G })
+
+  local chunk = assert(loadfile(settings_path))
+  setfenv(chunk, environment)
+  assert(chunk())
+
+  local option = assert(map.options.xray_log_level)
+  t.eq(option.option_class, classes.ListValue)
+  t.eq(option.default, "warning")
+  t.eq(option.rmempty, false)
+  t.eq(#option.values, 4)
+  local expected = {
+    { "error", "Error" }, { "warning", "Warning" },
+    { "info", "Info" }, { "debug", "Debug" }
+  }
+  for index, value in ipairs(expected) do
+    t.eq(option.values[index][1], value[1])
+    t.eq(option.values[index][2], value[2])
+  end
 end)
 
 t.test("active node choices contain only enabled real UCI nodes", function()

@@ -10,6 +10,14 @@ local enabled = global:option(Flag, "enabled", translate("Enable"))
 enabled.default = "0"
 enabled.rmempty = false
 
+local xray_log_level = global:option(ListValue, "xray_log_level", translate("Xray log level"))
+xray_log_level:value("error", translate("Error"))
+xray_log_level:value("warning", translate("Warning"))
+xray_log_level:value("info", translate("Info"))
+xray_log_level:value("debug", translate("Debug"))
+xray_log_level.default = "warning"
+xray_log_level.rmempty = false
+
 local active_node = global:option(ListValue, "active_node", translate("Active node"))
 active_node.rmempty = true
 active_node:value("", translate("Not selected"))

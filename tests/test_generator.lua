@@ -90,6 +90,37 @@ end
 
 local luci_json = { stringify = luci_compatible_stringify }
 
+t.test("builds the default Xray log block and preserves every allowed log level", function()
+  local node = {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  }
+  local default_config = assert(generator.build(global(), node))
+  t.eq(default_config.log.access, "none")
+  t.eq(default_config.log.loglevel, "warning")
+  t.eq(default_config.log.dnsLog, false)
+
+  for _, level in ipairs({ "error", "warning", "info", "debug" }) do
+    local config = assert(generator.build(global({ xray_log_level = level }), node))
+    t.eq(config.log.loglevel, level)
+  end
+end)
+
+t.test("rejects unknown Xray log levels before a config can be encoded", function()
+  local config, err = generator.build(global({ xray_log_level = "trace" }), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  })
+  t.eq(config, nil)
+  t.eq(err, "invalid Xray log level")
+
+  local calls = 0
+  if config then
+    generator.encode(config, { stringify = function() calls = calls + 1; return "{}" end })
+  end
+  t.eq(calls, 0)
+end)
+
 t.test("builds compatible unauthenticated SOCKS and HTTP inbounds", function()
   local cfg = assert(generator.build(global(), {
     protocol = "vless", server = "vless.invalid", port = 443,

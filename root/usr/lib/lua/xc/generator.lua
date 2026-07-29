@@ -28,6 +28,7 @@ local structured_protocols = {
 
 local transports = { tcp = true, ws = true, grpc = true }
 local securities = { none = true, tls = true, reality = true }
+local xray_log_levels = { error = true, warning = true, info = true, debug = true }
 local fingerprints = {
   chrome = true, firefox = true, safari = true, ios = true, android = true,
   edge = true, ["360"] = true, qq = true, random = true, randomized = true
@@ -432,6 +433,8 @@ end
 
 function M.build(global, node)
   if type(global) ~= "table" or type(node) ~= "table" then return nil, "invalid generator input" end
+  local xray_log_level = global.xray_log_level or "warning"
+  if not xray_log_levels[xray_log_level] then return nil, "invalid Xray log level" end
   if not valid_listen_address(global.listen_address) then return nil, "invalid global listen address" end
   local socks_port = port_number(global.socks_port)
   local http_port = port_number(global.http_port)
@@ -440,6 +443,7 @@ function M.build(global, node)
   local selected, err = M.build_outbound(node, "proxy-selected")
   if not selected then return nil, err end
   return {
+    log = { access = "none", loglevel = xray_log_level, dnsLog = false },
     inbounds = {
       {
         tag = "socks-in",
