@@ -1,103 +1,133 @@
 <%
 local dispatcher = require "luci.dispatcher"
 local util = require "luci.util"
--%>
+local level_options = {
+  { value = "",   label = translate("All") },
+  { value = "error",   label = translate("Error") },
+  { value = "warning", label = translate("Warning") },
+  { value = "info",    label = translate("Info") },
+  { value = "debug",   label = translate("Debug") },
+}
+%>
 <div class="cbi-section">
   <div style="margin-bottom:0.5em">
     <label><%:Level%>:
       <select id="xc-log-level">
-        <option value=""><%:All%></option>
-        <option value="error"><%:Error%></option>
-        <option value="info"><%:Info%></option>
-        <option value="debug"><%:Debug%></option>
+<% for _, opt in ipairs(level_options) do %>
+        <option value="<%=opt.value%>"><%=opt.label%></option>
+<% end %>
       </select>
     </label>
     <input id="xc-log-refresh" type="button" class="cbi-button cbi-button-apply" value="<%:Refresh%>" />
     <input id="xc-log-clear" type="button" class="cbi-button cbi-button-negative" value="<%:Clear log%>" />
     <span id="xc-log-state"></span>
   </div>
-  <pre id="xc-log-content" style="max-height:32em;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:0.85em"><%:Loading…%></pre>
+  <div id="xc-log-container" class="xc-log-container" style="max-height:32em;overflow:auto;font-size:0.85em;font-family:monospace;background:#111;color:#ccc;padding:0.5em;white-space:pre-wrap;word-break:break-all"></div>
 </div>
 <script type="text/javascript">
 //<![CDATA[
 (function() {
   "use strict";
-  var getUrl = '<%=dispatcher.build_url("admin", "services", "xc", "get-log")%>';
-  var clearUrl = '<%=dispatcher.build_url("admin", "services", "xc", "clear-log")%>?token=<%=token%>';
-  var confirmText = <%=util.serialize_json(translate("Clear the log?"))%>;
-  var clearedText = <%=util.serialize_json(translate("Log cleared"))%>;
+  var getUrl = "<%=dispatcher.build_url("admin", "services", "xc", "get-log")%>";
+  var clearUrl = "<%=dispatcher.build_url("admin", "services", "xc", "clear-log")%>?token=<%=token%>";
+  var loadingText = <%=util.serialize_json(translate("Loading…"))%>;
+  var emptyText = <%=util.serialize_json(translate("(empty)"))%>;
   var loadFailedText = <%=util.serialize_json(translate("Unable to load the log"))%>;
-  var clearFailedText = <%=util.serialize_json(translate("Unable to clear the log"))%>;
-  var content = document.getElementById("xc-log-content");
+  var clearConfirmText = <%=util.serialize_json(translate("Clear the XC log? Shared system entries will remain."))%>;
+  var clearOkText = <%=util.serialize_json(translate("XC entries cleared. Xray and system entries remain."))%>;
+  var clearFailText = <%=util.serialize_json(translate("Unable to clear the log"))%>;
+  var sourceLabels = { xc: "XC", xray: "Xray" };
+
+  var container = document.getElementById("xc-log-container");
   var state = document.getElementById("xc-log-state");
   var refresh = document.getElementById("xc-log-refresh");
   var clear = document.getElementById("xc-log-clear");
   var levelSelect = document.getElementById("xc-log-level");
 
-  function response(xhr) {
-    try { return JSON.parse(xhr.responseText); } catch (ignored) { return null; }
+  function setBusy(busy) {
+    refresh.disabled = busy;
+    clear.disabled = busy;
+    levelSelect.disabled = busy;
   }
 
-  function formatEntry(raw) {
-    try {
-      var entry = JSON.parse(raw);
-      var time = entry.time || "";
-      var level = (entry.level || "info").toUpperCase();
-      var msg = entry.message || "";
-      var levelColor = level === "ERROR" ? "#ff4444" : (level === "DEBUG" ? "#888888" : "#cccccc");
-      return "<span style=\"color:' + levelColor + '\">[" + level + "]</span> [" + time + "] " + escapeHtml(msg);
-    } catch (e) {
-      return escapeHtml(raw);
+  function addText(node, text) {
+    node.appendChild(document.createTextNode(text));
+  }
+
+  function entryDiv(entry) {
+    var div = document.createElement("div");
+    div.className = "xc-log-" + (entry.level || "info");
+    var sourceLabel = sourceLabels[entry.source] || entry.source || "?";
+    var level = (entry.level || "info").toUpperCase();
+    var time = entry.display_time || "";
+    addText(div, "[" + sourceLabel + "] [" + level + "] [" + time + "] " + (entry.message || ""));
+    return div;
+  }
+
+  function clearContainer() {
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
     }
   }
 
-  function escapeHtml(text) {
-    var div = document.createElement("div");
-    div.appendChild(document.createTextNode(text));
-    return div.innerHTML;
-  }
-
-  function setBusy(value) { refresh.disabled = value; clear.disabled = value; levelSelect.disabled = value; }
-
   function loadLog() {
-    setBusy(true); state.textContent = "";
+    setBusy(true);
+    state.textContent = "";
+    clearContainer();
+    addText(container, loadingText);
     var level = levelSelect.value;
     var url = getUrl + (level ? "?level=" + encodeURIComponent(level) : "");
     var xhr = new XMLHttpRequest();
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      var payload = response(xhr);
-      if (payload && payload.ok === true && payload.data) {
-        var log = payload.data.log || "";
-        var lines = log.split("\n").filter(function(l) { return l.trim() !== ""; });
-        var html = "";
-        for (var i = 0; i < lines.length; i++) {
-          html += formatEntry(lines[i]) + "\n";
+      var payload;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) { payload = null; }
+      if (payload && payload.ok === true && payload.data && payload.data.entries) {
+        clearContainer();
+        var entries = payload.data.entries;
+        if (entries.length === 0) {
+          addText(container, emptyText);
+        } else {
+          for (var i = 0; i < entries.length; i++) {
+            container.appendChild(entryDiv(entries[i]));
+          }
         }
-        content.innerHTML = html || escapeHtml(translate("(empty)"));
-      } else state.textContent = loadFailedText;
+      } else {
+        clearContainer();
+        state.textContent = loadFailedText;
+      }
       setBusy(false);
     };
-    xhr.open("GET", url, true); xhr.send(null);
+    xhr.open("GET", url, true);
+    xhr.send(null);
   }
 
   refresh.onclick = loadLog;
   levelSelect.onchange = loadLog;
+
   clear.onclick = function() {
-    if (!confirm(confirmText)) return;
-    setBusy(true); state.textContent = "";
+    if (!confirm(clearConfirmText)) return;
+    setBusy(true);
+    state.textContent = "";
     var xhr = new XMLHttpRequest();
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      var payload = response(xhr);
-      if (payload && payload.ok === true) { content.innerHTML = ""; state.textContent = clearedText; }
-      else state.textContent = clearFailedText;
+      var payload;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) { payload = null; }
+      if (payload && payload.ok === true) {
+        clearContainer();
+        addText(container, emptyText);
+        state.textContent = clearOkText;
+      } else {
+        state.textContent = clearFailText;
+      }
       setBusy(false);
     };
     xhr.open("POST", clearUrl, true);
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.send("{}");
   };
+
   loadLog();
 }());
 //]]>
