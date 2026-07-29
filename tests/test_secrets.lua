@@ -116,14 +116,33 @@ t.test("clear log serializes truncate with the runtime log lock", function()
 end)
 
 t.test("log controller behavior uses fixed bounded paths and safe failure envelopes", function()
-  local controller, state = controller_fixture({ log_content = "tail" })
+  local uuid = "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa"
+  local raw_tail = "raw-tail password=tail-secret token=tail-token vless://" .. uuid .. "@private.invalid:443"
+  local controller, state = controller_fixture({
+    log_content = raw_tail,
+    log_json = { [raw_tail] = {
+      time = 1785327995, level = "warning",
+      message = "password=tail-secret token=tail-token vless://" .. uuid .. "@private.invalid:443",
+      fields = { raw_content = '{"password":"raw-json-secret"}', node = "safe-node" }
+    } }
+  })
   controller.action_get_log()
-  t.eq(state.response.ok, true); t.eq(state.response.data.log, "tail")
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.clear_scope, "xc")
+  t.eq(state.response.data.log, nil)
+  t.eq(#state.response.data.entries, 1)
+  t.eq(state.response.data.entries[1].source, "xc")
+  t.contains(state.response.data.entries[1].message, "safe-node")
+  local public = state.response.data.entries[1].message
+  for _, secret in ipairs({ raw_tail, "tail-secret", "tail-token", uuid, "vless://", "private.invalid", "raw-json-secret" }) do
+    t.eq(public:find(secret, 1, true), nil, "structured log response leaked " .. secret)
+  end
   t.eq(state.fs_events[1], "read_tail:/var/log/xc.log:262144")
 
   controller, state = controller_fixture({ log_error = "missing" })
   controller.action_get_log()
-  t.eq(state.response.ok, true); t.eq(state.response.data.log, "")
+  t.eq(state.response.ok, true); t.eq(#state.response.data.entries, 0)
+  t.eq(state.response.data.clear_scope, "xc")
 
   controller, state = controller_fixture({ log_error = "io_error" })
   controller.action_get_log()

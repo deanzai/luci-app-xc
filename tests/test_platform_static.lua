@@ -37,6 +37,32 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.eq(source:find("448", 1, true), nil)
 end)
 
+t.test("platform captures Xray logs with fixed argv bounded output and a finite deadline", function()
+  local calls = {}
+  local adapters = require("xc.platform").new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    now = function() return 10 end,
+    capture = function(argv, deadline, maximum)
+      calls[#calls + 1] = { argv = argv, deadline = deadline, maximum = maximum }
+      return "xray output"
+    end
+  })
+  t.eq(adapters.exec.xray_logs(12), "xray output")
+  t.eq(table.concat(calls[1].argv, "|"), "/sbin/logread|-e|xray[")
+  t.eq(calls[1].deadline, 12)
+  t.eq(calls[1].maximum, 262144)
+  for _, invalid in ipairs({ 10, 311, math.huge, -math.huge }) do
+    t.eq(adapters.exec.xray_logs(invalid), nil)
+  end
+  t.eq(#calls, 1)
+
+  local source = read_file("root/usr/lib/lua/xc/platform.lua")
+  t.contains(source, "wall_time = function() return os.time() end")
+  t.contains(source, 'capture_process({ "/sbin/logread", "-e", "xray[" }, deadline, 262144)')
+  t.contains(source, "spawn_capture(nixio, argv, temporary, deadline, now_process, sleep_process)")
+end)
+
 t.test("platform generation trash resumes an interrupted pair move", function()
   package.loaded["xc.platform"] = nil
   local platform = require "xc.platform"

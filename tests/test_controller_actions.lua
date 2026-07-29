@@ -1,5 +1,6 @@
 local t = require "testlib"
 local real_schema = require "xc.schema"
+local real_logview = require "xc.logview"
 
 local function controller_fixture(options)
   options = options or {}
@@ -13,6 +14,9 @@ local function controller_fixture(options)
     content = function() return body end,
     prepare_content = function(value) state.content_type = value end,
     status = function(code) state.status = code end,
+    formvalue = function(name)
+      if name == "level" then return options.level end
+    end,
     write_json = function(value) state.response = value end
   }
   local node = {
@@ -21,7 +25,10 @@ local function controller_fixture(options)
   }
   local adapters = {
     json = {
-      parse = function() return options.request or { section = "safe_node" } end,
+      parse = function(value)
+        if options.log_json and options.log_json[value] ~= nil then return options.log_json[value] end
+        return options.request or { section = "safe_node" }
+      end,
       stringify = function() return "{}" end
     },
     uci = {
@@ -61,7 +68,16 @@ local function controller_fixture(options)
         if options.release_throw then error("password=release-secret") end
         return options.release_ok ~= false
       end
-    }
+    },
+    exec = {
+      xray_logs = function(deadline)
+        state.xray_deadline = deadline
+        if options.xray_throw then error("stderr=raw-secret-error") end
+        return options.xray_content
+      end
+    },
+    now = function() return options.uptime or 7200 end,
+    wall_time = function() return options.wall_time or 1785326400 end
   }
   local runtime_instance = options.runtime_instance or {
     switch = function() return { ok = true, code = "switched", node = "safe_node" } end,
@@ -79,6 +95,7 @@ local function controller_fixture(options)
   local replacements = {
     ["luci.http"] = http,
     ["xc.schema"] = real_schema,
+    ["xc.logview"] = real_logview,
     ["xc.platform"] = { new = function() return adapters end },
     ["xc.runtime"] = { new = function() return runtime_instance end, paths = {
       log = "/var/log/xc.log", log_lock = "/var/lock/xc-log.lock"
@@ -101,6 +118,65 @@ local function controller_fixture(options)
   for name in pairs(replacements) do package.loaded[name] = saved[name] end
   return controller, state
 end
+
+t.test("get-log returns merged structured entries and an XC-only clear scope", function()
+  local xc_line = "xc-warning"
+  local controller, state = controller_fixture({
+    level = "warning",
+    log_content = xc_line,
+    log_json = { [xc_line] = { time = 1785327994, level = "warning", message = "XC warning" } },
+    xray_content = "Wed Jul 29 20:26:35 2026 daemon.warn xray[31]: Xray warning"
+  })
+  controller.action_get_log()
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.clear_scope, "xc")
+  t.eq(#state.response.data.entries, 2)
+  t.eq(state.response.data.entries[1].source, "xc")
+  t.eq(state.response.data.entries[2].source, "xray")
+  t.eq(state.xray_deadline, 7202)
+  t.eq(state.fs_events[1], "read_tail:/var/log/xc.log:262144")
+end)
+
+t.test("get-log defaults a missing level to all and rejects every invalid value", function()
+  local controller, state = controller_fixture({ log_content = "" })
+  controller.action_get_log()
+  t.eq(state.response.ok, true)
+  t.eq(type(state.response.data.entries), "table")
+
+  for _, level in ipairs({ "", "warn", "Warning", "all ", "debug%00" }) do
+    controller, state = controller_fixture({ level = level, log_content = "do-not-read" })
+    controller.action_get_log()
+    t.eq(state.response.ok, false)
+    t.eq(state.response.code, "invalid_request")
+    t.eq(state.status, 400)
+    t.eq(#state.fs_events, 0)
+    t.eq(state.xray_deadline, nil)
+  end
+end)
+
+t.test("get-log degrades Xray capture failures but fails closed on XC read faults", function()
+  local xc_line = "xc-info"
+  local options = {
+    log_content = xc_line,
+    log_json = { [xc_line] = { time = 1, level = "info", message = "XC safe" } },
+    xray_throw = true
+  }
+  local controller, state = controller_fixture(options)
+  local called = pcall(controller.action_get_log)
+  t.eq(called, true)
+  t.eq(state.response.ok, true)
+  t.eq(#state.response.data.entries, 1)
+  t.eq(state.response.data.entries[1].message, "XC safe")
+  t.eq(tostring(state.response):find("raw%-secret%-error"), nil)
+
+  controller, state = controller_fixture({ log_error = "io_error", xray_content = "stderr raw body" })
+  called = pcall(controller.action_get_log)
+  t.eq(called, true)
+  t.eq(state.response.ok, false)
+  t.eq(state.response.code, "internal_error")
+  t.eq(state.xray_deadline, nil)
+  t.eq(tostring(state.response):find("stderr raw body", 1, true), nil)
+end)
 
 t.test("controller distinguishes missing nodes from uncertain and throwing UCI reads", function()
   local controller, state = controller_fixture({ get_node = function() return nil, "missing" end })

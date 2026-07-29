@@ -70,7 +70,7 @@ t.test("controller calls Lua runtime and importer APIs without shell interpolati
   t.eq(source:find("os.execute", 1, true), nil)
   t.eq(source:find("io.popen", 1, true), nil)
   t.eq(source:find("luci.sys", 1, true), nil)
-  t.eq(source:find("formvalue", 1, true), nil)
+  t.contains(source, 'http.formvalue("level")')
 end)
 
 t.test("controller commits imported nodes atomically and emits whitelisted status", function()

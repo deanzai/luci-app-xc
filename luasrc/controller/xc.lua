@@ -6,6 +6,7 @@ local platform = require "xc.platform"
 local runtime_module = require "xc.runtime"
 local importer = require "xc.importer"
 local probe_module = require "xc.probe"
+local logview = require "xc.logview"
 
 local REQUEST_BODY_MAX = 512 * 1024
 local LOG_READ_MAX = 256 * 1024
@@ -17,6 +18,7 @@ local messages = {
   commit_failed = "The configuration could not be saved.",
   import_failed = "The import could not be completed.",
   internal_error = "The request could not be completed.",
+  invalid_request = "The request is invalid.",
   disabled_node = "The selected node is disabled.",
   invalid_node = "The selected node is invalid.",
   method_not_allowed = "This action requires POST.",
@@ -31,7 +33,7 @@ local messages = {
 }
 
 local failure_status = {
-  validation_failed = 400, invalid_node = 400,
+  validation_failed = 400, invalid_node = 400, invalid_request = 400,
   missing_node = 404, no_rollback_state = 404,
   method_not_allowed = 405, busy = 409, disabled_node = 409,
   request_too_large = 413, not_implemented = 501,
@@ -284,12 +286,30 @@ function action_import_commit()
 end
 
 function action_get_log()
+  local level = http.formvalue("level")
+  if level == nil then level = "all" end
+  if level ~= "all" and level ~= "error" and level ~= "warning" and level ~= "info" and level ~= "debug" then
+    failure("invalid_request"); return
+  end
   local adapters = new_backend()
   if not adapters then failure("internal_error"); return end
-  local called, content, read_error = pcall(adapters.fs.read_tail, runtime_module.paths.log, LOG_READ_MAX)
+  local called, xc_content, read_error = pcall(adapters.fs.read_tail, runtime_module.paths.log, LOG_READ_MAX)
   if not called then failure("internal_error"); return end
-  if content == nil and read_error ~= "missing" then failure("internal_error"); return end
-  success({ log = content or "" })
+  if xc_content == nil and read_error ~= "missing" then failure("internal_error"); return end
+
+  local time_ok, uptime, wall_time = pcall(function() return adapters.now(), adapters.wall_time() end)
+  if not time_ok or type(uptime) ~= "number" or type(wall_time) ~= "number" then failure("internal_error"); return end
+  local xray_content = ""
+  if type(adapters.exec) == "table" and type(adapters.exec.xray_logs) == "function" then
+    local captured, value = pcall(adapters.exec.xray_logs, uptime + 2)
+    if captured and type(value) == "string" then xray_content = value end
+  end
+  local normalized, entries = pcall(logview.collect, {
+    xc = xc_content or "", xray = xray_content, level = level, json = adapters.json,
+    wall_time = wall_time, uptime = uptime
+  })
+  if not normalized or type(entries) ~= "table" then failure("internal_error"); return end
+  success({ entries = entries, clear_scope = "xc" })
 end
 
 function action_clear_log()

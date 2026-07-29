@@ -103,6 +103,28 @@ local function spawn(nixio, argv, deadline, now, sleep)
   return wait_status(nixio, pid, deadline, now, sleep)
 end
 
+local function spawn_capture(nixio, argv, path, deadline, now, sleep)
+  if not valid_argv(argv) or not safe_path(path) then return false end
+  local pid = nixio.fork()
+  if pid == 0 then
+    local output = nixio.open(path, nixio.open_flags("wronly", "trunc") + O_NOFOLLOW, 600)
+    local null = nixio.open("/dev/null", "w")
+    if not output or not null then
+      if output then output:close() end
+      if null then null:close() end
+      os.exit(127)
+    end
+    nixio.dup(output, nixio.stdout)
+    nixio.dup(null, nixio.stderr)
+    output:close()
+    null:close()
+    nixio.exec(unpack(argv))
+    os.exit(127)
+  end
+  if type(pid) ~= "number" or pid < 1 then return false end
+  return wait_status(nixio, pid, deadline, now, sleep)
+end
+
 local function errno_missing(nixio, code)
   if code == 2 or code == "ENOENT" then return true end
   local current = nixio.errno and nixio.errno() or nil
@@ -125,14 +147,22 @@ function M.new(injected)
     return spawn(nixio, argv, deadline, now_process, sleep_process)
   end
   local capture_process = injected.capture or function(argv, deadline, maximum)
-    if not valid_argv(argv) or type(maximum) ~= "number" or maximum < 1 or maximum > 1024 then return nil end
+    if not valid_argv(argv) or type(maximum) ~= "number" or maximum < 1 or maximum > 262144 then return nil end
     generation_sequence = generation_sequence + 1
     local temporary = "/var/etc/xc/.observe-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence)
     if nfs.stat(temporary) then return nil end
-    local command = {}
-    for index = 1, #argv - 1 do command[#command + 1] = argv[index] end
-    command[#command + 1] = "--output"; command[#command + 1] = temporary; command[#command + 1] = argv[#argv]
-    if not spawn_process(command, deadline) then nfs.unlink(temporary); return nil end
+    if argv[1] == "/sbin/logread" then
+      local reservation = nixio.open(temporary, nixio.open_flags("wronly", "creat", "excl") + O_NOFOLLOW, 600)
+      if not reservation then return nil end
+      if reservation:close() ~= true or not spawn_capture(nixio, argv, temporary, deadline, now_process, sleep_process) then
+        nfs.unlink(temporary); return nil
+      end
+    else
+      local command = {}
+      for index = 1, #argv - 1 do command[#command + 1] = argv[index] end
+      command[#command + 1] = "--output"; command[#command + 1] = temporary; command[#command + 1] = argv[#argv]
+      if not spawn_process(command, deadline) then nfs.unlink(temporary); return nil end
+    end
     local handle = nixio.open(temporary, nixio.open_flags("rdonly") + O_NOFOLLOW)
     if not handle then nfs.unlink(temporary); return nil end
     local value = handle:read(maximum + 1)
@@ -475,6 +505,11 @@ function M.new(injected)
       deadline = deadline or (now_process() + 2)
       return spawn_process({ "/etc/init.d/xc", "running" }, deadline) and "running" or "stopped"
     end,
+    xray_logs = function(deadline)
+      local current = now_process()
+      if type(deadline) ~= "number" or deadline ~= deadline or deadline <= current or deadline > current + 300 then return nil end
+      return capture_process({ "/sbin/logread", "-e", "xray[" }, deadline, 262144)
+    end,
     listener_ready = function(kind, address, port, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) or M.now(nixio) >= deadline then return false end
       local family = address:find(":", 1, true) and "inet6" or "inet"
@@ -535,6 +570,7 @@ function M.new(injected)
   return {
     uci = uci, fs = fs, exec = exec, json = json, network = network,
     now = now_process,
+    wall_time = function() return os.time() end,
     sleep = function(seconds) if seconds > 0 and seconds <= 30 then sleep_process(seconds) end end
   }
 end
