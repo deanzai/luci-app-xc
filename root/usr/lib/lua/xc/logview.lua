@@ -66,9 +66,9 @@ local function redact_assignment(value, key)
   return redact_values(value, key .. "%s*[:=]%s*")
 end
 
-local function redact_bearer(value)
+local function redact_authorization(value)
   return redact_values(value,
-    "[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]%s*:%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+")
+    "[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]%s*:%s*[A-Za-z][A-Za-z0-9._+%-]*%s+")
 end
 
 local function sanitize(value, maximum)
@@ -79,13 +79,14 @@ local function sanitize(value, maximum)
   value = value:gsub("%-%-%-%-%-[Bb][Ee][Gg][Ii][Nn] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-.-%-%-%-%-%-[Ee][Nn][Dd] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-", "[redacted]")
   if value:find("://", 1, true) then value = value:gsub("%a[%w+%.%-]*://[^%s]+", "[redacted]") end
   value = value:gsub("%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x", "[redacted]")
-  value = redact_bearer(value)
+  value = redact_authorization(value)
   value = redact_assignment(value, "[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]")
   value = redact_assignment(value, "[Pp][Aa][Ss][Ss][Ww][Dd]")
   value = redact_assignment(value, "[Tt][Oo][Kk][Ee][Nn]")
   value = redact_assignment(value, "[Ss][Ee][Cc][Rr][Ee][Tt]")
   value = redact_assignment(value, "[Aa][Pp][Ii][_-][Kk][Ee][Yy]")
   value = redact_assignment(value, "[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-][Kk][Ee][Yy]")
+  value = redact_assignment(value, "[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]")
   return utf8_prefix(value, maximum or MESSAGE_MAX)
 end
 
@@ -200,7 +201,7 @@ local function xray_parts(line, wall_time)
 
   facility, tag, message = line:match("^(%S+)%s+(xray%[%d+%]:)%s*(.*)$")
   if tag then return nil, facility, message end
-  facility, tag, message = line:match("^.*%s(%S+)%s+(xray%[%d+%]:)%s*(.*)$")
+  facility, tag, message = line:match("^[^%[%s]+%s+(%S+)%s+(xray%[%d+%]:)%s*(.*)$")
   if tag then return nil, facility, message end
   return nil
 end

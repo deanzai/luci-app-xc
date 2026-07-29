@@ -71,6 +71,18 @@ t.test("logview accepts only exact numeric Xray process tags and normalizes safe
   t.eq(entries[2].message, "unstructured safe text")
 end)
 
+t.test("logview rejects copied Xray tags embedded in another process message", function()
+  local foreign_secret = "FOREIGNSECRET"
+  local entries = assert(collect(nil, nil, {
+    "daemon.info other[7]: copied daemon.err xray[999]: " .. foreign_secret,
+    "other[7]: daemon.err xray[999]: " .. foreign_secret .. "_SHORT"
+  }, "all"))
+  t.eq(#entries, 0)
+  local output = ""
+  for _, entry in ipairs(entries) do output = output .. entry.message end
+  t.eq(output:find(foreign_secret, 1, true), nil)
+end)
+
 t.test("logview retains exact Xray tags when their timestamp is unparseable", function()
   local entries = assert(collect(nil, nil, {
     "timestamp-unavailable daemon.notice xray[44]: safe fallback message"
@@ -220,6 +232,34 @@ t.test("logview fail-closed redacts escaped quotes and unterminated credentials"
     t.contains(entry.message, "[redacted]")
     t.truthy(#entry.message <= 1024)
   end
+end)
+
+t.test("logview redacts generic Authorization schemes and credential assignments", function()
+  local line = "authorization-secrets"
+  local message = table.concat({
+    "safe prefix",
+    "Authorization: Basic dXNlcjpTRUNSRVQ= safe-basic-tail",
+    'aUtHoRiZaTiOn: bAsIc "quoted BASIC_SECRET" safe-quoted-tail',
+    "AUTHORIZATION: Digest DIGEST_SECRET safe-digest-tail",
+    "credential=XCSECRET",
+    'CrEdEnTiAl="quoted CREDENTIAL_SECRET" safe-credential-tail',
+    "credential='UNTERMINATED_CREDENTIAL_SECRET with space"
+  }, " ")
+  local entries = assert(collect({ line }, {
+    [line] = { time = 1785327995, level = "warning", message = message }
+  }, nil, "all"))
+  local output = entries[1].message
+  for _, secret in ipairs({
+    "dXNlcjpTRUNSRVQ=", "BASIC_SECRET", "DIGEST_SECRET", "XCSECRET",
+    "CREDENTIAL_SECRET", "UNTERMINATED_CREDENTIAL_SECRET", "with space"
+  }) do
+    t.eq(output:find(secret, 1, true), nil, "authorization credential leaked " .. secret)
+  end
+  for _, safe in ipairs({ "safe prefix", "safe-basic-tail", "safe-quoted-tail", "safe-digest-tail", "safe-credential-tail" }) do
+    t.contains(output, safe)
+  end
+  t.contains(output, "[redacted]")
+  t.truthy(#output <= 1024)
 end)
 
 return true

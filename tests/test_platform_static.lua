@@ -49,7 +49,7 @@ t.test("platform captures Xray logs with fixed argv bounded output and a finite 
     end
   })
   t.eq(adapters.exec.xray_logs(12), "xray output")
-  t.eq(table.concat(calls[1].argv, "|"), "/sbin/logread|-e|xray[")
+  t.eq(table.concat(calls[1].argv, "|"), "/sbin/logread|-e|xray\\[")
   t.eq(calls[1].deadline, 12)
   t.eq(calls[1].maximum, 262144)
   for _, invalid in ipairs({ 10, 311, math.huge, -math.huge }) do
@@ -59,7 +59,7 @@ t.test("platform captures Xray logs with fixed argv bounded output and a finite 
 
   local source = read_file("root/usr/lib/lua/xc/platform.lua")
   t.contains(source, "wall_time = function() return os.time() end")
-  t.contains(source, 'capture_process({ "/sbin/logread", "-e", "xray[" }, deadline, 262144)')
+  t.contains(source, 'capture_process({ "/sbin/logread", "-e", "xray\\\\[" }, deadline, 262144)')
   t.contains(source, "spawn_capture(nixio, argv, temporary, deadline, now_process, sleep_process)")
 end)
 

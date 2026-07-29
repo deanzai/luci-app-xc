@@ -508,7 +508,7 @@ function M.new(injected)
     xray_logs = function(deadline)
       local current = now_process()
       if type(deadline) ~= "number" or deadline ~= deadline or deadline <= current or deadline > current + 300 then return nil end
-      return capture_process({ "/sbin/logread", "-e", "xray[" }, deadline, 262144)
+      return capture_process({ "/sbin/logread", "-e", "xray\\[" }, deadline, 262144)
     end,
     listener_ready = function(kind, address, port, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) or M.now(nixio) >= deadline then return false end
