@@ -152,4 +152,34 @@ t.test("logview redacts representative secrets from messages and structured fiel
   t.contains(output, "safe-node")
 end)
 
+t.test("logview fully redacts quoted credentials and Authorization Bearer tokens", function()
+  local line = "quoted-secrets"
+  local message = table.concat({
+    "safe prefix",
+    'password="hunter two"',
+    "passwd='single UNIQUE_SECRET'",
+    'ToKeN: "token with space"',
+    "api_key=plain-secret",
+    "Authorization: Bearer bearer-secret",
+    "aUtHoRiZaTiOn: bEaReR mixed-bearer-secret",
+    'PASSWORD = "mixed UNIQUE_CASE_VALUE"',
+    "safe suffix"
+  }, " ")
+  local entries = assert(collect({ line }, {
+    [line] = { time = 1785327995, level = "warning", message = message }
+  }, nil, "all"))
+  local output = entries[1].message
+  for _, secret in ipairs({
+    "hunter two", "two", "single UNIQUE_SECRET", "UNIQUE_SECRET",
+    "token with space", "with space", "plain-secret", "bearer-secret",
+    "mixed-bearer-secret", "mixed UNIQUE_CASE_VALUE", "UNIQUE_CASE_VALUE"
+  }) do
+    t.eq(output:find(secret, 1, true), nil, "quoted credential leaked " .. secret)
+  end
+  t.contains(output, "safe prefix")
+  t.contains(output, "safe suffix")
+  t.contains(output, "[redacted]")
+  t.truthy(#output <= 1024)
+end)
+
 return true

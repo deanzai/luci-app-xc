@@ -28,6 +28,21 @@ local function utf8_prefix(value, maximum)
   return ""
 end
 
+local function redact_assignment(value, key)
+  local prefix = "(" .. key .. "%s*[:=]%s*)"
+  value = value:gsub(prefix .. '"[^"]*"', "%1[redacted]")
+  value = value:gsub(prefix .. "'[^']*'", "%1[redacted]")
+  value = value:gsub(prefix .. "[^%s,;]+", "%1[redacted]")
+  return value
+end
+
+local function redact_bearer(value)
+  local prefix = "([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]%s*:%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+)"
+  value = value:gsub(prefix .. '"[^"]*"', "%1[redacted]")
+  value = value:gsub(prefix .. "'[^']*'", "%1[redacted]")
+  return value:gsub(prefix .. "[^%s,;]+", "%1[redacted]")
+end
+
 local function sanitize(value, maximum)
   if type(value) ~= "string" then value = tostring(value) end
   value = utf8_prefix(value, LINE_MAX)
@@ -36,12 +51,13 @@ local function sanitize(value, maximum)
   value = value:gsub("%-%-%-%-%-[Bb][Ee][Gg][Ii][Nn] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-.-%-%-%-%-%-[Ee][Nn][Dd] [Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]%-%-%-%-%-", "[redacted]")
   if value:find("://", 1, true) then value = value:gsub("%a[%w+%.%-]*://[^%s]+", "[redacted]") end
   value = value:gsub("%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x", "[redacted]")
-  value = value:gsub("[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]%s*[:=]%s*[^%s,;]+", "password=[redacted]")
-  value = value:gsub("[Pp][Aa][Ss][Ss][Ww][Dd]%s*[:=]%s*[^%s,;]+", "passwd=[redacted]")
-  value = value:gsub("[Tt][Oo][Kk][Ee][Nn]%s*[:=]%s*[^%s,;]+", "token=[redacted]")
-  value = value:gsub("[Ss][Ee][Cc][Rr][Ee][Tt]%s*[:=]%s*[^%s,;]+", "secret=[redacted]")
-  value = value:gsub("[Aa][Pp][Ii][_-][Kk][Ee][Yy]%s*[:=]%s*[^%s,;]+", "api_key=[redacted]")
-  value = value:gsub("[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-][Kk][Ee][Yy]%s*[:=]%s*[^%s,;]+", "private_key=[redacted]")
+  value = redact_bearer(value)
+  value = redact_assignment(value, "[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]")
+  value = redact_assignment(value, "[Pp][Aa][Ss][Ss][Ww][Dd]")
+  value = redact_assignment(value, "[Tt][Oo][Kk][Ee][Nn]")
+  value = redact_assignment(value, "[Ss][Ee][Cc][Rr][Ee][Tt]")
+  value = redact_assignment(value, "[Aa][Pp][Ii][_-][Kk][Ee][Yy]")
+  value = redact_assignment(value, "[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-][Kk][Ee][Yy]")
   return utf8_prefix(value, maximum or MESSAGE_MAX)
 end
 
