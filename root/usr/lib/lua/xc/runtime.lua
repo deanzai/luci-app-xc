@@ -885,8 +885,8 @@ function Runtime:log(message, fields, level)
         count = count + 1
       end
     end
-    local entry = { time = self.now(), level = level, message = sanitize_text(message, 512), fields = safe_fields }
-    local encoded = generator.encode(entry, self.json)
+    local entry = { time = self.wall_time(), level = level, message = sanitize_text(message, 512), fields = safe_fields }
+    local encoded = self.json.stringify(entry)
     if type(encoded) ~= "string" then encoded = '{"message":"log entry redacted"}' end
     if #encoded > 2047 then encoded = '{"message":"log entry truncated"}' end
     local current = self:_read_optional(LOG_PATH, 262144) or ""
@@ -920,7 +920,7 @@ function M.new(adapters)
   end
   return setmetatable({
     uci = adapters.uci, fs = adapters.fs, exec = adapters.exec, json = adapters.json,
-    network = adapters.network, now = adapters.now, sleep = adapters.sleep, sequence = 0
+    network = adapters.network, now = adapters.now, wall_time = adapters.wall_time or adapters.now, sleep = adapters.sleep, sequence = 0
   }, Runtime)
 end
 
