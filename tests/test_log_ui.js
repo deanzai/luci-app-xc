@@ -140,6 +140,12 @@ function logHarness() {
   return { document: document, requests: xhr.requests };
 }
 
+function assertControlsDisabled(h, disabled, context) {
+  ["xc-log-refresh", "xc-log-clear", "xc-log-level"].forEach(function(id) {
+    assert.strictEqual(h.document.getElementById(id).disabled, disabled, context + ": " + id);
+  });
+}
+
 // 1. Auto-load
 (function() {
   var h = logHarness();
@@ -193,7 +199,39 @@ function logHarness() {
   assert.strictEqual(scripts, 0, "log values do not create script elements");
 }());
 
-// 4. Empty log shows placeholder
+// 4. Invalid entries are isolated
+(function() {
+  var h = logHarness();
+  assert.doesNotThrow(function() {
+    h.requests[0].respond({ ok: true, data: { entries: [
+      null,
+      { time: 2, display_time: "t=2", level: "info", source: "xray", message: "valid remains" },
+      { time: 3, display_time: "t=3", level: 7, source: "xc", message: "invalid level" }
+    ]}});
+  }, "a malformed entry does not abort the response");
+  var c = h.document.getElementById("xc-log-container");
+  assert.strictEqual(c.children.length, 1, "only the valid entry is rendered");
+  assert.strictEqual(c.children[0].textContent, "[Xray] [INFO] [t=2] valid remains");
+  assertControlsDisabled(h, false, "mixed response completes");
+}());
+
+(function() {
+  var h = logHarness();
+  assert.doesNotThrow(function() {
+    h.requests[0].respond({ ok: true, data: { entries: [
+      null,
+      { display_time: "t=1", level: "info", source: "bogus", message: "bad source" },
+      { display_time: "t=2", level: "bogus", source: "xc", message: "bad level" },
+      { display_time: 3, level: "info", source: "xc", message: "bad time" },
+      { display_time: "t=4", level: "info", source: "xc", message: null }
+    ]}});
+  }, "an all-invalid response does not throw");
+  assert.strictEqual(h.document.getElementById("xc-log-state").textContent, "Unable to load the log");
+  assert.strictEqual(h.document.getElementById("xc-log-container").children.length, 0);
+  assertControlsDisabled(h, false, "all-invalid response completes");
+}());
+
+// 5. Empty log shows placeholder
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: true, data: { entries: [] } });
@@ -202,7 +240,7 @@ function logHarness() {
   assert.strictEqual(c.textContent, "(empty)");
 }());
 
-// 5. Level allowlist
+// 6. Level allowlist
 ["", "error", "warning", "info", "debug"].forEach(function(level) {
   var h = logHarness();
   var s = h.document.getElementById("xc-log-level");
@@ -222,12 +260,15 @@ function logHarness() {
   assert.strictEqual(h.requests[1].url.indexOf("bogus"), -1, "unknown level never enters the query");
 }());
 
-// 6. Clear
+// 7. Clear
 (function() {
   var h = logHarness();
-  h.requests[0].respond({ ok: true, data: { entries: [{ time: 1, level: "info", source: "xc", message: "x" }] } });
+  h.requests[0].respond({ ok: true, data: { entries: [
+    { time: 1, display_time: "t=1", level: "info", source: "xc", message: "x" }
+  ]}});
   h.document.getElementById("xc-log-level").value = "warning";
   h.document.getElementById("xc-log-clear").onclick();
+  assertControlsDisabled(h, true, "clear POST is pending");
   var req = h.requests[1];
   assert.ok(req);
   assert.strictEqual(req.method, "POST");
@@ -235,6 +276,7 @@ function logHarness() {
   assert.strictEqual(h.requests.length, 3, "clear success reloads the retained entries once");
   assert.strictEqual(h.requests[2].method, "GET");
   assert.ok(h.requests[2].url.indexOf("level=warning") >= 0, "reload keeps the selected level");
+  assertControlsDisabled(h, true, "clear completed but retained-entry GET is pending");
   assert.strictEqual(h.requests.filter(function(r) { return r.method === "POST"; }).length, 1,
     "reload does not issue a second clear");
   h.requests[2].respond({ ok: true, data: { entries: [
@@ -245,10 +287,11 @@ function logHarness() {
   assert.ok(h.document.getElementById("xc-log-container").textContent.indexOf("still here") >= 0);
   assert.strictEqual(h.document.getElementById("xc-log-state").textContent,
     "XC entries cleared. Xray and system entries remain.");
+  assertControlsDisabled(h, false, "retained-entry GET completed");
   assert.strictEqual(h.requests.length, 3, "reload response does not start automatic refresh");
 }());
 
-// 7. Load failure
+// 8. Load failure
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: false }, 500);

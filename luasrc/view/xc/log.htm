@@ -69,15 +69,22 @@ local level_options = {
 
   function entryDiv(entry) {
     var div = document.createElement("div");
-    div.className = "xc-log-" + (entry.level || "info");
-    var sourceLabel = sourceLabels[entry.source] || entry.source || "?";
-    var level = (entry.level || "info").toUpperCase();
-    var time = entry.display_time || "";
+    div.className = "xc-log-" + entry.level;
+    var sourceLabel = sourceLabels[entry.source];
+    var level = entry.level.toUpperCase();
+    var time = entry.display_time;
     div.appendChild(entrySpan("xc-log-source", "[" + sourceLabel + "] "));
     div.appendChild(entrySpan("xc-log-level", "[" + level + "] "));
     div.appendChild(entrySpan("xc-log-time", "[" + time + "] "));
-    div.appendChild(entrySpan("xc-log-message", entry.message || ""));
+    div.appendChild(entrySpan("xc-log-message", entry.message));
     return div;
+  }
+
+  function validEntry(entry) {
+    return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+      (entry.source === "xc" || entry.source === "xray") &&
+      (entry.level === "error" || entry.level === "warning" || entry.level === "info" || entry.level === "debug") &&
+      typeof entry.display_time === "string" && typeof entry.message === "string";
   }
 
   function clearContainer() {
@@ -112,8 +119,17 @@ local level_options = {
         if (entries.length === 0) {
           addText(container, emptyText);
         } else {
+          var rendered = 0;
           for (var i = 0; i < entries.length; i++) {
-            container.appendChild(entryDiv(entries[i]));
+            try {
+              if (!validEntry(entries[i])) continue;
+              container.appendChild(entryDiv(entries[i]));
+              rendered++;
+            } catch (ignoredEntry) {}
+          }
+          if (rendered === 0) {
+            clearContainer();
+            state.textContent = loadFailedText;
           }
         }
       } else {
