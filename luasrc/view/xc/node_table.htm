@@ -39,10 +39,10 @@ local probe_concurrency = self.probe_concurrency or 3
     return "red";
   }
 
-  function finish(id) {
-    if (id !== runId) return;
-    inFlight--;
-    pump(id);
+  function finish() {
+    if (inFlight > 0) inFlight--;
+    if (!running) return;
+    pump(runId);
     if (queue.length === 0 && inFlight === 0) {
       running = false;
       allButton.disabled = false;
@@ -83,7 +83,7 @@ local probe_concurrency = self.probe_concurrency or 3
         try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
         render(row, payload);
       }
-      finish(id);
+      finish();
     };
     xhr.send(JSON.stringify({ section: section }));
   }
@@ -97,13 +97,13 @@ local probe_concurrency = self.probe_concurrency or 3
 
   function start(selected) {
     if (running || selected.length === 0) return false;
-    runId++; running = true; queue = selected.slice(0); inFlight = 0;
+    runId++; running = true; queue = selected.slice(0);
     allButton.disabled = true; state.textContent = testingText;
     pump(runId); return true;
   }
 
   function stop() {
-    runId++; queue = []; inFlight = 0; running = false;
+    runId++; queue = []; running = false;
     allButton.disabled = false; state.textContent = stoppedText;
   }
 

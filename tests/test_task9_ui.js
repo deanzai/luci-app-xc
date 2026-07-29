@@ -207,6 +207,21 @@ for (const [ping, color] of [[100, "#b7791f"], [200, "#dd6b20"], [300, "red"]]) 
   assert.strictEqual(h.requests.length, 1, "stop prevents queued work from starting");
 }
 
+{
+  const h = nodeHarness(1);
+  h.rows[0].button.onclick(); const stale = h.requests[0];
+  h.controls["xc-probe-stop"].onclick();
+  h.rows[1].button.onclick();
+  assert.strictEqual(h.requests.length, 1, "restart respects outstanding stale request concurrency");
+  stale.respond({ ok: true, data: { socket: "ok", ping: 1, time: 1, outcome: "tcp" } });
+  assert.strictEqual(h.rows[0].latency.textContent, "", "stale request never renders after restart");
+  assert.strictEqual(h.requests.length, 2, "restart begins only after stale request releases its slot");
+  h.requests[1].respond({ ok: true, data: { socket: "ok", ping: 2, time: 2, outcome: "tcp" } });
+  assert.strictEqual(h.rows[1].latency.textContent, "2 ms");
+  assert.strictEqual(h.controls["xc-probe-all"].disabled, false);
+  assert.strictEqual(h.controls["xc-probe-state"].textContent, "");
+}
+
 function importHarness() {
   const xhr = xhrHarness(), listeners = {};
   function element(tag) {
