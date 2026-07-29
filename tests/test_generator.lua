@@ -102,23 +102,27 @@ t.test("builds the default Xray log block and preserves every allowed log level"
 
   for _, level in ipairs({ "error", "warning", "info", "debug" }) do
     local config = assert(generator.build(global({ xray_log_level = level }), node))
+    t.eq(config.log.access, "none")
     t.eq(config.log.loglevel, level)
+    t.eq(config.log.dnsLog, false)
   end
 end)
 
-t.test("rejects unknown Xray log levels before a config can be encoded", function()
-  local config, err = generator.build(global({ xray_log_level = "trace" }), {
-    protocol = "vless", server = "vless.invalid", port = 443,
-    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
-  })
-  t.eq(config, nil)
-  t.eq(err, "invalid Xray log level")
+t.test("rejects non-string and unknown Xray log levels before a config can be encoded", function()
+  for _, level in ipairs({ false, true, 1, {}, "trace" }) do
+    local config, err = generator.build(global({ xray_log_level = level }), {
+      protocol = "vless", server = "vless.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+    })
+    t.eq(config, nil)
+    t.eq(err, "invalid Xray log level")
 
-  local calls = 0
-  if config then
-    generator.encode(config, { stringify = function() calls = calls + 1; return "{}" end })
+    local calls = 0
+    if config then
+      generator.encode(config, { stringify = function() calls = calls + 1; return "{}" end })
+    end
+    t.eq(calls, 0)
   end
-  t.eq(calls, 0)
 end)
 
 t.test("builds compatible unauthenticated SOCKS and HTTP inbounds", function()

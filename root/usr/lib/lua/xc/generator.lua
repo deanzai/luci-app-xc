@@ -433,8 +433,11 @@ end
 
 function M.build(global, node)
   if type(global) ~= "table" or type(node) ~= "table" then return nil, "invalid generator input" end
-  local xray_log_level = global.xray_log_level or "warning"
-  if not xray_log_levels[xray_log_level] then return nil, "invalid Xray log level" end
+  local xray_log_level = global.xray_log_level
+  if xray_log_level == nil then xray_log_level = "warning" end
+  if type(xray_log_level) ~= "string" or not xray_log_levels[xray_log_level] then
+    return nil, "invalid Xray log level"
+  end
   if not valid_listen_address(global.listen_address) then return nil, "invalid global listen address" end
   local socks_port = port_number(global.socks_port)
   local http_port = port_number(global.http_port)
