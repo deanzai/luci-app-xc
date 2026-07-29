@@ -28,19 +28,47 @@ local function utf8_prefix(value, maximum)
   return ""
 end
 
+local function after_secret(value, start_at)
+  local quote = value:sub(start_at, start_at)
+  if quote == '"' or quote == "'" then
+    local index = start_at + 1
+    while index <= #value do
+      local character = value:sub(index, index)
+      if character == "\\" then
+        index = index + 2
+      elseif character == quote then
+        return index + 1
+      else
+        index = index + 1
+      end
+    end
+    return #value + 1
+  end
+  local index = start_at
+  while index <= #value and not value:sub(index, index):match("[%s,;]") do index = index + 1 end
+  return index
+end
+
+local function redact_values(value, prefix)
+  local output, cursor = {}, 1
+  while cursor <= #value do
+    local first, last = value:find(prefix, cursor)
+    if not first then break end
+    output[#output + 1] = value:sub(cursor, last)
+    output[#output + 1] = "[redacted]"
+    cursor = after_secret(value, last + 1)
+  end
+  output[#output + 1] = value:sub(cursor)
+  return table.concat(output)
+end
+
 local function redact_assignment(value, key)
-  local prefix = "(" .. key .. "%s*[:=]%s*)"
-  value = value:gsub(prefix .. '"[^"]*"', "%1[redacted]")
-  value = value:gsub(prefix .. "'[^']*'", "%1[redacted]")
-  value = value:gsub(prefix .. "[^%s,;]+", "%1[redacted]")
-  return value
+  return redact_values(value, key .. "%s*[:=]%s*")
 end
 
 local function redact_bearer(value)
-  local prefix = "([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]%s*:%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+)"
-  value = value:gsub(prefix .. '"[^"]*"', "%1[redacted]")
-  value = value:gsub(prefix .. "'[^']*'", "%1[redacted]")
-  return value:gsub(prefix .. "[^%s,;]+", "%1[redacted]")
+  return redact_values(value,
+    "[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]%s*:%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+")
 end
 
 local function sanitize(value, maximum)

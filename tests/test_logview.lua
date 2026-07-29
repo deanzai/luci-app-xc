@@ -162,6 +162,7 @@ t.test("logview fully redacts quoted credentials and Authorization Bearer tokens
     "api_key=plain-secret",
     "Authorization: Bearer bearer-secret",
     "aUtHoRiZaTiOn: bEaReR mixed-bearer-secret",
+    "token=first-repeat-secret token='second repeat secret'",
     'PASSWORD = "mixed UNIQUE_CASE_VALUE"',
     "safe suffix"
   }, " ")
@@ -172,7 +173,8 @@ t.test("logview fully redacts quoted credentials and Authorization Bearer tokens
   for _, secret in ipairs({
     "hunter two", "two", "single UNIQUE_SECRET", "UNIQUE_SECRET",
     "token with space", "with space", "plain-secret", "bearer-secret",
-    "mixed-bearer-secret", "mixed UNIQUE_CASE_VALUE", "UNIQUE_CASE_VALUE"
+    "mixed-bearer-secret", "first-repeat-secret", "second repeat secret",
+    "mixed UNIQUE_CASE_VALUE", "UNIQUE_CASE_VALUE"
   }) do
     t.eq(output:find(secret, 1, true), nil, "quoted credential leaked " .. secret)
   end
@@ -180,6 +182,44 @@ t.test("logview fully redacts quoted credentials and Authorization Bearer tokens
   t.contains(output, "safe suffix")
   t.contains(output, "[redacted]")
   t.truthy(#output <= 1024)
+end)
+
+t.test("logview fail-closed redacts escaped quotes and unterminated credentials", function()
+  local lines = { "escaped-assignment", "unterminated-assignment", "escaped-bearer", "unterminated-bearer" }
+  local entries = assert(collect(lines, {
+    [lines[1]] = {
+      time = 1, level = "warning",
+      message = "password=\"hunter \\\"ESCAPED_PASSWORD_SECRET\\\"\" safe-password-tail"
+    },
+    [lines[2]] = {
+      time = 2, level = "warning",
+      message = "token=\"UNTERMINATED_TOKEN_SECRET with space"
+    },
+    [lines[3]] = {
+      time = 3, level = "warning",
+      message = "Authorization: Bearer \"bearer \\\"ESCAPED_BEARER_SECRET\\\"\" safe-bearer-tail"
+    },
+    [lines[4]] = {
+      time = 4, level = "warning",
+      message = "aUtHoRiZaTiOn: bEaReR 'UNTERMINATED_BEARER_SECRET with space"
+    }
+  }, nil, "all"))
+  t.eq(#entries, 4)
+  local output = table.concat({
+    entries[1].message, entries[2].message, entries[3].message, entries[4].message
+  }, "\n")
+  for _, secret in ipairs({
+    "ESCAPED_PASSWORD_SECRET", "UNTERMINATED_TOKEN_SECRET", "ESCAPED_BEARER_SECRET",
+    "UNTERMINATED_BEARER_SECRET", "with space"
+  }) do
+    t.eq(output:find(secret, 1, true), nil, "escaped or unterminated credential leaked " .. secret)
+  end
+  t.contains(entries[1].message, "safe-password-tail")
+  t.contains(entries[3].message, "safe-bearer-tail")
+  for _, entry in ipairs(entries) do
+    t.contains(entry.message, "[redacted]")
+    t.truthy(#entry.message <= 1024)
+  end
 end)
 
 return true
