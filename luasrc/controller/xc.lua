@@ -1,10 +1,4 @@
 module("luci.controller.xc", package.seeall)
-local call = require("luci.dispatcher").call
-local entry = require("luci.dispatcher").entry
-local cbi = require("luci.dispatcher").cbi
-local template = require("luci.dispatcher").template
-local alias = require("luci.dispatcher").alias
-
 
 local http = require "luci.http"
 local schema = require "xc.schema"
@@ -66,15 +60,14 @@ local function failure(code)
   respond({ ok = false, code = code, message = messages[code] or "The request failed safely." })
 end
 
-local function post_entry(path, action)
-  local target = call(action)
-  target.post = true
-  local node = entry(path, target)
-  node.leaf = true
-  return node
-end
-
 function index()
+  local function post_entry(path, action)
+    local target = call(action)
+    target.post = true
+    local node = entry(path, target)
+    node.leaf = true
+    return node
+  end
   local root = entry({ "admin", "services", "xc" }, alias("admin", "services", "xc", "settings"), _("Xray node switching"), 60)
   root.dependent = true
 
