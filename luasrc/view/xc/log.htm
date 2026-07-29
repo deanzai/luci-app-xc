@@ -60,13 +60,23 @@ local level_options = {
     node.appendChild(document.createTextNode(text));
   }
 
+  function entrySpan(className, text) {
+    var span = document.createElement("span");
+    span.className = className;
+    addText(span, text);
+    return span;
+  }
+
   function entryDiv(entry) {
     var div = document.createElement("div");
     div.className = "xc-log-" + (entry.level || "info");
     var sourceLabel = sourceLabels[entry.source] || entry.source || "?";
     var level = (entry.level || "info").toUpperCase();
     var time = entry.display_time || "";
-    addText(div, "[" + sourceLabel + "] [" + level + "] [" + time + "] " + (entry.message || ""));
+    div.appendChild(entrySpan("xc-log-source", "[" + sourceLabel + "] "));
+    div.appendChild(entrySpan("xc-log-level", "[" + level + "] "));
+    div.appendChild(entrySpan("xc-log-time", "[" + time + "] "));
+    div.appendChild(entrySpan("xc-log-message", entry.message || ""));
     return div;
   }
 
@@ -76,19 +86,27 @@ local level_options = {
     }
   }
 
+  function safeLevel(level) {
+    if (level === "" || level === "error" || level === "warning" || level === "info" || level === "debug") {
+      return level;
+    }
+    return "";
+  }
+
   function loadLog() {
     setBusy(true);
     state.textContent = "";
     clearContainer();
     addText(container, loadingText);
-    var level = levelSelect.value;
+    var level = safeLevel(levelSelect.value);
+    levelSelect.value = level;
     var url = getUrl + (level ? "?level=" + encodeURIComponent(level) : "");
     var xhr = new XMLHttpRequest();
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var payload;
       try { payload = JSON.parse(xhr.responseText); } catch (ignored) { payload = null; }
-      if (payload && payload.ok === true && payload.data && payload.data.entries) {
+      if (payload && payload.ok === true && payload.data && Array.isArray(payload.data.entries)) {
         clearContainer();
         var entries = payload.data.entries;
         if (entries.length === 0) {

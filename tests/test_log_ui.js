@@ -84,11 +84,14 @@ function xhrHarness() {
   XHR.prototype.open = function(method, url) { this.method = method; this.url = url; };
   XHR.prototype.setRequestHeader = function(name, value) { this.headers[name] = value; };
   XHR.prototype.send = function(body) { this.body = body; };
-  XHR.prototype.respond = function(value, status) {
+  XHR.prototype.respondText = function(value, status) {
     this.status = status || 200;
-    this.responseText = JSON.stringify(value);
+    this.responseText = value;
     this.readyState = 4;
     if (this.onreadystatechange) this.onreadystatechange();
+  };
+  XHR.prototype.respond = function(value, status) {
+    this.respondText(JSON.stringify(value), status);
   };
   return { XHR: XHR, requests: requests };
 }
@@ -160,13 +163,37 @@ function logHarness() {
   assert.strictEqual(c.children[1].className, "xc-log-warning");
   assert.strictEqual(c.children[2].className, "xc-log-info");
   assert.strictEqual(c.children[3].className, "xc-log-debug");
-  assert.ok(c.children[0].textContent.indexOf("[Xray]") >= 0);
-  assert.ok(c.children[0].textContent.indexOf("[ERROR]") >= 0);
-  assert.ok(c.children[0].textContent.indexOf("[t=1000]") >= 0);
-  assert.ok(c.children[0].textContent.indexOf("conn refused") >= 0);
+  var row = c.children[0];
+  assert.strictEqual(row.children.length, 4, "entry has four structured fields");
+  ["xc-log-source", "xc-log-level", "xc-log-time", "xc-log-message"].forEach(function(className, i) {
+    assert.strictEqual(row.children[i].tagName, "SPAN");
+    assert.strictEqual(row.children[i].className, className);
+  });
+  assert.strictEqual(row.children[0].textContent, "[Xray] ");
+  assert.strictEqual(row.children[1].textContent, "[ERROR] ");
+  assert.strictEqual(row.children[2].textContent, "[t=1000] ");
+  assert.strictEqual(row.children[3].textContent, "conn refused");
 }());
 
-// 3. Empty log shows placeholder
+// 3. Untrusted log values remain text
+(function() {
+  var h = logHarness();
+  var message = '<script>steal()</script> password=hunter2 token="abc" Authorization: Bearer xyz';
+  h.requests[0].respond({ ok: true, data: { entries: [
+    { time: 1000, display_time: "<script>time()</script>", level: "error", source: "xray", message: message }
+  ]}});
+  var row = h.document.getElementById("xc-log-container").children[0];
+  assert.strictEqual(row.children[2].textContent, "[<script>time()</script>] ");
+  assert.strictEqual(row.children[3].textContent, message);
+  var scripts = 0;
+  (function countScripts(node) {
+    if (node.nodeType === 1 && node.tagName === "SCRIPT") scripts++;
+    for (var i = 0; i < (node.children || []).length; i++) countScripts(node.children[i]);
+  }(row));
+  assert.strictEqual(scripts, 0, "log values do not create script elements");
+}());
+
+// 4. Empty log shows placeholder
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: true, data: { entries: [] } });
@@ -175,19 +202,27 @@ function logHarness() {
   assert.strictEqual(c.textContent, "(empty)");
 }());
 
-// 4. Level change
+// 5. Level allowlist
+["", "error", "warning", "info", "debug"].forEach(function(level) {
+  var h = logHarness();
+  var s = h.document.getElementById("xc-log-level");
+  s.value = level;
+  s.onchange();
+  assert.strictEqual(h.requests.length, 2);
+  assert.strictEqual(h.requests[1].url, "/xc/get-log" + (level ? "?level=" + level : ""),
+    "allowed level is sent: " + (level || "all"));
+});
+
 (function() {
   var h = logHarness();
-  h.requests[0].respond({ ok: true, data: { entries: [] } });
-  var before = h.requests.length;
   var s = h.document.getElementById("xc-log-level");
-  s.value = "error";
+  s.value = "bogus";
   s.onchange();
-  assert.strictEqual(h.requests.length, before + 1);
-  assert.ok(h.requests[before].url.indexOf("level=error") >= 0);
+  assert.strictEqual(h.requests[1].url, "/xc/get-log", "unknown level safely falls back to All");
+  assert.strictEqual(h.requests[1].url.indexOf("bogus"), -1, "unknown level never enters the query");
 }());
 
-// 5. Clear
+// 6. Clear
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: true, data: { entries: [{ time: 1, level: "info", source: "xc", message: "x" }] } });
@@ -213,11 +248,30 @@ function logHarness() {
   assert.strictEqual(h.requests.length, 3, "reload response does not start automatic refresh");
 }());
 
-// 6. Load failure
+// 7. Load failure
 (function() {
   var h = logHarness();
   h.requests[0].respond({ ok: false }, 500);
   assert.ok(h.document.getElementById("xc-log-state").textContent.indexOf("Unable to load") >= 0);
+}());
+
+(function() {
+  var h = logHarness();
+  h.requests[0].respondText("{not-json");
+  assert.strictEqual(h.document.getElementById("xc-log-state").textContent, "Unable to load the log",
+    "malformed JSON shows the translated load failure");
+}());
+
+(function() {
+  var h = logHarness();
+  h.requests[0].respond({ ok: true, data: { entries: {
+    0: { time: 1, display_time: "t=1", level: "info", source: "xray", message: "not an array" },
+    length: 1
+  }}});
+  assert.strictEqual(h.document.getElementById("xc-log-state").textContent, "Unable to load the log",
+    "array-like entries object is rejected");
+  assert.strictEqual(h.document.getElementById("xc-log-container").children.length, 0,
+    "invalid entries are not rendered");
 }());
 
 var levelColors = {};
