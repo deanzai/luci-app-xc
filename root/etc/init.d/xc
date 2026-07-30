@@ -21,6 +21,11 @@ start_service() {
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
+	/usr/bin/xc log-event service_started >/dev/null 2>&1 || true
+}
+
+stop_service() {
+	/usr/bin/xc log-event service_stopped >/dev/null 2>&1 || true
 }
 
 reload_service() {

@@ -360,6 +360,34 @@ t.test("CLI dispatch has stable exit codes and secret-safe JSON", function()
   t.contains(joined, '"ok"')
 end)
 
+t.test("CLI log-event accepts only fixed lifecycle events", function()
+  local state = fixture()
+  local recorded = {}
+  state.deps.runtime.record_event = function(_, message, fields, level)
+    recorded[#recorded + 1] = { message = message, fields = fields, level = level }
+    return true
+  end
+  local cli = load_cli()
+  t.eq(cli.main({ "log-event", "service_started" }, state.deps), 0)
+  t.eq(cli.main({ "log-event", "service_stopped" }, state.deps), 0)
+  t.eq(#recorded, 2)
+  t.eq(recorded[1].message, "service started")
+  t.eq(recorded[2].message, "service stopped")
+  t.eq(next(recorded[1].fields), nil)
+  t.eq(next(recorded[2].fields), nil)
+  t.eq(recorded[1].level, "info")
+  t.eq(recorded[2].level, "info")
+
+  for _, argv in ipairs({
+    { "log-event", "service_restarted" },
+    { "log-event", "service_started", "extra" },
+    { "log-event" }
+  }) do
+    t.eq(cli.main(argv, state.deps), 2)
+  end
+  t.eq(#recorded, 2)
+end)
+
 t.test("import preview never writes and import stages and commits once", function()
   local candidate = {
     nodes = { one = { name = "SOCKS", protocol = "socks5", address = "127.0.0.1", port = 1080, username = "private-user", password = "private-pass" } }

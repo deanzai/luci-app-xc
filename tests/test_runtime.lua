@@ -10,6 +10,8 @@ local PENDING_ROLLBACK_NODE = ROLLBACK_NODE .. ".pending"
 local UNSET_ACTIVE = "!xc-active-unset!"
 local MANIFEST = "/etc/xc/rollback/current"
 local TRANSACTION = "/etc/xc/rollback/transaction"
+local LOG = "/var/log/xc.log"
+local LOG_LOCK = "/var/lock/xc-log.lock"
 
 local function checksum(value)
   local hash = 5381
@@ -73,6 +75,8 @@ local function merge(left, right)
   return left
 end
 local LOCK = "/var/lock/xc.lock"
+local MAIN_UNLOCK = "fs:unlock:" .. LOCK
+local LOG_UNLOCK = "fs:unlock:" .. LOG_LOCK
 
 local function quote(value)
   return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
@@ -173,7 +177,7 @@ local function fixture(options)
       if options.busy then return nil end
       return { path = path, kernel_flock = true }
     end,
-    release_lock = function() event("fs:unlock"); return options.release_ok ~= false end,
+    release_lock = function(lock) event("fs:unlock:" .. tostring(lock and lock.path)); return options.release_ok ~= false end,
     lock_state = function() return options.busy and "held" or "unlocked" end,
     allocate_generation = function()
       generation_count = generation_count + 1
@@ -287,6 +291,7 @@ local function fixture(options)
     uci = uci, fs = fs, exec = exec, json = { stringify = stringify },
     network = function() return "192.168.6.1" end,
     now = options.now or function() return 123 end,
+    wall_time = options.wall_time or function() return 1785326400 end,
     sleep = function() event("sleep"); if options.sleep_hook then options.sleep_hook() end end
   }))
   return state
@@ -294,6 +299,15 @@ end
 
 local function event_index(events, sought)
   for index, value in ipairs(events) do if value == sought then return index end end
+end
+
+local function occurrences(value, sought)
+  local count, offset = 0, 1
+  while true do
+    local first, last = (value or ""):find(sought, offset, true)
+    if not first then return count end
+    count, offset = count + 1, last + 1
+  end
 end
 
 t.test("render rejects missing and disabled active nodes", function()
@@ -345,6 +359,102 @@ t.test("render validates section IDs and uses lossless raw encoding", function()
   t.eq(state.files["/tmp/render.json"]:find("__XC_RAW_OUTBOUND_", 1, true), nil)
 end)
 
+t.test("render records exactly one final debug or error event with wall time", function()
+  local succeeded = fixture()
+  local value = succeeded.runtime:render("new", "/tmp/render.json")
+  t.eq(value.ok, true)
+  local line = succeeded.files[LOG]
+  t.eq(occurrences(line, '"message":"configuration render completed"'), 1)
+  t.contains(line, '"level":"debug"')
+  t.contains(line, '"code":"rendered"')
+  t.contains(line, '"node":"new"')
+  t.contains(line, '"outcome":"success"')
+  t.contains(line, '"time":1785326400')
+
+  local failed = fixture()
+  value = failed.runtime:render("bad;password=render-secret", "/tmp/render.json")
+  t.eq(value.code, "invalid_node")
+  line = failed.files[LOG]
+  t.eq(occurrences(line, '"message":"configuration render completed"'), 1)
+  t.contains(line, '"level":"error"')
+  t.contains(line, '"code":"invalid_node"')
+  t.contains(line, '"outcome":"failure"')
+  t.eq(line:find("render-secret", 1, true), nil)
+end)
+
+t.test("switch records exactly one final info or error event", function()
+  local succeeded = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local value = succeeded.runtime:switch("new")
+  t.eq(value.ok, true)
+  local line = succeeded.files[LOG]
+  t.eq(occurrences(line, '"message":"node switch completed"'), 1)
+  t.contains(line, '"level":"info"')
+  t.contains(line, '"code":"switched"')
+  t.contains(line, '"node":"new"')
+  t.contains(line, '"outcome":"success"')
+  t.eq(occurrences(line, '"message":"switched to node"'), 0)
+
+  local failed = fixture({ validation_ok = false, files = { [RUNTIME] = "old-runtime" } })
+  value = failed.runtime:switch("new")
+  t.eq(value.code, "validation_failed")
+  line = failed.files[LOG]
+  t.eq(occurrences(line, '"message":"node switch completed"'), 1)
+  t.contains(line, '"level":"error"')
+  t.contains(line, '"code":"validation_failed"')
+  t.contains(line, '"outcome":"failure"')
+end)
+
+t.test("rollback records exactly one final info or error event", function()
+  local files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old"))
+  local succeeded = fixture({ files = files, global = { active_node = "new", socks_port = 7890, http_port = 10809 } })
+  local value = succeeded.runtime:rollback()
+  t.eq(value.ok, true)
+  local line = succeeded.files[LOG]
+  t.eq(occurrences(line, '"message":"rollback completed"'), 1)
+  t.contains(line, '"level":"info"')
+  t.contains(line, '"code":"rolled_back"')
+  t.contains(line, '"outcome":"success"')
+
+  local failed = fixture()
+  value = failed.runtime:rollback()
+  t.eq(value.code, "no_rollback_state")
+  line = failed.files[LOG]
+  t.eq(occurrences(line, '"message":"rollback completed"'), 1)
+  t.contains(line, '"level":"error"')
+  t.contains(line, '"code":"no_rollback_state"')
+  t.contains(line, '"outcome":"failure"')
+end)
+
+t.test("event logger faults never change runtime results or primary last_error", function()
+  local succeeded = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local success_attempts = 0
+  succeeded.runtime.log = function(self)
+    success_attempts = success_attempts + 1
+    self.last_error = "logger_fault"
+    error("password=logger-secret")
+  end
+  local called, value = pcall(succeeded.runtime.switch, succeeded.runtime, "new")
+  t.eq(called, true)
+  t.eq(value.ok, true)
+  t.eq(value.code, "switched")
+  t.eq(success_attempts, 1)
+  t.eq(succeeded.runtime.last_error, nil)
+
+  local failed = fixture({ validation_ok = false, files = { [RUNTIME] = "old-runtime" } })
+  local failure_attempts = 0
+  failed.runtime.log = function(self)
+    failure_attempts = failure_attempts + 1
+    self.last_error = "logger_fault"
+    error("raw logger exception")
+  end
+  called, value = pcall(failed.runtime.switch, failed.runtime, "new")
+  t.eq(called, true)
+  t.eq(value.ok, false)
+  t.eq(value.code, "validation_failed")
+  t.eq(failure_attempts, 1)
+  t.eq(failed.runtime.last_error, "validation_failed")
+end)
+
 t.test("switch validates before snapshot and commits only after listeners and health", function()
   local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
   local result = state.runtime:switch("new")
@@ -363,7 +473,8 @@ t.test("switch validates before snapshot and commits only after listeners and he
   t.truthy(event_index(state.events, "uci:commit") < event_index(state.events, "fs:rename:" .. MANIFEST .. ".tmp.123:" .. MANIFEST))
   t.eq(state.health_url, "https://health.invalid/generate_204")
   t.eq(state.health_deadline, 128)
-  t.eq(state.events[#state.events], "fs:unlock")
+  t.truthy(event_index(state.events, MAIN_UNLOCK))
+  t.eq(state.events[#state.events], LOG_UNLOCK)
 end)
 
 t.test("runtime treats a committed hardening warning as committed state", function()
@@ -476,7 +587,8 @@ t.test("failed Xray validation never restarts and releases the lock", function()
   t.eq(result.code, "validation_failed")
   t.eq(event_index(state.events, "exec:restart"), nil)
   t.eq(state.global.active_node, "old")
-  t.eq(state.events[#state.events], "fs:unlock")
+  t.truthy(event_index(state.events, MAIN_UNLOCK))
+  t.eq(state.events[#state.events], LOG_UNLOCK)
   t.eq(state.files[RUNTIME .. ".candidate"], nil)
 
   local invalid_health = fixture({ global = { active_node = "old", socks_port = 7890, http_port = 10809, health_url = "file:///secret", health_timeout = 999 } })
@@ -496,7 +608,8 @@ t.test("listener and health failures restore the previous config and active node
     t.eq(state.files[RUNTIME], "old-runtime")
     t.eq(state.global.active_node, "old")
     t.truthy(event_index(state.events, "uci:set_active:old"))
-    t.eq(state.events[#state.events], "fs:unlock")
+    t.truthy(event_index(state.events, MAIN_UNLOCK))
+    t.eq(state.events[#state.events], LOG_UNLOCK)
   end
 end)
 
@@ -529,7 +642,7 @@ t.test("lock contention returns busy without generating a candidate", function()
   t.eq(result.ok, false)
   t.eq(result.code, "busy")
   t.eq(event_index(state.events, "uci:get_global"), nil)
-  t.eq(event_index(state.events, "fs:unlock"), nil)
+  t.eq(event_index(state.events, MAIN_UNLOCK), nil)
 end)
 
 t.test("central lock protects runtime render and rejects acquire or release faults", function()
@@ -537,7 +650,8 @@ t.test("central lock protects runtime render and rejects acquire or release faul
   local result = rendered.runtime:render("new", RUNTIME)
   t.eq(result.ok, true)
   t.eq(rendered.events[1], "fs:lock:" .. LOCK)
-  t.eq(rendered.events[#rendered.events], "fs:unlock")
+  t.truthy(event_index(rendered.events, MAIN_UNLOCK))
+  t.eq(rendered.events[#rendered.events], LOG_UNLOCK)
 
   local acquire = fixture({ throw_acquire = true })
   result = acquire.runtime:switch("new")
@@ -547,6 +661,8 @@ t.test("central lock protects runtime render and rejects acquire or release faul
   local release = fixture({ release_ok = false, validation_ok = false })
   result = release.runtime:switch("new")
   t.eq(result.code, "internal_error")
+  t.eq(occurrences(release.files[LOG], '"message":"node switch completed"'), 1)
+  t.contains(release.files[LOG], '"code":"internal_error"')
 end)
 
 t.test("migration exclusive capability renders and writes under one runtime lock", function()
@@ -562,10 +678,11 @@ t.test("migration exclusive capability renders and writes under one runtime lock
   local joined = table.concat(state.events, "|")
   local first_lock = assert(joined:find("fs:lock:/var/lock/xc.lock", 1, true))
   local write = assert(joined:find("fs:write_temp:/etc/xc/migration-complete", 1, true))
-  local unlock = assert(joined:find("fs:unlock", 1, true))
+  local unlock = assert(joined:find(MAIN_UNLOCK, 1, true))
   t.truthy(first_lock < write and write < unlock)
   local _, locks = joined:gsub("fs:lock:/var/lock/xc.lock", "")
   t.eq(locks, 1)
+  t.eq(occurrences(state.files[LOG], '"message":"configuration render completed"'), 1)
 end)
 
 t.test("adapter exceptions release the lock and return generic secret-safe errors", function()
@@ -574,7 +691,8 @@ t.test("adapter exceptions release the lock and return generic secret-safe error
   t.eq(result.ok, false)
   t.eq(result.code, "recovery_failed")
   t.eq(result.message:find("adapter-secret", 1, true), nil)
-  t.eq(state.events[#state.events], "fs:unlock")
+  t.truthy(event_index(state.events, MAIN_UNLOCK))
+  t.eq(state.events[#state.events], LOG_UNLOCK)
 end)
 
 t.test("atomic write failures close and remove temporary files", function()
@@ -586,7 +704,8 @@ t.test("atomic write failures close and remove temporary files", function()
   t.truthy(event_index(state.events, "fs:close:" .. temporary))
   t.truthy(event_index(state.events, "fs:remove:" .. temporary))
   t.eq(state.files[temporary], nil)
-  t.eq(state.events[#state.events], "fs:unlock")
+  t.truthy(event_index(state.events, MAIN_UNLOCK))
+  t.eq(state.events[#state.events], LOG_UNLOCK)
 end)
 
 t.test("rollback reports no snapshot and restores a one-generation snapshot", function()
@@ -594,7 +713,8 @@ t.test("rollback reports no snapshot and restores a one-generation snapshot", fu
   local result = none.runtime:rollback()
   t.eq(result.ok, false)
   t.eq(result.code, "no_rollback_state")
-  t.eq(none.events[#none.events], "fs:unlock")
+  t.truthy(event_index(none.events, MAIN_UNLOCK))
+  t.eq(none.events[#none.events], LOG_UNLOCK)
 
   local state = fixture({ files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old")), global = { active_node = "new", socks_port = 7890, http_port = 10809 } })
   result = state.runtime:rollback()
@@ -638,7 +758,8 @@ t.test("rollback failures restore the pre-rollback runtime UCI and service", fun
     t.eq(state.files[RUNTIME], "runtime-new")
     t.eq(state.global.active_node, "new")
     t.truthy(state.files[MANIFEST])
-    t.eq(state.events[#state.events], "fs:unlock")
+    t.truthy(event_index(state.events, MAIN_UNLOCK))
+    t.eq(state.events[#state.events], LOG_UNLOCK)
   end
 end)
 
@@ -864,7 +985,7 @@ t.test("log rotation is serialized and retains only complete newline records", f
   local state = fixture({ files = { ["/var/log/xc.log"] = old } })
   t.eq(state.runtime:log("next", {}).ok, true)
   t.eq(state.events[1], "fs:lock:/var/lock/xc-log.lock")
-  t.eq(state.events[#state.events], "fs:unlock")
+  t.eq(state.events[#state.events], LOG_UNLOCK)
   local value = state.files["/var/log/xc.log"]
   t.truthy(#value <= 262144)
   t.eq(value:sub(1, 1), "c")

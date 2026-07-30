@@ -4,7 +4,7 @@ local real_logview = require "xc.logview"
 
 local function controller_fixture(options)
   options = options or {}
-  local state = { reverts = 0, commits = 0, fs_events = {} }
+  local state = { reverts = 0, commits = 0, fs_events = {}, log_events = {} }
   local body = options.body or "{}"
   local http = {
     getenv = function(name)
@@ -27,6 +27,7 @@ local function controller_fixture(options)
     json = {
       parse = function(value)
         if options.log_json and options.log_json[value] ~= nil then return options.log_json[value] end
+        if options.request_parse_throw then error("raw-body=request-secret") end
         return options.request or { section = "safe_node" }
       end,
       stringify = function() return "{}" end
@@ -83,7 +84,12 @@ local function controller_fixture(options)
     switch = function() return { ok = true, code = "switched", node = "safe_node" } end,
     rollback = function() return { ok = true, code = "rolled_back" } end,
     status = function() return { ok = true, service = "running", lock = "unlocked" } end,
-    test_current = options.test_current or function() return { ok = true, code = "test_passed" } end
+    test_current = options.test_current or function() return { ok = true, code = "test_passed" } end,
+    record_event = function(_, message, fields, level)
+      if options.log_throw then error("password=logger-secret") end
+      state.log_events[#state.log_events + 1] = { message = message, fields = fields, level = level }
+      return true
+    end
   }
   local importer = {
     parse = options.import_parse or function()
@@ -96,14 +102,21 @@ local function controller_fixture(options)
     ["luci.http"] = http,
     ["xc.schema"] = real_schema,
     ["xc.logview"] = real_logview,
-    ["xc.platform"] = { new = function() return adapters end },
-    ["xc.runtime"] = { new = function() return runtime_instance end, paths = {
+    ["xc.platform"] = { new = function()
+      if options.backend_throw then error("password=backend-secret") end
+      return adapters
+    end },
+    ["xc.runtime"] = { new = function()
+      if options.runtime_new_throw then error("password=runtime-new-secret") end
+      return runtime_instance
+    end, paths = {
       log = "/var/log/xc.log", log_lock = "/var/lock/xc-log.lock"
     } },
     ["xc.importer"] = importer,
     ["xc.probe"] = options.probe_module or { new = function()
       return { run = function(_, section, selected, timeout)
         state.probe = { section = section, node = selected, timeout = timeout }
+        if options.probe_throw then error("server=probe-secret.invalid") end
         return options.probe_result or { socket = "ok", ping = 12, time = 12, outcome = "tcp" }
       end }
     end }
@@ -207,6 +220,92 @@ t.test("controller returns a sanitized real probe result", function()
   t.eq(state.probe.section, "safe_node")
 end)
 
+t.test("controller records every probe result with fixed bounded fields and levels", function()
+  local controller, state = controller_fixture({
+    body = '{"section":"safe_node","password":"request-secret","server":"secret.invalid"}'
+  })
+  controller.action_probe()
+  t.eq(state.response.ok, true)
+  t.eq(#state.log_events, 1)
+  local event = state.log_events[1]
+  t.eq(event.message, "node probe completed")
+  t.eq(event.level, "debug")
+  t.eq(event.fields.node, "safe_node")
+  t.eq(event.fields.outcome, "success")
+  t.eq(event.fields.code, "tcp")
+  t.eq(event.fields.ping, 12)
+  t.eq(event.fields.time, 12)
+  t.eq(event.fields.password, nil)
+  t.eq(event.fields.server, nil)
+
+  controller, state = controller_fixture({
+    probe_result = { socket = "fail", ping = 0, time = 1000000, outcome = "timeout" }
+  })
+  controller.action_probe()
+  t.eq(state.response.ok, true)
+  t.eq(#state.log_events, 1)
+  event = state.log_events[1]
+  t.eq(event.level, "error")
+  t.eq(event.fields.outcome, "failure")
+  t.eq(event.fields.code, "timeout")
+  t.eq(event.fields.time, 10000)
+
+  controller, state = controller_fixture({
+    probe_result = { socket = "fail", ping = 0, time = 1, outcome = "password_secret" }
+  })
+  controller.action_probe()
+  t.eq(state.log_events[1].fields.code, "internal_error")
+end)
+
+t.test("controller records early probe failures with stable codes and no request body", function()
+  local controller, state = controller_fixture({
+    body = '{"password":"request-secret","uri":"vless://secret.invalid"}', request_parse_throw = true
+  })
+  local called = pcall(controller.action_probe)
+  t.eq(called, true)
+  t.eq(state.response.code, "validation_failed")
+  t.eq(#state.log_events, 1)
+  local event = state.log_events[1]
+  t.eq(event.message, "node probe completed")
+  t.eq(event.level, "error")
+  t.eq(event.fields.outcome, "failure")
+  t.eq(event.fields.code, "validation_failed")
+  t.eq(event.fields.node, nil)
+  for _, value in pairs(event.fields) do
+    if type(value) == "string" then
+      t.eq(value:find("request-secret", 1, true), nil)
+      t.eq(value:find("secret.invalid", 1, true), nil)
+    end
+  end
+
+  controller, state = controller_fixture({ probe_throw = true })
+  called = pcall(controller.action_probe)
+  t.eq(called, true)
+  t.eq(state.response.code, "internal_error")
+  t.eq(#state.log_events, 1)
+  t.eq(state.log_events[1].fields.code, "internal_error")
+end)
+
+t.test("controller records rejected probe and import requests once", function()
+  local controller, state = controller_fixture({ method = "GET" })
+  controller.action_probe()
+  t.eq(state.response.code, "method_not_allowed")
+  t.eq(#state.log_events, 1)
+  t.eq(state.log_events[1].fields.code, "method_not_allowed")
+
+  controller, state = controller_fixture({ body = "", content_length = 0 })
+  controller.action_import_commit()
+  t.eq(state.response.code, "validation_failed")
+  t.eq(#state.log_events, 1)
+  t.eq(state.log_events[1].fields.code, "validation_failed")
+  t.eq(state.log_events[1].fields.count, 0)
+
+  controller, state = controller_fixture({ method = "GET", runtime_new_throw = true })
+  local called = pcall(controller.action_probe)
+  t.eq(called, true)
+  t.eq(state.response.code, "method_not_allowed")
+end)
+
 t.test("controller rejects disabled and unsupported probe nodes", function()
   local controller, state = controller_fixture({ get_node = function()
     return { id = "safe_node", enabled = false, protocol = "socks", server = "127.0.0.1", port = 1080 }, "ok"
@@ -278,6 +377,54 @@ t.test("controller reverts only definitely uncommitted imports", function()
   t.eq(called, true)
   t.eq(state.response.code, "commit_unknown")
   t.eq(state.reverts, 0)
+end)
+
+t.test("controller records import commit success and failure once with safe finite fields", function()
+  local controller, state = controller_fixture({ body = '{"password":"import-secret","uri":"vless://secret.invalid"}' })
+  controller.action_import_commit()
+  t.eq(state.response.ok, true)
+  t.eq(#state.log_events, 1)
+  local event = state.log_events[1]
+  t.eq(event.message, "import commit completed")
+  t.eq(event.level, "info")
+  t.eq(event.fields.outcome, "success")
+  t.eq(event.fields.code, "committed")
+  t.eq(event.fields.count, 1)
+  t.eq(event.fields.password, nil)
+  t.eq(event.fields.uri, nil)
+
+  controller, state = controller_fixture({ commit_ok = false, commit_outcome = "pre_commit_failed" })
+  controller.action_import_commit()
+  t.eq(state.response.code, "commit_failed")
+  t.eq(#state.log_events, 1)
+  event = state.log_events[1]
+  t.eq(event.level, "error")
+  t.eq(event.fields.outcome, "failure")
+  t.eq(event.fields.code, "commit_failed")
+  t.eq(event.fields.count, 1)
+end)
+
+t.test("controller logging faults never change probe or import HTTP envelopes", function()
+  local controller, state = controller_fixture({ log_throw = true })
+  local called = pcall(controller.action_probe)
+  t.eq(called, true)
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.socket, "ok")
+
+  controller, state = controller_fixture({ log_throw = true })
+  called = pcall(controller.action_import_commit)
+  t.eq(called, true)
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.imported, 1)
+  t.eq(state.commits, 1)
+
+  controller, state = controller_fixture({ log_throw = true, stage_ok = false })
+  called = pcall(controller.action_import_commit)
+  t.eq(called, true)
+  t.eq(state.response.ok, false)
+  t.eq(state.response.code, "import_failed")
+  t.eq(state.reverts, 1)
+  t.eq(tostring(state.response.message):find("logger-secret", 1, true), nil)
 end)
 
 t.test("controller failure envelopes use stable HTTP status codes", function()

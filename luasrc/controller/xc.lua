@@ -90,29 +90,71 @@ function index()
 end
 
 local function require_post()
-  if http.getenv("REQUEST_METHOD") ~= "POST" then failure("method_not_allowed"); return false end
+  if http.getenv("REQUEST_METHOD") ~= "POST" then failure("method_not_allowed"); return false, "method_not_allowed" end
   local length_text = http.getenv("CONTENT_LENGTH")
-  if length_text == nil then failure("validation_failed"); return false end
-  if not length_text:match("^%d+$") then failure("validation_failed"); return false end
+  if length_text == nil then failure("validation_failed"); return false, "validation_failed" end
+  if not length_text:match("^%d+$") then failure("validation_failed"); return false, "validation_failed" end
   local length = tonumber(length_text) or 0
-  if length > REQUEST_BODY_MAX then failure("request_too_large"); return false end
+  if length > REQUEST_BODY_MAX then failure("request_too_large"); return false, "request_too_large" end
   return true
 end
 
 local function request_body(required)
-  if not require_post() then return nil end
+  local valid, code = require_post()
+  if not valid then return nil, code end
   local body = http.content() or ""
-  if #body > REQUEST_BODY_MAX then failure("request_too_large"); return nil end
-  if required and body == "" then failure("validation_failed"); return nil end
+  if #body > REQUEST_BODY_MAX then failure("request_too_large"); return nil, "request_too_large" end
+  if required and body == "" then failure("validation_failed"); return nil, "validation_failed" end
   return body
 end
 
 local function new_backend()
   local called, adapters = pcall(platform.new)
   if not called or type(adapters) ~= "table" then return nil end
-  local runtime_instance = runtime_module.new(adapters)
-  if not runtime_instance then return nil end
+  local runtime_called, runtime_instance = pcall(runtime_module.new, adapters)
+  if not runtime_called or not runtime_instance then return nil end
   return adapters, runtime_instance
+end
+
+local function record_event(runtime_instance, message, fields, level)
+  if type(runtime_instance) == "table" and type(runtime_instance.record_event) == "function" then
+    pcall(runtime_instance.record_event, runtime_instance, message, fields, level)
+  end
+end
+
+local probe_codes = {
+  disabled_node = true, error = true, internal_error = true, invalid_node = true,
+  method_not_allowed = true, missing_node = true, request_too_large = true,
+  tcp = true, tcp_only_grpc = true, tcp_only_reality = true, timeout = true,
+  tls = true, tls_error = true, tls_unsupported = true,
+  unsupported = true, unsupported_node = true, validation_failed = true,
+  ws = true, ws_error = true
+}
+
+local function bounded_number(value)
+  if type(value) ~= "number" or value ~= value then return 0 end
+  value = math.floor(value + 0.5)
+  if value < 0 then return 0 end
+  if value > 10000 then return 10000 end
+  return value
+end
+
+local function probe_event(runtime_instance, ok, code, node, ping, elapsed)
+  local stable_code = probe_codes[code] and code or "internal_error"
+  local fields = { code = stable_code, outcome = ok and "success" or "failure" }
+  if schema.safe_section_id(node) then fields.node = node end
+  if ping ~= nil then fields.ping = bounded_number(ping) end
+  if elapsed ~= nil then fields.time = bounded_number(elapsed) end
+  record_event(runtime_instance, "node probe completed", fields, ok and "debug" or "error")
+end
+
+local function import_event(runtime_instance, ok, code, count)
+  if type(code) ~= "string" or not code:match("^[a-z][a-z_]*$") then code = "internal_error" end
+  count = tonumber(count) or 0
+  if count < 0 then count = 0 elseif count > 10000 then count = 10000 end
+  record_event(runtime_instance, "import commit completed", {
+    code = code, count = math.floor(count), outcome = ok and "success" or "failure"
+  }, ok and "info" or "error")
 end
 
 local function requested_node(adapters, body)
@@ -184,15 +226,23 @@ function action_test_current()
 end
 
 function action_probe()
-  local body = request_body(true)
-  if not body then return end
-  local adapters = new_backend()
+  local body, request_code = request_body(true)
+  if not body then
+    local _, runtime_instance = new_backend()
+    probe_event(runtime_instance, false, request_code or "validation_failed")
+    return
+  end
+  local adapters, runtime_instance = new_backend()
   if not adapters then failure("internal_error"); return end
   local selected, code = requested_node(adapters, body)
-  if not selected then failure(code); return end
-  if selected.node.enabled ~= true and selected.node.enabled ~= 1 and selected.node.enabled ~= "1" then failure("disabled_node"); return end
+  if not selected then probe_event(runtime_instance, false, code); failure(code); return end
+  if selected.node.enabled ~= true and selected.node.enabled ~= 1 and selected.node.enabled ~= "1" then
+    probe_event(runtime_instance, false, "disabled_node", selected.section_id); failure("disabled_node"); return
+  end
   if selected.node.protocol == "raw" or not schema.supported_protocols[selected.node.protocol]
-    or type(selected.node.server) ~= "string" or not tonumber(selected.node.port) then failure("unsupported_node"); return end
+    or type(selected.node.server) ~= "string" or not tonumber(selected.node.port) then
+    probe_event(runtime_instance, false, "unsupported_node", selected.section_id); failure("unsupported_node"); return
+  end
   local timeout = tonumber(selected.request.timeout)
   if not timeout then
     local global_ok, global = pcall(adapters.uci.get_global)
@@ -201,10 +251,15 @@ function action_probe()
   timeout = math.floor(timeout or 3)
   if timeout < 1 then timeout = 1 elseif timeout > 10 then timeout = 10 end
   local probe_ok, probe_instance = pcall(probe_module.new, adapters)
-  if not probe_ok or type(probe_instance) ~= "table" then failure("internal_error"); return end
+  if not probe_ok or type(probe_instance) ~= "table" then
+    probe_event(runtime_instance, false, "internal_error", selected.section_id); failure("internal_error"); return
+  end
   local called, result = pcall(function() return probe_instance:run(selected.section_id, selected.node, timeout) end)
   if not called or type(result) ~= "table" or (result.socket ~= "ok" and result.socket ~= "fail")
-    or type(result.ping) ~= "number" or type(result.time) ~= "number" then failure("internal_error"); return end
+    or type(result.ping) ~= "number" or type(result.time) ~= "number" then
+    probe_event(runtime_instance, false, "internal_error", selected.section_id); failure("internal_error"); return
+  end
+  probe_event(runtime_instance, result.socket == "ok", result.outcome, selected.section_id, result.ping, result.time)
   success({ socket = result.socket, ping = result.ping, time = result.time, outcome = result.outcome })
 end
 
@@ -240,17 +295,22 @@ function action_import_preview()
 end
 
 function action_import_commit()
-  local body = request_body(true)
-  if not body then return end
-  local adapters = new_backend()
+  local body, request_code = request_body(true)
+  if not body then
+    local _, runtime_instance = new_backend()
+    import_event(runtime_instance, false, request_code or "validation_failed", 0)
+    return
+  end
+  local adapters, runtime_instance = new_backend()
   if not adapters then failure("internal_error"); return end
 
-  local dirty, commit_started = false, false
+  local dirty, commit_started, imported_count = false, false, 0
   local called, result, code, revert_allowed = xpcall(function()
     local parsed = importer.parse(body, adapters.json)
     if type(parsed) ~= "table" then return nil, "validation_failed", true end
     local nodes, warnings = importer.deduplicate(parsed.nodes, adapters.uci.list_nodes())
     if type(nodes) ~= "table" then return nil, "validation_failed", true end
+    imported_count = #nodes
     warnings = append_warnings(parsed.warnings, warnings)
     for _, node in ipairs(nodes) do
       if not schema.validate(node) then return nil, "validation_failed", true end
@@ -274,14 +334,19 @@ function action_import_commit()
 
   if not called then
     if dirty and not commit_started then pcall(function() adapters.uci.revert() end) end
-    failure(commit_started and "commit_unknown" or "internal_error")
+    local failure_code = commit_started and "commit_unknown" or "internal_error"
+    import_event(runtime_instance, false, failure_code, imported_count)
+    failure(failure_code)
     return
   end
   if not result then
     if revert_allowed then pcall(function() adapters.uci.revert() end) end
-    failure(code or "internal_error")
+    code = code or "internal_error"
+    import_event(runtime_instance, false, code, imported_count)
+    failure(code)
     return
   end
+  import_event(runtime_instance, true, "committed", imported_count)
   success(result)
 end
 

@@ -296,18 +296,42 @@ function Runtime:_render_locked(section_id, output_path)
   local encoded, node_id, encode_error = self:_encode(section_id)
   if encode_error then return encode_error end
   self:_atomic_write(output_path, encoded)
-  self:log("configuration rendered", { node = node_id }, LOG_LEVEL_DEBUG)
   return result(true, "rendered", { node = node_id, path = output_path })
 end
 
 function Runtime:render(section_id, output_path)
-  return self:_with_lock("render", function() return self:_render_locked(section_id, output_path) end)
+  return self:_with_lock("render", function() return self:_render_locked(section_id, output_path) end, section_id)
 end
 
-function Runtime:_with_lock(operation, fn)
+function Runtime:_record_completion(operation, value, requested_node)
+  local definitions = {
+    render = { message = "configuration render completed", success_level = LOG_LEVEL_DEBUG },
+    switch = { message = "node switch completed", success_level = LOG_LEVEL_INFO },
+    rollback = { message = "rollback completed", success_level = LOG_LEVEL_INFO }
+  }
+  local definition = definitions[operation]
+  if not definition or type(value) ~= "table" then return end
+  local code = type(value.code) == "string" and value.code:match("^[a-z][a-z_]*$") and value.code or "internal_error"
+  local fields = { code = code, outcome = value.ok and "success" or "failure" }
+  local node = value.node or requested_node
+  if schema.safe_section_id(node) then fields.node = node end
+  self:record_event(definition.message, fields, value.ok and definition.success_level or LOG_LEVEL_ERROR)
+end
+
+function Runtime:_with_lock(operation, fn, requested_node)
   local acquired, lock = pcall(self.fs.acquire_lock, LOCK_PATH)
-  if not acquired then self.last_error = "lock_error"; return result(false, "internal_error") end
-  if not lock then self.last_error = "busy"; return result(false, "busy") end
+  if not acquired then
+    self.last_error = "lock_error"
+    local value = result(false, "internal_error")
+    self:_record_completion(operation, value, requested_node)
+    return value
+  end
+  if not lock then
+    self.last_error = "busy"
+    local value = result(false, "busy")
+    self:_record_completion(operation, value, requested_node)
+    return value
+  end
   if operation ~= "recover" then
     local recovered_ok, recovered = xpcall(function() return self:_recover_pending_locked() end, function()
       self:_safe_stop()
@@ -316,12 +340,20 @@ function Runtime:_with_lock(operation, fn)
     if not recovered_ok or not recovered.ok then
       self.last_error = "recovery_failed"
       pcall(self.fs.release_lock, lock)
-      return result(false, "recovery_failed")
+      local value = result(false, "recovery_failed")
+      self:_record_completion(operation, value, requested_node)
+      return value
     end
   end
   self.operation = operation
   local status_started = pcall(function() self:_atomic_write(STATUS_PATH, "operation=" .. operation .. "\ntime=" .. tostring(self.now()) .. "\n") end)
-  if not status_started then self.last_error = "internal_error"; pcall(self.fs.release_lock, lock); self.operation = nil; return result(false, "internal_error") end
+  if not status_started then
+    self.last_error = "internal_error"
+    local value = result(false, "internal_error")
+    pcall(self.fs.release_lock, lock); self.operation = nil
+    self:_record_completion(operation, value, requested_node)
+    return value
+  end
   local ok, value = xpcall(fn, function()
     if operation == "recover" then self:_safe_stop(); return result(false, "recovery_failed") end
     return result(false, "internal_error")
@@ -331,7 +363,11 @@ function Runtime:_with_lock(operation, fn)
   local status_finished = pcall(function() self:_atomic_write(STATUS_PATH, "operation=idle\nlast_error=" .. tostring(self.last_error or "") .. "\ntime=" .. tostring(self.now()) .. "\n") end)
   local release_call, release_value = pcall(self.fs.release_lock, lock)
   self.operation = nil
-  if not status_finished or not release_call or not action_ok(release_value) then self.last_error = "lock_release_failed"; return result(false, "internal_error") end
+  if not status_finished or not release_call or not action_ok(release_value) then
+    self.last_error = "lock_release_failed"
+    value = result(false, "internal_error")
+  end
+  self:_record_completion(operation, value, requested_node)
   return value
 end
 
@@ -341,7 +377,12 @@ function Runtime:exclusive(operation, callback)
     local capability = {
       render = function(section_id, output_path)
         if output_path ~= MIGRATION_CANDIDATE_PATH then return result(false, "invalid_output") end
-        return self:_render_locked(section_id, output_path)
+        local rendered_ok, rendered = xpcall(function()
+          return self:_render_locked(section_id, output_path)
+        end, function() return result(false, "internal_error") end)
+        if not rendered_ok or type(rendered) ~= "table" then rendered = result(false, "internal_error") end
+        self:_record_completion("render", rendered, section_id)
+        return rendered
       end,
       write = function(path, content)
         if path ~= MIGRATION_MARKER_PATH or type(content) ~= "string" or #content > 1024 then return false end
@@ -633,9 +674,6 @@ end
 
 function Runtime:_switch_locked(section_id)
   local encoded, node_id, encode_error = self:_encode(section_id)
-  if encode_error then
-    self:log("switch failed: encode error", { section = section_id, code = encode_error.code }, LOG_LEVEL_ERROR)
-  end
   if encode_error then return encode_error end
   self:_atomic_write(CANDIDATE_PATH, encoded)
   local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
@@ -674,7 +712,6 @@ function Runtime:_switch_locked(section_id)
     transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
     local old = assert(self:_read_generation(transaction))
     if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
-    self:log("switched to node", { node = node_id, outcome = commit_outcome }, LOG_LEVEL_INFO)
     return result(true, "switched", { node = node_id, commit_outcome = commit_outcome })
   end, function() return result(false, "internal_error") end)
   if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
@@ -685,7 +722,7 @@ function Runtime:_switch_locked(section_id)
 end
 
 function Runtime:switch(section_id)
-  return self:_with_lock("switch", function() return self:_switch_locked(section_id) end)
+  return self:_with_lock("switch", function() return self:_switch_locked(section_id) end, section_id)
 end
 
 function Runtime:_rollback_locked()
@@ -902,6 +939,13 @@ function Runtime:log(message, fields, level)
   if not ok or not released or not action_ok(release_value) then self.last_error = "internal_error"; return result(false, "internal_error") end
   self.last_error = not value.ok and value.code or nil
   return value
+end
+
+function Runtime:record_event(message, fields, level)
+  local primary_error = self.last_error
+  local called, value = pcall(self.log, self, message, fields, level)
+  self.last_error = primary_error
+  return called and type(value) == "table" and value.ok == true
 end
 
 function M.new(adapters)

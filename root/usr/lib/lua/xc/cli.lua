@@ -248,6 +248,17 @@ function M.main(argv, deps)
   argv = argv or {}
   if type(deps) ~= "table" or type(deps.output) ~= "function" or type(deps.json) ~= "table" then return 2 end
   local command = argv[1]
+  if command == "log-event" and #argv == 2 then
+    local lifecycle = {
+      service_started = "service started",
+      service_stopped = "service stopped"
+    }
+    local message = lifecycle[argv[2]]
+    if message then
+      pcall(deps.runtime.record_event, deps.runtime, message, {}, "info")
+      return finish(deps, response(true, argv[2]))
+    end
+  end
   if command == "status" and #argv == 1 then return finish(deps, deps.runtime:status()) end
   if command == "switch" and #argv == 2 and schema.safe_section_id(argv[2]) then return finish(deps, deps.runtime:switch(argv[2])) end
   if command == "rollback" and #argv == 1 then return finish(deps, deps.runtime:rollback()) end
