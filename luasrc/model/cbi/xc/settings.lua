@@ -1,5 +1,15 @@
 local uci_model = require "luci.model.uci"
 
+local function validate_http_url(self, value)
+  if type(value) == "string"
+    and #value <= 2048
+    and value:match("^https?://")
+    and not value:find("[%z\1-\31\127]") then
+    return value
+  end
+  return nil, translate("Enter an HTTP or HTTPS URL.")
+end
+
 local m = Map("xc", translate("Xray node switching"),
   translate("Manage the local SOCKS and HTTP Xray listeners."))
 
@@ -61,12 +71,12 @@ probe_timeout.default = "3"
 probe_timeout.rmempty = false
 
 local probe_url = global:option(Value, "probe_url", translate("Probe URL"))
-probe_url.datatype = "url"
+probe_url.validate = validate_http_url
 probe_url.default = "https://www.gstatic.com/generate_204"
 probe_url.rmempty = false
 
 local health_url = global:option(Value, "health_url", translate("Health check URL"))
-health_url.datatype = "url"
+health_url.validate = validate_http_url
 health_url.default = "https://api.ipify.org"
 health_url.rmempty = false
 

@@ -12,9 +12,6 @@ msgstr "（空）"
 msgid "A password is required for this protocol."
 msgstr "此协议必须填写密码。"
 
-msgid "Active"
-msgstr "当前"
-
 msgid "Active node"
 msgstr "当前节点"
 
@@ -45,6 +42,9 @@ msgstr "确认导入"
 msgid "Confirm import?"
 msgstr "确认导入？"
 
+msgid "Current"
+msgstr "当前"
+
 msgid "Debug"
 msgstr "调试"
 
@@ -59,6 +59,9 @@ msgstr "启用"
 
 msgid "Enabled"
 msgstr "已启用"
+
+msgid "Enter an HTTP or HTTPS URL."
+msgstr "请输入 HTTP 或 HTTPS URL。"
 
 msgid "Encryption"
 msgstr "加密"
@@ -273,6 +276,18 @@ msgstr "停止测速"
 msgid "Stopped"
 msgstr "已停止"
 
+msgid "Switch"
+msgstr "切换"
+
+msgid "Switch failed"
+msgstr "切换失败"
+
+msgid "Switched"
+msgstr "已切换"
+
+msgid "Switching…"
+msgstr "切换中…"
+
 msgid "Test"
 msgstr "测速"
 
@@ -359,6 +374,3 @@ msgstr "Xray 节点切换"
 
 msgid "Xray"
 msgstr "Xray"
-
-msgid "Yes"
-msgstr "是"

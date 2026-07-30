@@ -12,6 +12,7 @@ nodes.template = "xc/node_table"
 nodes.extedit = dispatcher.build_url("admin", "services", "xc", "node", "%s")
 
 local page_cursor = uci_model.cursor()
+nodes.active_section = page_cursor:get("xc", "global", "active_node")
 local configured_concurrency = tonumber(page_cursor:get("xc", "global", "probe_concurrency")) or 3
 configured_concurrency = math.floor(configured_concurrency)
 if configured_concurrency < 1 then configured_concurrency = 1 elseif configured_concurrency > 5 then configured_concurrency = 5 end
@@ -60,11 +61,6 @@ function nodes.remove(self, section)
     end
   end
   return TypedSection.remove(self, section)
-end
-
-local active = nodes:option(DummyValue, "_active", translate("Active"))
-function active.cfgvalue(self, section)
-  return m.uci:get("xc", "global", "active_node") == section and translate("Yes") or ""
 end
 
 local enabled = nodes:option(Flag, "enabled", translate("Enabled"))

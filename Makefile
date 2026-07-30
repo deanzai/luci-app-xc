@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-xc
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)
 PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=deanzai <sd423498566@gmail.com>

@@ -60,6 +60,10 @@ t.test("settings form uses exact global defaults and validation contracts", func
   t.contains(value, 'probe_concurrency.datatype = "range(1,5)"')
   t.contains(value, 'probe_timeout.datatype = "range(1,10)"')
   t.contains(value, 'health_timeout.datatype = "range(1,30)"')
+  t.eq(value:find('.datatype = "url"', 1, true), nil, "LuCI 24.10 legacy CBI has no url datatype token")
+  t.contains(value, "local function validate_http_url")
+  t.contains(value, "probe_url.validate = validate_http_url")
+  t.contains(value, "health_url.validate = validate_http_url")
   t.contains(value, 'listen_mode:value("lan"')
   t.eq(value:find('listen_mode:value("custom"', 1, true), nil, "runtime currently supports LAN-derived listening only")
   t.contains(value, 'listen_address.readonly = true')
@@ -116,6 +120,16 @@ t.test("Xray runtime log level has an exact UCI default and ListValue contract",
     t.eq(option.values[index][1], value[1])
     t.eq(option.values[index][2], value[2])
   end
+  for _, name in ipairs({ "probe_url", "health_url" }) do
+    local url_option = assert(map.options[name])
+    t.eq(url_option:validate("https://example.invalid/path", "global"), "https://example.invalid/path")
+    t.eq(url_option:validate("http://127.0.0.1/health", "global"), "http://127.0.0.1/health")
+    for _, invalid in ipairs({ "ftp://example.invalid", "example.invalid", "https://bad\n.invalid", string.rep("a", 2049) }) do
+      local accepted, message = url_option:validate(invalid, "global")
+      t.eq(accepted, nil)
+      t.eq(message, "Enter an HTTP or HTTPS URL.")
+    end
+  end
 end)
 
 t.test("active node choices contain only enabled real UCI nodes", function()
@@ -133,6 +147,8 @@ t.test("node list is anonymous, editable, removable, and secret-free", function(
   t.contains(value, 'nodes.anonymous = true')
   t.contains(value, 'nodes.addremove = true')
   t.contains(value, 'nodes.extedit = dispatcher.build_url(')
+  t.contains(value, 'nodes.active_section = page_cursor:get("xc", "global", "active_node")')
+  t.eq(value:find(', "_active"', 1, true), nil, "active node is highlighted instead of using a dedicated column")
   for _, option in ipairs({ "enabled", "name", "protocol", "server", "port" }) do
     t.contains(value, ', "' .. option .. '"', "missing public node column " .. option)
   end

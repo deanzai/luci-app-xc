@@ -9,6 +9,7 @@ function script(path) {
     .replace(/<%=dispatcher\.build_url\("admin", "services", "xc", "([^"]+)"\)%>/g, "/xc/$1")
     .replace(/<%=token%>/g, "csrf-token")
     .replace(/<%=probe_concurrency%>/g, "TEST_CONCURRENCY")
+    .replace(/<%=util\.serialize_json\(self\.active_section or ""\)%>/g, JSON.stringify("node_0"))
     .replace(/<%=util\.serialize_json\(translate\("([^"]+)"\)\)%>/g, (_, text) => JSON.stringify(text));
 }
 
@@ -16,6 +17,11 @@ const nodeTableSource = fs.readFileSync("luasrc/view/xc/node_table.htm", "utf8")
 assert.ok(nodeTableSource.includes('translate("Test")'), "single-node button uses Test");
 assert.ok(nodeTableSource.includes('value="<%:Test all%>"'), "batch button keeps Test all");
 assert.ok(nodeTableSource.includes('value="<%:Stop testing%>"'), "stop button uses Stop testing");
+assert.ok(nodeTableSource.includes('id="xc-node-controls"'), "node controls share one toolbar");
+assert.ok(nodeTableSource.includes('dispatcher.build_url("admin", "services", "xc", "switch")'), "row switch uses authenticated controller endpoint");
+assert.ok(nodeTableSource.includes('translate("Switch")'), "inactive node action uses Switch");
+assert.ok(nodeTableSource.includes('translate("Current")'), "active node action uses Current");
+assert.strictEqual(nodeTableSource.includes("location.reload"), false, "switch does not reload the page");
 
 function xhrHarness() {
   const requests = [];
@@ -44,6 +50,7 @@ function nodeHarness(concurrency, layout, rowCount) {
   function matches(node, selector) {
     if (selector === '.cbi-section-table-row[id^="cbi-xc-"]')
       return hasClass(node, "cbi-section-table-row") && /^cbi-xc-/.test(node.id);
+    if (selector === 'input.cbi-button-add') return node.tagName === "INPUT" && hasClass(node, "cbi-button-add");
     if (selector[0] === ".") return hasClass(node, selector.slice(1));
     if (selector === "td.cbi-section-actions") return node.tagName === "TD" && hasClass(node, "cbi-section-actions");
     if (selector === "div") return node.tagName === "DIV";
@@ -52,9 +59,12 @@ function nodeHarness(concurrency, layout, rowCount) {
     return false;
   }
   function element(tag) {
-    const node = { tagName: (tag || "div").toUpperCase(), id: "", textContent: "", disabled: false,
+    const node = { tagName: (tag || "div").toUpperCase(), id: "", textContent: "", value: "", disabled: false,
       style: {}, className: "", onclick: null, parentNode: null, children: [], attributes: {},
-      classList: { add(name) { if (!hasClass(node, name)) node.className += (node.className ? " " : "") + name; } },
+      classList: {
+        add(name) { if (!hasClass(node, name)) node.className += (node.className ? " " : "") + name; },
+        remove(name) { node.className = node.className.split(/\s+/).filter(value => value && value !== name).join(" "); }
+      },
       appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
       removeChild(child) { const at = this.children.indexOf(child); if (at >= 0) this.children.splice(at, 1);
         child.parentNode = null; return child; },
@@ -73,8 +83,15 @@ function nodeHarness(concurrency, layout, rowCount) {
     };
     return node;
   }
-  const controls = { "xc-probe-all": element("input"), "xc-probe-stop": element("input"), "xc-probe-state": element("span") };
+  const controls = { "xc-node-controls": element("div"), "xc-probe-all": element("input"),
+    "xc-probe-stop": element("input"), "xc-probe-state": element("span"), "xc-switch-state": element("span") };
+  controls["xc-node-controls"].appendChild(controls["xc-probe-all"]);
+  controls["xc-node-controls"].appendChild(controls["xc-probe-stop"]);
+  controls["xc-node-controls"].appendChild(controls["xc-probe-state"]);
+  controls["xc-node-controls"].appendChild(controls["xc-switch-state"]);
   const sectionRoot = element("div"); sectionRoot.className = "cbi-section";
+  const nativeCreate = sectionRoot.appendChild(element("div")); nativeCreate.className = "cbi-section-create";
+  const nativeAdd = nativeCreate.appendChild(element("input")); nativeAdd.className = "cbi-button cbi-button-add"; nativeAdd.value = "Add";
   const table = sectionRoot.appendChild(element(layout === "native" ? "table" : "div")); table.className = "table";
   const rowContainer = layout === "native" ? table.appendChild(element("tbody")) : table;
   const rows = Array.from({ length: rowCount }, (_, index) => {
@@ -119,7 +136,8 @@ function nodeHarness(concurrency, layout, rowCount) {
     skippedRow("cbi-xc-bad-id", true),
     skippedRow("cbi-xc-missing_actions", false)
   ];
-  const roots = [sectionRoot].concat(Object.keys(controls).map(id => { controls[id].id = id; return controls[id]; }));
+  Object.keys(controls).forEach(id => { controls[id].id = id; });
+  const roots = [sectionRoot, controls["xc-node-controls"]];
   const listeners = {};
   const document = {
     getElementById: id => controls[id],
@@ -135,15 +153,21 @@ function nodeHarness(concurrency, layout, rowCount) {
   rows.forEach((row, index) => {
     const actionBox = row.querySelector(".cbi-section-actions > div");
     const probes = actionBox.querySelectorAll(".xc-probe-one");
+    const switches = actionBox.querySelectorAll(".xc-switch-one");
     const sockets = actionBox.querySelectorAll(".xc-socket");
     assert.strictEqual(probes.length, 1, "row initialization is idempotent");
+    assert.strictEqual(switches.length, 1, "row has exactly one switch button");
     assert.strictEqual(sockets.length, 1, "partial initialization restores exactly one socket");
     assert.strictEqual(row.getAttribute("data-xc-section"), "node_" + index);
     assert.deepStrictEqual(actionBox.children.map(child => child.className.indexOf("xc-socket") >= 0 ? "Socket" :
-      child.className.indexOf("xc-probe-one") >= 0 ? "Probe" : child.value), ["Socket", "Probe", "Edit", "Delete"]);
+      child.className.indexOf("xc-probe-one") >= 0 ? "Probe" :
+      child.className.indexOf("xc-switch-one") >= 0 ? "Switch" : child.value), ["Socket", "Probe", "Switch", "Edit", "Delete"]);
     row.section = "node_" + index; row.latency = row.querySelector(".xc-latency");
-    row.socket = row.querySelector(".xc-socket"); row.button = probes[0];
+    row.socket = row.querySelector(".xc-socket"); row.button = probes[0]; row.switchButton = switches[0];
     assert.strictEqual(row.button.value, "Test", "single-node button label");
+    assert.strictEqual(row.switchButton.value, index === 0 ? "Current" : "Switch");
+    assert.strictEqual(row.switchButton.disabled, index === 0);
+    assert.strictEqual(hasClass(row, "xc-node-active"), index === 0, "only the active row is highlighted");
   });
   assert.strictEqual(document.querySelectorAll(".xc-probe-row").filter(row => row.parentNode === sectionRoot).length, 0,
     "probe rows are never direct children of cbi-section");
@@ -156,7 +180,9 @@ function nodeHarness(concurrency, layout, rowCount) {
     assert.strictEqual(row.querySelectorAll(".xc-probe-one").length, 0, "skipped row gets no Test button");
     assert.strictEqual(row.getAttribute("data-xc-section"), null, "skipped row is not initialized");
   });
-  return { window, controls, rows, skippedRows, requests: xhr.requests };
+  assert.strictEqual(nativeAdd.parentNode, controls["xc-node-controls"], "native Add button moves into the shared toolbar");
+  assert.strictEqual(controls["xc-node-controls"].children[0], nativeAdd, "Add is the first toolbar action");
+  return { window, controls, rows, skippedRows, requests: xhr.requests, nativeAdd, hasClass };
 }
 
 nodeHarness(3, "native");
@@ -184,6 +210,37 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   assert.strictEqual(h.rows[2].latency.textContent, "99 ms");
   assert.strictEqual(h.rows[2].latency.style.color, "green");
   assert.strictEqual(h.rows[2].socket.textContent, "✓");
+}
+
+{
+  const h = nodeHarness(3);
+  h.rows[1].switchButton.onclick();
+  assert.strictEqual(h.requests.length, 1);
+  assert.strictEqual(h.requests[0].method, "POST");
+  assert.ok(h.requests[0].url.indexOf("/xc/switch?token=csrf-token") >= 0);
+  assert.strictEqual(JSON.parse(h.requests[0].body).section, "node_1");
+  assert.strictEqual(h.rows[1].switchButton.value, "Switching…");
+  h.rows.forEach(row => assert.strictEqual(row.switchButton.disabled, true, "all switch buttons lock during a switch"));
+  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
+  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), false);
+  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
+  assert.strictEqual(h.rows[0].switchButton.value, "Switch");
+  assert.strictEqual(h.rows[0].switchButton.disabled, false);
+  assert.strictEqual(h.rows[1].switchButton.value, "Current");
+  assert.strictEqual(h.rows[1].switchButton.disabled, true);
+}
+
+for (const respond of [
+  request => request.respond({ ok: false, code: "validation_failed" }, 400),
+  request => request.respondRaw("{malformed", 500)
+]) {
+  const h = nodeHarness(3);
+  h.rows[2].switchButton.onclick(); respond(h.requests[0]);
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switch failed");
+  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), true, "failed switch keeps the prior highlight");
+  assert.strictEqual(h.rows[2].switchButton.value, "Switch");
+  assert.strictEqual(h.rows[2].switchButton.disabled, false);
 }
 
 for (const respond of [

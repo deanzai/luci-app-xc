@@ -10,9 +10,6 @@ msgstr ""
 msgid "A password is required for this protocol."
 msgstr ""
 
-msgid "Active"
-msgstr ""
-
 msgid "Active node"
 msgstr ""
 
@@ -43,6 +40,9 @@ msgstr ""
 msgid "Confirm import?"
 msgstr ""
 
+msgid "Current"
+msgstr ""
+
 msgid "Debug"
 msgstr ""
 
@@ -56,6 +56,9 @@ msgid "Enable"
 msgstr ""
 
 msgid "Enabled"
+msgstr ""
+
+msgid "Enter an HTTP or HTTPS URL."
 msgstr ""
 
 msgid "Encryption"
@@ -271,6 +274,18 @@ msgstr ""
 msgid "Stopped"
 msgstr ""
 
+msgid "Switch"
+msgstr ""
+
+msgid "Switch failed"
+msgstr ""
+
+msgid "Switched"
+msgstr ""
+
+msgid "Switching…"
+msgstr ""
+
 msgid "Test"
 msgstr ""
 
@@ -356,7 +371,4 @@ msgid "Xray node switching"
 msgstr ""
 
 msgid "Xray"
-msgstr ""
-
-msgid "Yes"
 msgstr ""
