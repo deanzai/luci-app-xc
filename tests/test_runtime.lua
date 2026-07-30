@@ -3,6 +3,7 @@ local runtime = require "xc.runtime"
 
 local UUID = "11111111-1111-1111-1111-111111111111"
 local RUNTIME = "/var/etc/xc/config.json"
+local XRAY_CANDIDATE = "/var/etc/xc/candidate.json"
 local ROLLBACK = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE = "/etc/xc/rollback/active_node"
 local PENDING_ROLLBACK = ROLLBACK .. ".pending"
@@ -494,7 +495,7 @@ t.test("switch validates before snapshot and commits only after listeners and he
   t.truthy(state.files[MANIFEST])
   t.eq(state.files["/etc/xc/rollback/generation-123-1.config"], "old-runtime")
   t.eq(state.files["/etc/xc/rollback/generation-123-1.active"], "old")
-  local candidate = RUNTIME .. ".candidate"
+  local candidate = XRAY_CANDIDATE
   local test_event = "exec:run:/usr/bin/xray|run|-test|-c|" .. candidate
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "fs:write_temp:/etc/xc/rollback/generation-123-1.config.tmp.123"))
@@ -574,7 +575,7 @@ t.test("typed node read failures fail closed in load switch and status", functio
   local switch_result = switched.runtime:switch("new")
   t.eq(switch_result.ok, false)
   t.eq(switch_result.code, "internal_error")
-  t.eq(event_index(switched.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME), nil)
+  t.eq(event_index(switched.events, "fs:rename:" .. XRAY_CANDIDATE .. ":" .. RUNTIME), nil)
 
   local status_state = fixture({ get_node_outcome = "read_failed" })
   local status_result = status_state.runtime:status()
@@ -619,7 +620,7 @@ t.test("failed Xray validation never restarts and releases the lock", function()
   t.eq(state.global.active_node, "old")
   t.truthy(event_index(state.events, MAIN_UNLOCK))
   t.eq(state.events[#state.events], LOG_UNLOCK)
-  t.eq(state.files[RUNTIME .. ".candidate"], nil)
+  t.eq(state.files[XRAY_CANDIDATE], nil)
 
   local invalid_health = fixture({ global = { active_node = "old", socks_port = 7890, http_port = 10809, health_url = "file:///secret", health_timeout = 999 } })
   result = invalid_health.runtime:switch("new")
@@ -726,11 +727,11 @@ t.test("adapter exceptions release the lock and return generic secret-safe error
 end)
 
 t.test("atomic write failures close and remove temporary files", function()
-  local state = fixture({ fsync_fail_path = RUNTIME .. ".candidate.tmp.123" })
+  local state = fixture({ fsync_fail_path = XRAY_CANDIDATE .. ".tmp.123" })
   local result = state.runtime:switch("new")
   t.eq(result.ok, false)
   t.eq(result.code, "internal_error")
-  local temporary = RUNTIME .. ".candidate.tmp.123"
+  local temporary = XRAY_CANDIDATE .. ".tmp.123"
   t.truthy(event_index(state.events, "fs:close:" .. temporary))
   t.truthy(event_index(state.events, "fs:remove:" .. temporary))
   t.eq(state.files[temporary], nil)
@@ -753,7 +754,7 @@ t.test("rollback reports no snapshot and restores a one-generation snapshot", fu
   t.eq(state.files[RUNTIME], "old-runtime")
   t.eq(state.global.active_node, "old")
   t.eq(state.files[MANIFEST], nil)
-  t.truthy(event_index(state.events, "fs:chmod:" .. RUNTIME .. ".candidate.tmp.123:0600") < event_index(state.events, "exec:restart"))
+  t.truthy(event_index(state.events, "fs:chmod:" .. XRAY_CANDIDATE .. ".tmp.123:0600") < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, "exec:restart") < event_index(state.events, "uci:commit"))
   t.truthy(event_index(state.events, "exec:listener:http:192.168.6.1:10809"))
   t.truthy(event_index(state.events, "exec:health:socks:192.168.6.1:7890"))
@@ -1075,7 +1076,7 @@ t.test("switch durably records install intent before replacing runtime", functio
   for index, write in ipairs(state.writes) do
     if write.path == TRANSACTION and write.content:find("\ninstall_intent\n", 1, true) then intent = index end
   end
-  replace = event_index(state.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME)
+  replace = event_index(state.events, "fs:rename:" .. XRAY_CANDIDATE .. ":" .. RUNTIME)
   local intent_rename = event_index(state.events, "fs:rename:" .. TRANSACTION .. ".tmp.123:" .. TRANSACTION)
   t.truthy(intent)
   t.truthy(intent_rename < replace)
@@ -1119,8 +1120,8 @@ t.test("typed read failures abort switch and rollback before installation", func
   local value = switched.runtime:switch("new")
   t.eq(value.ok, false)
   t.eq(switched.files[RUNTIME], "old-runtime")
-  t.eq(switched.files[RUNTIME .. ".candidate"], nil)
-  t.eq(event_index(switched.events, "fs:rename:" .. RUNTIME .. ".candidate:" .. RUNTIME), nil)
+  t.eq(switched.files[XRAY_CANDIDATE], nil)
+  t.eq(event_index(switched.events, "fs:rename:" .. XRAY_CANDIDATE .. ":" .. RUNTIME), nil)
 
   local files = merge({ [RUNTIME] = "new-runtime" }, journal("old-runtime", "old"))
   local rolled = fixture({ files = files, read_errors = { [MANIFEST] = "too_large" } })

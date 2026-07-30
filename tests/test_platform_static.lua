@@ -37,6 +37,48 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.eq(source:find("448", 1, true), nil)
 end)
 
+t.test("platform syncs a nofollow directory fd without the unsupported O_DIRECTORY flag", function()
+  local opened_flags, stat_called
+  local handle = {
+    stat = function()
+      stat_called = true
+      return { type = "dir" }
+    end,
+    sync = function() return true end,
+    close = function() return true end
+  }
+  local adapters = require("xc.platform").new({
+    nixio = {
+      open_flags = function(mode) t.eq(mode, "rdonly"); return 0 end,
+      open = function(_, flags) opened_flags = flags; return handle end
+    },
+    fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(adapters.fs.fsync_dir("/var/etc/xc"), true)
+  t.eq(opened_flags, 131072)
+  t.eq(stat_called, true)
+
+  local regular_synced, regular_closed = false, false
+  local regular_adapters = require("xc.platform").new({
+    nixio = {
+      open_flags = function() return 0 end,
+      open = function()
+        return {
+          stat = function() return { type = "reg" } end,
+          sync = function() regular_synced = true; return true end,
+          close = function() regular_closed = true; return true end
+        }
+      end
+    },
+    fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(regular_adapters.fs.fsync_dir("/var/etc/xc"), false)
+  t.eq(regular_synced, false)
+  t.eq(regular_closed, true)
+end)
+
 t.test("platform captures Xray logs with fixed argv bounded output and a finite deadline", function()
   local calls = {}
   local adapters = require("xc.platform").new({

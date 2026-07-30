@@ -7,7 +7,7 @@ Runtime.__index = Runtime
 
 local LOCK_PATH = "/var/lock/xc.lock"
 local RUNTIME_PATH = "/var/etc/xc/config.json"
-local CANDIDATE_PATH = RUNTIME_PATH .. ".candidate"
+local CANDIDATE_PATH = "/var/etc/xc/candidate.json"
 local ROLLBACK_PATH = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE_PATH = "/etc/xc/rollback/active_node"
 local ROLLBACK_MANIFEST_PATH = "/etc/xc/rollback/current"

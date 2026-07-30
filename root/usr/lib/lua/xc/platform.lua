@@ -4,7 +4,6 @@ local M = {}
 local unpack = unpack or table.unpack
 local generation_sequence = 0
 local O_NOFOLLOW = 131072
-local O_DIRECTORY = 65536
 local MONOTONIC_SOURCE = "/proc/uptime"
 
 local function safe_path(path)
@@ -397,8 +396,10 @@ function M.new(injected)
     fsync = function(handle) return type(handle) == "table" and handle.fd and handle.fd:sync() == true end,
     fsync_dir = function(path)
       if not safe_path(path) then return false end
-      local handle = nixio.open(path, nixio.open_flags("rdonly") + O_DIRECTORY + O_NOFOLLOW)
+      local handle = nixio.open(path, nixio.open_flags("rdonly") + O_NOFOLLOW)
       if not handle then return false end
+      local information = handle:stat()
+      if type(information) ~= "table" or information.type ~= "dir" then handle:close(); return false end
       local ok = handle:sync() == true
       handle:close()
       return ok
