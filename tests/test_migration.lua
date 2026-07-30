@@ -622,6 +622,56 @@ t.test("expanded live postinst retains a failing defaults script and aborts main
   t.eq(read_file(root .. "/events"), "defaults\n")
 end)
 
+t.test("generated wrapper and repeated configure accept an already completed takeover", function()
+  local root = live_postinst_fixture(0)
+  local config = "config package 'xc'\n\toption enabled '1'\n"
+  local marker = "xc-takeover-v1\n"
+  local xc_state = "1 1\n"
+  local legacy_state = "0 0\n"
+  assert(os.execute("mkdir -p '" .. root .. "/etc/xc'") == 0)
+  write_file(root .. "/etc/config/xc", config)
+  write_file(root .. "/etc/uci-defaults/luci-xc", table.concat({
+    "#!/bin/sh\n",
+    "printf 'defaults\\n' >>\"$EVENTS\"\n",
+    "printf 'xc-takeover-v1\\n' >\"$MARKER\"\n",
+    "printf '1 1\\n' >\"$XC_STATE\"\n",
+    "printf '0 0\\n' >\"$LEGACY_STATE\"\n"
+  }))
+  write_file(root .. "/etc/init.d/rpcd", "#!/bin/sh\nprintf 'rpcd:%s\\n' \"$*\" >>\"$EVENTS\"\nexit 1\n")
+  write_file(root .. "/bin/killall", "#!/bin/sh\nprintf 'killall:%s\\n' \"$*\" >>\"$EVENTS\"\nexit 1\n")
+  write_file("tests/tmp/generated-postinst-wrapper.sh", table.concat({
+    "#!/bin/sh\n",
+    "set -eu\n",
+    "( . \"$DEFAULTS\" ) && rm -f \"$DEFAULTS\"\n",
+    "sh tests/tmp/postinst-live-expanded.sh\n"
+  }))
+
+  local env = table.concat({
+    "EVENTS='" .. root .. "/events'",
+    "MARKER='" .. root .. "/etc/xc/takeover-complete'",
+    "XC_STATE='" .. root .. "/xc.state'",
+    "LEGACY_STATE='" .. root .. "/legacy.state'",
+    "DEFAULTS='" .. root .. "/etc/uci-defaults/luci-xc'",
+    "PATH='" .. root .. "/bin:'$PATH"
+  }, " ")
+  t.eq(os.execute(env .. " sh tests/tmp/generated-postinst-wrapper.sh"), 0)
+  t.eq(select(2, read_file(root .. "/events"):gsub("defaults\n", "")), 1)
+  t.eq(os.execute(env .. " sh tests/tmp/postinst-live-expanded.sh"), 0)
+
+  t.eq(io.open(root .. "/etc/uci-defaults/luci-xc", "rb"), nil)
+  t.eq(read_file(root .. "/etc/config/xc"), config)
+  t.eq(read_file(root .. "/etc/xc/takeover-complete"), marker)
+  t.eq(read_file(root .. "/xc.state"), xc_state)
+  t.eq(read_file(root .. "/legacy.state"), legacy_state)
+  t.eq(io.open(root .. "/tmp/luci-indexcache", "rb"), nil)
+  t.eq(io.open(root .. "/tmp/luci-indexcache.1", "rb"), nil)
+  t.eq(command_output("test ! -d '" .. root .. "/tmp/luci-modulecache' && printf removed"), "removed")
+  local events = read_file(root .. "/events")
+  t.eq(select(2, events:gsub("defaults\n", "")), 1)
+  t.eq(select(2, events:gsub("rpcd:reload\n", "")), 2)
+  t.eq(select(2, events:gsub("killall:%-HUP rpcd\n", "")), 2)
+end)
+
 local SERVICE_SCRIPT = [[#!/bin/sh
 name="${0##*/}"
 state="$STATE_DIR/$name"

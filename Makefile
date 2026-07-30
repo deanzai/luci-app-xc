@@ -53,8 +53,9 @@ mkdir -p "$$root/etc/xc/rollback" "$$root/var/etc/xc" || exit 1
 chmod 0700 "$$root/etc/xc" "$$root/etc/xc/rollback" "$$root/var/etc/xc" || exit 1
 chmod 0600 "$$root/etc/config/xc" || exit 1
 if [ -z "$$root" ]; then
-	[ -f /etc/uci-defaults/luci-xc ] || exit 1
-	(. /etc/uci-defaults/luci-xc) && rm -f /etc/uci-defaults/luci-xc || exit 1
+	if [ -f /etc/uci-defaults/luci-xc ]; then
+		(. /etc/uci-defaults/luci-xc) && rm -f /etc/uci-defaults/luci-xc || exit 1
+	fi
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* || exit 1
 	rm -rf /tmp/luci-modulecache/ || exit 1
 	/etc/init.d/rpcd reload 2>/dev/null || killall -HUP rpcd 2>/dev/null || true
