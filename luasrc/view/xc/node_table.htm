@@ -73,6 +73,7 @@ local probe_concurrency = self.probe_concurrency or 3
     var milliseconds = Number(data.ping);
     var text = "";
     if (data.outcome === "timeout") text = timeoutText;
+    else if (data.socket === "ok" && isFinite(milliseconds) && milliseconds >= 0 && milliseconds < 1) text = "<1 ms";
     else if (!isFinite(milliseconds) || milliseconds <= 0) text = errorText;
     else text = Math.floor(milliseconds) + " ms";
     if (latency) { latency.textContent = text; latency.style.color = color(isFinite(milliseconds) ? milliseconds : 10000); }

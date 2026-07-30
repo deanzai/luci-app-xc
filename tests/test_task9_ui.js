@@ -213,6 +213,15 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
 }
 
 {
+  const h = nodeHarness(1);
+  h.rows[0].button.onclick();
+  h.requests[0].respond({ ok: true, data: { socket: "ok", ping: 0, time: 0, outcome: "tcp" } });
+  assert.strictEqual(h.rows[0].latency.textContent, "<1 ms", "successful loopback probes are not errors");
+  assert.strictEqual(h.rows[0].latency.style.color, "green");
+  assert.strictEqual(h.rows[0].socket.textContent, "✓");
+}
+
+{
   const h = nodeHarness(3);
   h.rows[1].switchButton.onclick();
   assert.strictEqual(h.requests.length, 1);
