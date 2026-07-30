@@ -10,8 +10,10 @@ local PENDING_ROLLBACK_NODE = ROLLBACK_NODE .. ".pending"
 local UNSET_ACTIVE = "!xc-active-unset!"
 local MANIFEST = "/etc/xc/rollback/current"
 local TRANSACTION = "/etc/xc/rollback/transaction"
+local STATUS = "/var/run/xc-status"
 local LOG = "/var/log/xc.log"
 local LOG_LOCK = "/var/lock/xc-log.lock"
+local EXIT_IP_CACHE = "/tmp/xc-exit-ip"
 
 local function checksum(value)
   local hash = 5381
@@ -178,7 +180,11 @@ local function fixture(options)
       return { path = path, kernel_flock = true }
     end,
     release_lock = function(lock) event("fs:unlock:" .. tostring(lock and lock.path)); return options.release_ok ~= false end,
-    lock_state = function() return options.busy and "held" or "unlocked" end,
+    lock_state = function(path)
+      event("fs:lock_state:" .. path)
+      if options.lock_state then return options.lock_state(path) end
+      return options.busy and "held" or "unlocked"
+    end,
     allocate_generation = function()
       generation_count = generation_count + 1
       return options.generation or ("123-" .. generation_count)
@@ -262,8 +268,11 @@ local function fixture(options)
       return options.restart_ok ~= false
     end,
     stop = function() event("exec:stop"); return options.stop_ok ~= false end,
-    listener_ready = function(kind, address, port)
+    listener_ready = function(kind, address, port, deadline)
       event("exec:listener:" .. kind .. ":" .. address .. ":" .. tostring(port))
+      state.listener_deadlines = state.listener_deadlines or {}
+      state.listener_deadlines[#state.listener_deadlines + 1] = deadline
+      if options.listener_hook then options.listener_hook(kind, deadline, global) end
       if options.listener_failures and (options.listener_failures[kind] or 0) > 0 then
         options.listener_failures[kind] = options.listener_failures[kind] - 1
         return false
@@ -282,6 +291,7 @@ local function fixture(options)
     observe_exit_ip = function(kind, address, port, health_url, deadline)
       event("exec:exit_ip:" .. kind .. ":" .. address .. ":" .. tostring(port))
       state.exit_ip_url, state.exit_ip_deadline = health_url, deadline
+      if options.observe_hook then options.observe_hook(global, files) end
       if options.exit_ip_throw then error("password=exit-secret") end
       return options.exit_ip
     end,
@@ -810,7 +820,7 @@ t.test("status observes a bounded whitelisted exit IP through the local proxy", 
   local status = valid.runtime:status()
   t.eq(status.exit_ip, "203.0.113.9")
   t.eq(valid.exit_ip_url, valid.global.health_url)
-  t.eq(valid.exit_ip_deadline, 125)
+  t.eq(valid.exit_ip_deadline, 128)
   t.truthy(event_index(valid.events, "exec:exit_ip:socks:192.168.6.1:7890"))
 
   for _, unsafe in ipairs({ "", "203.0.113.9 secret", "https://credential.invalid", "999.1.1.1", "::::", "1:2", string.rep("1", 200) }) do
@@ -821,6 +831,126 @@ t.test("status observes a bounded whitelisted exit IP through the local proxy", 
   local thrown_fixture = fixture({ exit_ip_throw = true })
   local thrown = thrown_fixture.runtime:status()
   t.eq(thrown.ok, true); t.eq(thrown.exit_ip, nil)
+end)
+
+t.test("status keeps one listener deadline and computes exit observation deadline afterwards", function()
+  local clock = 10
+  local state = fixture({
+    exit_ip = "203.0.113.9",
+    now = function() return clock end,
+    listener_hook = function(kind)
+      if kind == "http" then clock = 20 end
+    end
+  })
+  local status = state.runtime:status()
+  t.eq(status.exit_ip, "203.0.113.9")
+  t.eq(state.listener_deadlines[1], 12)
+  t.eq(state.listener_deadlines[2], 12)
+  t.eq(state.exit_ip_deadline, 25)
+end)
+
+t.test("status reuses only a fresh strict same-node exit IP cache", function()
+  local wall_now = 1000
+  local valid_cache = "node=old\nobserved_at=941\nip=203.0.113.10\n"
+  local cached = fixture({ shared_files = { [EXIT_IP_CACHE] = valid_cache }, wall_time = function() return wall_now end, exit_ip = "198.51.100.1" })
+  t.eq(cached.runtime:status().exit_ip, "203.0.113.10")
+  t.eq(event_index(cached.events, "exec:exit_ip:socks:192.168.6.1:7890"), nil)
+  t.truthy(event_index(cached.events, "fs:read:" .. EXIT_IP_CACHE))
+
+  local invalid = {
+    "node=new\nobserved_at=999\nip=203.0.113.10\n",
+    "node=old\nobserved_at=940\nip=203.0.113.10\n",
+    "node=old\nobserved_at=1001\nip=203.0.113.10\n",
+    "node=old\nobserved_at=1.5\nip=203.0.113.10\n",
+    "node=old\nobserved_at=abc\nip=203.0.113.10\n",
+    "node=old\nobserved_at=999\nip=999.0.0.1\n",
+    "node=bad;node\nobserved_at=999\nip=203.0.113.10\n",
+    "node=old\nnode=old\nobserved_at=999\nip=203.0.113.10\n",
+    "node=old\nobserved_at=999\nip=203.0.113.10\nextra=x\n",
+    "node=old\nobserved_at=999\nip=203.0.113.10",
+    "observed_at=999\nnode=old\nip=203.0.113.10\n",
+    string.rep("x", 513)
+  }
+  for index, content in ipairs(invalid) do
+    local state = fixture({ shared_files = { [EXIT_IP_CACHE] = content }, wall_time = function() return wall_now end, exit_ip = "198.51.100.2" })
+    t.eq(state.runtime:status().exit_ip, "198.51.100.2", "accepted malformed cache " .. index)
+    t.truthy(event_index(state.events, "exec:exit_ip:socks:192.168.6.1:7890"), "did not observe for malformed cache " .. index)
+  end
+end)
+
+t.test("successful exit observation writes an atomic private node cache", function()
+  local state = fixture({ exit_ip = "2001:db8::9\n", wall_time = function() return 1785326499 end })
+  local status = state.runtime:status()
+  t.eq(status.exit_ip, "2001:db8::9")
+  t.eq(state.files[EXIT_IP_CACHE], "node=old\nobserved_at=1785326499\nip=2001:db8::9\n")
+  local temporary = EXIT_IP_CACHE .. ".tmp.123"
+  t.truthy(event_index(state.events, "fs:write_temp:" .. temporary))
+  t.truthy(event_index(state.events, "fs:chmod:" .. temporary .. ":0600"))
+  t.truthy(event_index(state.events, "fs:fsync:" .. temporary))
+  t.truthy(event_index(state.events, "fs:rename:" .. temporary .. ":" .. EXIT_IP_CACHE))
+end)
+
+t.test("failed exit observation without a fresh cache stays secret-safe", function()
+  for _, options in ipairs({
+    { exit_ip = "curl: password=secret body={credential}" },
+    { exit_ip_throw = true }
+  }) do
+    local state = fixture(options)
+    local status = state.runtime:status()
+    t.eq(status.ok, true)
+    t.eq(status.exit_ip, nil)
+    t.eq(state.files[EXIT_IP_CACHE], nil)
+    local encoded = stringify(status)
+    t.eq(encoded:find("curl", 1, true), nil)
+    t.eq(encoded:find("secret", 1, true), nil)
+    t.eq(encoded:find("credential", 1, true), nil)
+  end
+end)
+
+t.test("status drops exit observations when active node or runtime lock changes", function()
+  local changed_node = fixture({
+    exit_ip = "203.0.113.20",
+    observe_hook = function(global) global.active_node = "new" end
+  })
+  local status = changed_node.runtime:status()
+  t.eq(status.exit_ip, nil)
+  t.eq(changed_node.files[EXIT_IP_CACHE], nil)
+
+  local held = false
+  local changed_lock = fixture({
+    exit_ip = "203.0.113.21",
+    lock_state = function() return held and "held" or "unlocked" end,
+    observe_hook = function() held = true end
+  })
+  status = changed_lock.runtime:status()
+  t.eq(status.exit_ip, nil)
+  t.eq(changed_lock.files[EXIT_IP_CACHE], nil)
+end)
+
+t.test("status never returns another node cache across a switch race", function()
+  local files = { [EXIT_IP_CACHE] = "node=old\nobserved_at=999\nip=203.0.113.30\n" }
+  local state = fixture({
+    shared_files = files,
+    wall_time = function() return 1000 end,
+    lock_state = function() return "unlocked" end,
+    listener_hook = function(kind, _, global)
+      if kind == "http" then global.active_node = "new" end
+    end,
+    exit_ip = nil
+  })
+  local status = state.runtime:status()
+  t.eq(status.exit_ip, nil)
+end)
+
+t.test("status reuses a fresh cache when an unlocked operation marker is stale", function()
+  local files = {
+    [STATUS] = "operation=switch\ntime=1\n",
+    [EXIT_IP_CACHE] = "node=old\nobserved_at=999\nip=203.0.113.31\n"
+  }
+  local state = fixture({ shared_files = files, wall_time = function() return 1000 end })
+  local status = state.runtime:status()
+  t.eq(status.operation, "idle")
+  t.eq(status.exit_ip, "203.0.113.31")
 end)
 
 t.test("exit IP status accepts strict IPv4 and IPv6 forms and rejects malformed addresses", function()

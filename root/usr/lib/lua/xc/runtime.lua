@@ -18,6 +18,8 @@ local MIGRATION_MARKER_PATH = "/etc/xc/migration-complete"
 local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local LOG_LOCK_PATH = "/var/lock/xc-log.lock"
+local EXIT_IP_CACHE_PATH = "/tmp/xc-exit-ip"
+local EXIT_IP_CACHE_TTL = 60
 local LOG_LEVEL_DEBUG = "debug"
 local LOG_LEVEL_INFO = "info"
 local LOG_LEVEL_ERROR = "error"
@@ -634,6 +636,31 @@ local function valid_observed_ip(value)
   return units == 8
 end
 
+local function parse_exit_ip_cache(value, active, wall_now)
+  if type(value) ~= "string" or type(active) ~= "string" or type(wall_now) ~= "number" then return nil end
+  local node, observed_text, ip = value:match("^node=([^\n]+)\nobserved_at=([^\n]+)\nip=([^\n]+)\n$")
+  if not node or node ~= active or not schema.safe_section_id(node) or not observed_text:match("^%d+$") then return nil end
+  local observed_at = tonumber(observed_text)
+  if not observed_at or observed_at < 0 or observed_at ~= math.floor(observed_at) or tostring(observed_at) ~= observed_text then return nil end
+  local age = wall_now - observed_at
+  if age < 0 or age >= EXIT_IP_CACHE_TTL or not valid_observed_ip(ip) then return nil end
+  return ip
+end
+
+function Runtime:_exit_context_current(section_id)
+  local global = self.uci.get_global()
+  if type(global) ~= "table" or global.active_node ~= section_id then return false end
+  if self.fs.lock_state(LOCK_PATH) ~= "unlocked" then return false end
+  if self:_read_optional(TRANSACTION_PATH, 1024) ~= nil then return false end
+  return true
+end
+
+function Runtime:_cached_exit_ip(section_id, wall_now)
+  local read_ok, value = pcall(self.fs.read, EXIT_IP_CACHE_PATH, 512)
+  if not read_ok then return nil end
+  return parse_exit_ip_cache(value, section_id, wall_now)
+end
+
 function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)
   local generation = self.fs.allocate_generation("/etc/xc/rollback")
   if not valid_token(generation) then error("generation allocation failed", 0) end
@@ -813,11 +840,27 @@ function Runtime:status()
       http = action_ok(self.exec.listener_ready("http", address, tonumber(global.http_port), listener_deadline))
     }
     local exit_ip
-    if service == "running" and listeners.socks and type(self.exec.observe_exit_ip) == "function" and type(global.health_url) == "string" then
-      local observed, value = pcall(self.exec.observe_exit_ip, "socks", address, tonumber(global.socks_port), global.health_url, listener_deadline)
-      if observed and type(value) == "string" then
-        value = value:match("^%s*(.-)%s*$")
-        if valid_observed_ip(value) then exit_ip = value end
+    local can_observe = service == "running" and listeners.socks and safe_active and lock_state == "unlocked"
+      and not pending and shared_operation == "idle" and type(self.exec.observe_exit_ip) == "function"
+      and type(global.health_url) == "string"
+    if can_observe then
+      local wall_now = self.wall_time()
+      local cached = self:_cached_exit_ip(safe_active, wall_now)
+      if cached and self:_exit_context_current(safe_active) then
+        exit_ip = cached
+      elseif not cached then
+        local observation_deadline = self.now() + 5
+        local observed, observed_value = pcall(self.exec.observe_exit_ip, "socks", address, tonumber(global.socks_port), global.health_url, observation_deadline)
+        if observed and type(observed_value) == "string" then
+          observed_value = observed_value:match("^%s*(.-)%s*$")
+          if valid_observed_ip(observed_value) and self:_exit_context_current(safe_active) then
+            exit_ip = observed_value
+            local observed_at = self.wall_time()
+            if type(observed_at) == "number" and observed_at >= 0 and observed_at == math.floor(observed_at) then
+              pcall(self._atomic_write, self, EXIT_IP_CACHE_PATH, "node=" .. safe_active .. "\nobserved_at=" .. tostring(observed_at) .. "\nip=" .. observed_value .. "\n")
+            end
+          end
+        end
       end
     end
     local output = result(true, "status", {
@@ -975,7 +1018,7 @@ M.paths = {
   rollback_manifest = ROLLBACK_MANIFEST_PATH,
   transaction = TRANSACTION_PATH, status = STATUS_PATH,
   migration_candidate = MIGRATION_CANDIDATE_PATH, migration_marker = MIGRATION_MARKER_PATH,
-  log = LOG_PATH, log_lock = LOG_LOCK_PATH
+  log = LOG_PATH, log_lock = LOG_LOCK_PATH, exit_ip_cache = EXIT_IP_CACHE_PATH
 }
 M.unset_active_marker = UNSET_ACTIVE_MARKER
 
