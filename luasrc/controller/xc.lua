@@ -102,7 +102,12 @@ end
 local function request_body(required)
   local valid, code = require_post()
   if not valid then return nil, code end
-  local body = http.content() or ""
+  local content_ok, body = pcall(http.content)
+  if not content_ok or (body ~= nil and type(body) ~= "string") then
+    failure("internal_error")
+    return nil, "internal_error"
+  end
+  body = body or ""
   if #body > REQUEST_BODY_MAX then failure("request_too_large"); return nil, "request_too_large" end
   if required and body == "" then failure("validation_failed"); return nil, "validation_failed" end
   return body

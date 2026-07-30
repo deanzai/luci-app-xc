@@ -11,7 +11,10 @@ local function controller_fixture(options)
       if name == "REQUEST_METHOD" then return options.method or "POST" end
       if name == "CONTENT_LENGTH" then return tostring(options.content_length or #body) end
     end,
-    content = function() return body end,
+    content = function()
+      if options.content_throw then error("raw-body=content-secret") end
+      return body
+    end,
     prepare_content = function(value) state.content_type = value end,
     status = function(code) state.status = code end,
     formvalue = function(name)
@@ -304,6 +307,27 @@ t.test("controller records rejected probe and import requests once", function()
   local called = pcall(controller.action_probe)
   t.eq(called, true)
   t.eq(state.response.code, "method_not_allowed")
+end)
+
+t.test("controller contains request body read faults for probe and import", function()
+  for _, case in ipairs({
+    { action = "action_probe", message = "node probe completed" },
+    { action = "action_import_commit", message = "import commit completed" }
+  }) do
+    local controller, state = controller_fixture({ content_throw = true })
+    local called = pcall(controller[case.action])
+    t.eq(called, true)
+    t.eq(state.response.ok, false)
+    t.eq(state.response.code, "internal_error")
+    t.eq(state.status, 500)
+    t.eq(state.content_type, "application/json")
+    t.eq(tostring(state.response.message):find("content-secret", 1, true), nil)
+    t.eq(#state.log_events, 1)
+    t.eq(state.log_events[1].message, case.message)
+    t.eq(state.log_events[1].level, "error")
+    t.eq(state.log_events[1].fields.code, "internal_error")
+    t.eq(state.log_events[1].fields.outcome, "failure")
+  end
 end)
 
 t.test("controller rejects disabled and unsupported probe nodes", function()
