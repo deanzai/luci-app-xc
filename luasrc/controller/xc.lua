@@ -1,6 +1,7 @@
 module("luci.controller.xc", package.seeall)
 
 local http = require "luci.http"
+local jsonc = require "luci.jsonc"
 local schema = require "xc.schema"
 local platform = require "xc.platform"
 local runtime_module = require "xc.runtime"
@@ -46,9 +47,18 @@ local status_text = {
   [501] = "Not Implemented", [502] = "Bad Gateway"
 }
 
+local INTERNAL_ERROR_JSON = '{"ok":false,"code":"internal_error","message":"The request could not be completed."}'
+
 local function respond(payload)
   http.prepare_content("application/json")
-  http.write_json(payload)
+  local encoded_ok, encoded = pcall(jsonc.stringify, payload)
+  if not encoded_ok or type(encoded) ~= "string" or encoded == "" then
+    http.status(500, status_text[500])
+    pcall(http.write, INTERNAL_ERROR_JSON)
+    return false
+  end
+  pcall(http.write, encoded)
+  return true
 end
 
 local function success(data)

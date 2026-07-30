@@ -2,9 +2,47 @@ local t = require "testlib"
 local real_schema = require "xc.schema"
 local real_logview = require "xc.logview"
 
+local function json_escape(value)
+  return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
+    if character == '"' then return '\\"' end
+    if character == "\\" then return "\\\\" end
+    return string.format("\\u%04x", character:byte())
+  end) .. '"'
+end
+
+local function json_encode(value)
+  local kind = type(value)
+  if kind == "nil" then return "null" end
+  if kind == "boolean" or kind == "number" then return tostring(value) end
+  if kind == "string" then return json_escape(value) end
+  assert(kind == "table", "unsupported fixture JSON value")
+
+  local count, maximum, array = 0, 0, true
+  for key in pairs(value) do
+    count = count + 1
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then array = false
+    elseif key > maximum then maximum = key end
+  end
+  if array and maximum == count then
+    local encoded = {}
+    for index = 1, maximum do encoded[index] = json_encode(value[index]) end
+    return "[" .. table.concat(encoded, ",") .. "]"
+  end
+
+  local keys = {}
+  for key in pairs(value) do
+    assert(type(key) == "string", "unsupported fixture JSON object key")
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  local encoded = {}
+  for index, key in ipairs(keys) do encoded[index] = json_escape(key) .. ":" .. json_encode(value[key]) end
+  return "{" .. table.concat(encoded, ",") .. "}"
+end
+
 local function controller_fixture(options)
   options = options or {}
-  local state = { reverts = 0, commits = 0, fs_events = {}, log_events = {} }
+  local state = { reverts = 0, commits = 0, fs_events = {}, log_events = {}, encoded = {} }
   local body = options.body or "{}"
   local http = {
     getenv = function(name)
@@ -20,8 +58,27 @@ local function controller_fixture(options)
     formvalue = function(name)
       if name == "level" then return options.level end
     end,
-    write_json = function(value) state.response = value end
+    write = function(value)
+      if options.write_throw then error("password=write-secret") end
+      state.response_text = (state.response_text or "") .. value
+    end,
+    write_json = function(value)
+      state.write_json_calls = (state.write_json_calls or 0) + 1
+      state.response = value
+    end
   }
+  local jsonc = {
+    stringify = function(value)
+      if options.stringify_throw then error("password=stringify-secret") end
+      if options.stringify_invalid then return nil end
+      local encoded = json_encode(value)
+      state.response = value
+      state.encoded[encoded] = value
+      return encoded
+    end,
+    parse = function(value) return state.encoded[value] end
+  }
+  state.parse_response = jsonc.parse
   local node = {
     id = "safe_node", name = "Safe", enabled = true, protocol = "socks",
     server = "127.0.0.1", port = 1080
@@ -108,6 +165,7 @@ local function controller_fixture(options)
 
   local replacements = {
     ["luci.http"] = http,
+    ["luci.jsonc"] = jsonc,
     ["xc.schema"] = real_schema,
     ["xc.logview"] = real_logview,
     ["xc.platform"] = { new = function()
@@ -166,6 +224,46 @@ t.test("get-log returns merged structured entries and an XC-only clear scope", f
   t.eq(state.response.data.entries[2].source, "xray")
   t.eq(state.xray_deadline, 7202)
   t.eq(state.fs_events[1], "read_tail:/var/log/xc.log:262144")
+end)
+
+t.test("get-log serializes an empty entry list as a JSON array", function()
+  local controller, state = controller_fixture({ level = "warning", log_content = "" })
+  controller.action_get_log()
+  t.eq(state.write_json_calls, nil)
+  t.eq(state.content_type, "application/json")
+  t.contains(state.response_text, '"data":{"clear_scope":"xc","entries":[]}')
+  t.eq(state.response_text:find('"entries":{}', 1, true), nil)
+  local parsed = state.parse_response(state.response_text)
+  t.eq(parsed.ok, true)
+  t.eq(type(parsed.data.entries), "table")
+  t.eq(#parsed.data.entries, 0)
+end)
+
+t.test("controller JSON serialization preserves objects arrays and safe fallback envelopes", function()
+  local line = "xc-warning"
+  local controller, state = controller_fixture({
+    level = "warning",
+    log_content = line,
+    log_json = { [line] = { time = 1, level = "warning", message = "safe" } }
+  })
+  controller.action_get_log()
+  t.contains(state.response_text, '"entries":[{')
+  t.contains(state.response_text, '"data":{')
+
+  controller, state = controller_fixture({ level = "invalid" })
+  controller.action_get_log()
+  t.eq(state.status, 400)
+  t.contains(state.response_text, '"ok":false')
+  t.contains(state.response_text, '"code":"invalid_request"')
+
+  for _, options in ipairs({ { stringify_throw = true }, { stringify_invalid = true } }) do
+    controller, state = controller_fixture(options)
+    local called = pcall(controller.action_status)
+    t.eq(called, true)
+    t.eq(state.status, 500)
+    t.eq(state.response_text, '{"ok":false,"code":"internal_error","message":"The request could not be completed."}')
+    t.eq(state.response_text:find("stringify%-secret"), nil)
+  end
 end)
 
 t.test("get-log defaults a missing level to all and rejects every invalid value", function()
