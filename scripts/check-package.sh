@@ -49,33 +49,107 @@ mkdir "$translation_tmp" || exit 1
 trap 'rm -rf "$translation_tmp"' EXIT HUP INT TERM
 pot_path="${XC_POT_PATH:-po/templates/xc.pot}"
 po_path="${XC_PO_PATH:-po/zh_Hans/xc.po}"
+source_dir="${XC_LUCI_SOURCE_DIR:-luasrc}"
+if [ ! -d "$source_dir" ]; then
+  echo "FAIL  LuCI source directory is missing: $source_dir"
+  failures=$(( failures + 1 ))
+  : > "$translation_tmp/source"
+else
+  find "$source_dir" -type f \( -name '*.lua' -o -name '*.htm' \) -exec awk '
+  function identifier(c) { return c ~ /^[A-Za-z0-9_]$/ }
+  function reset_file() {
+    mode = "normal"; stage = 0; captured = ""; escaped = 0
+  }
+  function decoded_escape(c) {
+    if (c == "n") return "\n"
+    if (c == "r") return "\r"
+    if (c == "t") return "\t"
+    return c
+  }
+  FNR == 1 { reset_file() }
+  {
+    line = $0 "\n"
+    i = 1
+    while (i <= length(line)) {
+      c = substr(line, i, 1)
+      pair = substr(line, i, 2)
 
-awk '
-function emit(mark, rest, finish, value) {
-  while ((mark = index($0, "translate(\"")) > 0) {
-    rest = substr($0, mark + 11)
-    finish = index(rest, "\"")
-    if (!finish) break
-    print substr(rest, 1, finish - 1)
-    $0 = substr(rest, finish + 1)
+      if (mode == "block_comment") {
+        if (pair == "*/") { mode = "normal"; i += 2 } else i++
+        continue
+      }
+      if (mode == "html_comment") {
+        if (substr(line, i, 3) == "-->") { mode = "normal"; i += 3 } else i++
+        continue
+      }
+      if (mode == "long_string") {
+        if (pair == "]]" ) { mode = "normal"; i += 2 } else i++
+        continue
+      }
+      if (mode == "skip_string") {
+        if (substr(line, i, 3) == "<%:") {
+          rest = substr(line, i + 3)
+          finish = index(rest, "%>")
+          if (finish) { print substr(rest, 1, finish - 1); i += finish + 4; continue }
+        }
+        if (escaped) escaped = 0
+        else if (c == "\\") escaped = 1
+        else if (c == quote) mode = "normal"
+        i++
+        continue
+      }
+      if (mode == "capture") {
+        if (c == "\n") { mode = "normal"; stage = 0; captured = ""; i++; continue }
+        if (escaped) { captured = captured decoded_escape(c); escaped = 0; i++; continue }
+        if (c == "\\") { escaped = 1; i++; continue }
+        if (c == "\"") { mode = "normal"; stage = 3; i++; continue }
+        captured = captured c
+        i++
+        continue
+      }
+
+      if (stage == 1) {
+        if (c ~ /^[[:space:]]$/) { i++; continue }
+        if (c == "(") { stage = 2; i++; continue }
+        stage = 0
+      }
+      if (stage == 2) {
+        if (c ~ /^[[:space:]]$/) { i++; continue }
+        if (c == "\"") { mode = "capture"; captured = ""; escaped = 0; i++; continue }
+        stage = 0
+      }
+      if (stage == 3) {
+        if (c ~ /^[[:space:]]$/) { i++; continue }
+        if (c == ")") { print captured; stage = 0; captured = ""; i++; continue }
+        stage = 0; captured = ""
+      }
+
+      if (substr(line, i, 3) == "<%:") {
+        rest = substr(line, i + 3)
+        finish = index(rest, "%>")
+        if (finish) { print substr(rest, 1, finish - 1); i += finish + 4; continue }
+      }
+      if (pair == "--" || pair == "//") break
+      if (pair == "/*") { mode = "block_comment"; i += 2; continue }
+      if (substr(line, i, 4) == "<!--") { mode = "html_comment"; i += 4; continue }
+      if (pair == "[[") { mode = "long_string"; i += 2; continue }
+      if (c == "\"" || c == "\047") { mode = "skip_string"; quote = c; escaped = 0; i++; continue }
+
+      token = ""
+      if (substr(line, i, 9) == "translate") token = "translate"
+      else if (c == "_") token = "_"
+      if (token != "") {
+        before = i > 1 ? substr(line, i - 1, 1) : ""
+        after = substr(line, i + length(token), 1)
+        if (!identifier(before) && !identifier(after)) {
+          stage = 1; i += length(token); continue
+        }
+      }
+      i++
+    }
   }
-  while ((mark = index($0, "_(\"")) > 0) {
-    rest = substr($0, mark + 3)
-    finish = index(rest, "\"")
-    if (!finish) break
-    print substr(rest, 1, finish - 1)
-    $0 = substr(rest, finish + 1)
-  }
-  while ((mark = index($0, "<%:")) > 0) {
-    rest = substr($0, mark + 3)
-    finish = index(rest, "%>")
-    if (!finish) break
-    print substr(rest, 1, finish - 1)
-    $0 = substr(rest, finish + 2)
-  }
-}
-{ emit() }
-' $(find luasrc -type f \( -name '*.lua' -o -name '*.htm' \) -print) | sort -u > "$translation_tmp/source"
+  ' {} + | sort -u > "$translation_tmp/source"
+fi
 
 parse_catalog() {
   awk '
@@ -157,6 +231,7 @@ for kind in pot po; do
   fi
   if ! cmp -s "$translation_tmp/source" "$translation_tmp/$kind"; then
     echo "FAIL  $kind catalog does not exactly cover visible LuCI strings"
+    comm -3 "$translation_tmp/source" "$translation_tmp/$kind" | sed 's/^/  /'
     failures=$(( failures + 1 ))
   fi
 done

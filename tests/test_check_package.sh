@@ -15,9 +15,53 @@ make_multiline() {
 }
 
 run_check() {
-  XC_POT_PATH="$1" XC_PO_PATH="$2" XC_PO2LMO="$3" \
+  XC_POT_PATH="$1" XC_PO_PATH="$2" XC_PO2LMO="$3" XC_LUCI_SOURCE_DIR="${4:-luasrc}" \
     sh scripts/check-package.sh > "$tmp/output" 2>&1
 }
+
+cp -R luasrc "$tmp/luasrc"
+cat > "$tmp/luasrc/multiline.lua" <<'EOF'
+local translated = translate(
+  "Multiline translate label"
+)
+local shorthand = _(
+  "Multiline underscore label"
+)
+local same_line = translate("Warning")
+-- translate("Comment-only label")
+local arbitrary = 'translate("String-only label")'
+return translated, shorthand, same_line
+EOF
+cat > "$tmp/luasrc/commented.htm" <<'EOF'
+<!-- <%:Comment-only template label%> -->
+<script type="text/javascript">
+// translate("Comment-only JavaScript label")
+var arbitrary = '_("String-only JavaScript label")';
+</script>
+EOF
+cp po/templates/xc.pot "$tmp/source-multiline.pot"
+cat >> "$tmp/source-multiline.pot" <<'EOF'
+
+msgid "Multiline translate label"
+msgstr ""
+
+msgid "Multiline underscore label"
+msgstr ""
+EOF
+cp po/zh_Hans/xc.po "$tmp/source-multiline.po"
+cat >> "$tmp/source-multiline.po" <<'EOF'
+
+msgid "Multiline translate label"
+msgstr "多行翻译标签"
+
+msgid "Multiline underscore label"
+msgstr "多行简写标签"
+EOF
+if ! run_check "$tmp/source-multiline.pot" "$tmp/source-multiline.po" /usr/bin/po2lmo "$tmp/luasrc"; then
+  echo "FAIL valid multiline LuCI gettext calls were not discovered"
+  cat "$tmp/output"
+  failures=$((failures + 1))
+fi
 
 make_multiline po/templates/xc.pot "$tmp/multiline.pot"
 make_multiline po/zh_Hans/xc.po "$tmp/multiline.po"
