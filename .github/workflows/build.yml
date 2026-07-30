@@ -12,16 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check file syntax
+      - name: Install host test runtimes
         run: |
           set -eu
-          echo "=== Lua syntax ==="
-          for f in tests/test_*.lua; do
-            if command -v lua5.1 >/dev/null 2>&1; then
-              lua5.1 -e "assert(loadfile('$f'))" || exit 1
-            fi
-          done
-          echo "PASS: all Lua files parse"
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+          lua5.1 -v
+          node --version
+      - name: Run complete host verification
+        env:
+          LUA51: lua5.1
+        run: |
+          set -eu
+          sh tests/run-host.sh
 
   build-21_02:
     needs: test

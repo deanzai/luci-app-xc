@@ -272,7 +272,13 @@ if ! awk -F '\t' '
 fi
 
 if [ -n "${XC_PACKAGE_ROOT:-}" ]; then
-  check "$XC_PACKAGE_ROOT/usr/lib/lua/luci/i18n/xc.zh-cn.lmo"
+  package_lmo="$XC_PACKAGE_ROOT/usr/lib/lua/luci/i18n/xc.zh-cn.lmo"
+  if [ -s "$package_lmo" ]; then
+    echo "OK  $package_lmo"
+  else
+    echo "FAIL  package translation is missing or empty: /usr/lib/lua/luci/i18n/xc.zh-cn.lmo"
+    failures=$(( failures + 1 ))
+  fi
 else
   po2lmo_tool="${XC_PO2LMO:-}"
   if [ -z "$po2lmo_tool" ]; then po2lmo_tool=$(command -v po2lmo 2>/dev/null || true); fi

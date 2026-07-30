@@ -15,6 +15,22 @@ t.test("package release is bumped for the replacement IPK", function()
   t.contains(read_file("Makefile"), "PKG_RELEASE:=2")
 end)
 
+t.test("CI installs required runtimes and runs the complete host verification", function()
+  local workflow = read_file(".github/workflows/build.yml")
+  local aggregate = read_file("tests/run-host.sh")
+  t.contains(workflow, "apt-get install -y lua5.1")
+  t.contains(workflow, "lua5.1 -v")
+  t.contains(workflow, "node --version")
+  t.contains(workflow, "sh tests/run-host.sh")
+  t.eq(workflow:find("if command -v lua5.1", 1, true), nil)
+  t.contains(aggregate, '"$lua51" tests/run.lua')
+  t.contains(aggregate, "node tests/test_task9_ui.js")
+  t.contains(aggregate, "node tests/test_log_ui.js")
+  t.contains(aggregate, "node tests/test_status.js")
+  t.contains(aggregate, "sh tests/test_check_package.sh")
+  t.contains(aggregate, "sh scripts/check-package.sh")
+end)
+
 for _, path in ipairs({
   "root/etc/config/xc", "root/etc/init.d/xc",
   "root/usr/bin/xc", "luasrc/controller/xc.lua"
