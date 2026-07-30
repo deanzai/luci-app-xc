@@ -50,6 +50,11 @@ local function controller_fixture(options)
       revert = function() state.reverts = state.reverts + 1; return true end
     },
     fs = {
+      ensure_layout = function()
+        state.layout_calls = (state.layout_calls or 0) + 1
+        if options.layout_throw then error("path=layout-secret") end
+        return options.layout_ok ~= false
+      end,
       read = function() return "" end,
       remove = function() return true end,
       read_tail = options.read_tail or function(path, maximum)
@@ -134,6 +139,16 @@ local function controller_fixture(options)
   for name in pairs(replacements) do package.loaded[name] = saved[name] end
   return controller, state
 end
+
+t.test("controller fails closed before runtime status when protected layout is unavailable", function()
+  for _, options in ipairs({ { layout_ok = false }, { layout_throw = true } }) do
+    local controller, state = controller_fixture(options)
+    controller.action_status()
+    t.eq(state.response.ok, false)
+    t.eq(state.response.code, "internal_error")
+    t.eq(state.layout_calls, 1)
+  end
+end)
 
 t.test("get-log returns merged structured entries and an XC-only clear scope", function()
   local xc_line = "xc-warning"

@@ -116,6 +116,8 @@ end
 local function new_backend()
   local called, adapters = pcall(platform.new)
   if not called or type(adapters) ~= "table" then return nil end
+  local layout_called, layout_ok = pcall(adapters.fs.ensure_layout)
+  if not layout_called or layout_ok ~= true then return nil end
   local runtime_called, runtime_instance = pcall(runtime_module.new, adapters)
   if not runtime_called or not runtime_instance then return nil end
   return adapters, runtime_instance

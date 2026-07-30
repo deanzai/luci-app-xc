@@ -13,7 +13,7 @@ local TRANSACTION = "/etc/xc/rollback/transaction"
 local STATUS = "/var/run/xc-status"
 local LOG = "/var/log/xc.log"
 local LOG_LOCK = "/var/lock/xc-log.lock"
-local EXIT_IP_CACHE = "/tmp/xc-exit-ip"
+local EXIT_IP_CACHE = "/var/etc/xc/exit-ip-cache"
 
 local function checksum(value)
   local hash = 5381
@@ -335,6 +335,10 @@ local function occurrences(value, sought)
     count, offset = count + 1, last + 1
   end
 end
+
+t.test("exit IP cache resides under the protected runtime directory", function()
+  t.eq(runtime.paths.exit_ip_cache, "/var/etc/xc/exit-ip-cache")
+end)
 
 t.test("render rejects missing and disabled active nodes", function()
   local missing = fixture({ global = { active_node = "gone", socks_port = 7890, http_port = 10809 }, nodes = { node("only", true) } })
