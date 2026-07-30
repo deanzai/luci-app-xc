@@ -296,53 +296,93 @@ t.test("rpcd ACL and ucitrack grant access only to xc", function()
   t.contains(track, '"init": "xc"')
 end)
 
-t.test("translation catalogs cover visible XC menu button and status strings", function()
-  local pot = read_file("po/templates/xc.pot")
-  local po = read_file("po/zh_Hans/xc.po")
-  local function catalog(value, translated)
-    local entries, current = {}
-    for line in value:gmatch("[^\r\n]+") do
-      local id = line:match('^msgid "(.*)"$')
-      if id then current = id; if not translated then entries[id] = true end end
-      local message = line:match('^msgstr "(.*)"$')
-      if translated and message and current then entries[current] = message end
+t.test("translation catalogs are unique complete and fully translated", function()
+  local function unquote(value)
+    local chunk = assert(loadstring("return " .. value))
+    return chunk()
+  end
+
+  local function parse_catalog(path, require_translation)
+    local entries, seen, block = {}, {}, nil
+    local function finish()
+      if not block then return end
+      t.eq(block.fuzzy, false, path .. " fuzzy msgid " .. block.msgid)
+      if block.msgid == "" then block = nil; return end
+      t.eq(seen[block.msgid], nil, path .. " duplicate msgid " .. block.msgid)
+      seen[block.msgid] = true
+      if require_translation then
+        t.truthy(block.msgstr and block.msgstr ~= "", path .. " empty msgstr " .. block.msgid)
+      end
+      entries[block.msgid] = block.msgstr
+      block = nil
     end
-    return entries
+    for line in (read_file(path) .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+      if line == "" then
+        finish()
+      elseif line:match("^#,") and line:match("fuzzy") then
+        block = block or { msgid = "", msgstr = "", field = nil, fuzzy = false }
+        block.fuzzy = true
+      else
+        local field, quoted = line:match("^(msgid)%s+(\".*\")$")
+        if not field then field, quoted = line:match("^(msgstr)%s+(\".*\")$") end
+        if field then
+          block = block or { msgid = "", msgstr = "", field = nil, fuzzy = false }
+          block[field], block.field = unquote(quoted), field
+        elseif block and block.field and line:match('^"') then
+          block[block.field] = block[block.field] .. unquote(line)
+        end
+      end
+    end
+    finish()
+    return entries, seen
   end
-  local template_entries = catalog(pot, false)
-  local translations = catalog(po, true)
+
   local required = {}
-  local function require_message(message) required[message] = true end
-  for _, path in ipairs({
-    "luasrc/controller/xc.lua", "luasrc/model/cbi/xc/settings.lua",
-    "luasrc/model/cbi/xc/nodes.lua", "luasrc/model/cbi/xc/node.lua",
-    "luasrc/model/cbi/xc/log.lua", "luasrc/view/xc/status.htm",
-    "luasrc/view/xc/node_table.htm", "luasrc/view/xc/import.htm",
-    "luasrc/view/xc/log.htm"
-  }) do
+  local source_list = os.tmpname()
+  t.eq(os.execute("find luasrc -type f \\( -name '*.lua' -o -name '*.htm' \\) -print > " .. source_list), 0,
+    "unable to discover LuCI sources")
+  local files = assert(io.open(source_list, "r"))
+  for path in files:lines() do
     local source = read_file(path)
-    for message in source:gmatch('translate%(%s*"([^"\r\n]+)"') do require_message(message) end
-    for message in source:gmatch('_%(%s*"([^"\r\n]+)"') do require_message(message) end
-    for message in source:gmatch('<%%:([^%%\r\n]+)%%>') do require_message(message) end
+    for message in source:gmatch('translate%(%s*"([^"\r\n]+)"') do required[message] = true end
+    for message in source:gmatch('_%(%s*"([^"\r\n]+)"') do required[message] = true end
+    for message in source:gmatch('<%%:([^%%\r\n]+)%%>') do required[message] = true end
   end
-  for _, message in ipairs({
-    "Add", "Edit", "Delete", "Switch", "Probe all", "Import", "Running", "Stopped",
-    "Working…", "Operation completed", "Operation failed", "Rollback",
-    "Runtime status", "Service", "SOCKS listener", "HTTP listener", "Exit IP",
-    "Restart service", "Manual rollback", "Local import", "Test all", "Test"
-  }) do
-    require_message(message)
-  end
+  files:close()
+  os.remove(source_list)
+
+  local template_entries = parse_catalog("po/templates/xc.pot", false)
+  local translations = parse_catalog("po/zh_Hans/xc.po", true)
   for message in pairs(required) do
-    t.truthy(template_entries[message], "POT missing " .. message)
-    t.truthy(translations[message] and translations[message] ~= "", "Simplified Chinese translation missing " .. message)
+    t.truthy(template_entries[message] ~= nil, "POT missing " .. message)
+    t.truthy(translations[message] ~= nil, "Simplified Chinese translation missing " .. message)
+  end
+  for message in pairs(template_entries) do
+    t.truthy(required[message], "POT contains obsolete msgid " .. message)
+  end
+  for message in pairs(translations) do
+    t.truthy(required[message], "PO contains obsolete msgid " .. message)
+  end
+
+  local untranslated_allowlist = { XC = true, Xray = true, OK = true, UUID = true }
+  for message, translation in pairs(translations) do
+    if not untranslated_allowlist[message] then
+      t.truthy(translation ~= message, "untranslated Simplified Chinese msgid " .. message)
+    end
+  end
+  local canonical = {
+    ["Test"] = "测速", ["Test all"] = "全部测速", ["Stop testing"] = "停止测速",
+    ["Latency"] = "延迟", ["Warning"] = "警告", ["Info"] = "信息", ["Debug"] = "调试"
+  }
+  for message, translation in pairs(canonical) do
+    t.eq(translations[message], translation, "non-canonical translation for " .. message)
   end
 end)
 
 t.test("probe and import templates translate every stable visible state and warning", function()
   local probe = read_file("luasrc/view/xc/node_table.htm")
   local import = read_file("luasrc/view/xc/import.htm")
-  for _, message in ipairs({ "Error", "Failed", "Timed out", "Testing…", "Stopped", "Probe" }) do
+  for _, message in ipairs({ "Error", "Failed", "Timed out", "Testing…", "Stopped", "Test" }) do
     t.contains(probe, 'translate("' .. message .. '")', "probe does not translate " .. message)
   end
   for _, literal in ipairs({

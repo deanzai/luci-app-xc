@@ -56,7 +56,7 @@ t.test("controller validates UCI section IDs and bounds request bodies before pa
   t.contains(source, 'REQUEST_BODY_MAX = 512 * 1024')
   t.contains(source, 'http.getenv("CONTENT_LENGTH")')
   t.contains(source, 'if length_text == nil then failure("validation_failed")')
-  t.contains(source, 'http.content()')
+  t.contains(source, 'pcall(http.content)')
   t.contains(source, 'request_too_large')
 end)
 

@@ -11,6 +11,10 @@ t.test("Makefile exists", function()
   t.truthy(io.open("Makefile", "r"), "Makefile is missing")
 end)
 
+t.test("package release is bumped for the replacement IPK", function()
+  t.contains(read_file("Makefile"), "PKG_RELEASE:=2")
+end)
+
 for _, path in ipairs({
   "root/etc/config/xc", "root/etc/init.d/xc",
   "root/usr/bin/xc", "luasrc/controller/xc.lua"
