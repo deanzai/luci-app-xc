@@ -138,7 +138,20 @@ local function fixture(options)
   local original_active = global.active_node
   local state = { events = events, files = files, global = global, writes = {}, validation_deadlines = {} }
   local generation_count = 0
+  local held_locks = {}
   local function event(value) events[#events + 1] = value end
+  local function acquire_fixture_lock(path)
+    event("fs:lock:" .. path)
+    if options.throw_acquire then error("token=lock-secret") end
+    if options.busy or held_locks[path] then return nil end
+    held_locks[path] = true
+    return { path = path, kernel_flock = true }
+  end
+  local function release_fixture_lock(lock)
+    event("fs:unlock:" .. tostring(lock and lock.path))
+    if lock then held_locks[lock.path] = nil end
+    return options.release_ok ~= false
+  end
   local uci = {
     get_global = function() event("uci:get_global"); return global end,
     list_nodes = function() event("uci:list_nodes"); return nodes end,
@@ -173,13 +186,8 @@ local function fixture(options)
     revert = function() event("uci:revert"); global.active_node = original_active; return true end
   }
   local fs = {
-    acquire_lock = function(path)
-      event("fs:lock:" .. path)
-      if options.throw_acquire then error("token=lock-secret") end
-      if options.busy then return nil end
-      return { path = path, kernel_flock = true }
-    end,
-    release_lock = function(lock) event("fs:unlock:" .. tostring(lock and lock.path)); return options.release_ok ~= false end,
+    acquire_lock = acquire_fixture_lock,
+    release_lock = release_fixture_lock,
     lock_state = function(path)
       event("fs:lock_state:" .. path)
       if options.lock_state then return options.lock_state(path) end
@@ -228,6 +236,14 @@ local function fixture(options)
     end,
     exists = function(path) event("fs:exists:" .. path); return files[path] ~= nil end,
     write_temp = function(path, content)
+      if path == EXIT_IP_CACHE and options.cache_write_race then
+        local competing_lock = acquire_fixture_lock(LOCK)
+        if competing_lock then
+          state.competing_switch_started = true
+          global.active_node = "new"
+          release_fixture_lock(competing_lock)
+        end
+      end
       local temporary = path .. ".tmp.123"
       event("fs:write_temp:" .. temporary)
       state.writes[#state.writes + 1] = { path = path, content = content }
@@ -915,16 +931,29 @@ t.test("status drops exit observations when active node or runtime lock changes"
   local status = changed_node.runtime:status()
   t.eq(status.exit_ip, nil)
   t.eq(changed_node.files[EXIT_IP_CACHE], nil)
+  t.truthy(event_index(changed_node.events, "fs:lock:" .. LOCK))
+  t.truthy(event_index(changed_node.events, MAIN_UNLOCK))
 
-  local held = false
-  local changed_lock = fixture({
-    exit_ip = "203.0.113.21",
-    lock_state = function() return held and "held" or "unlocked" end,
-    observe_hook = function() held = true end
-  })
+  local changed_lock_options = { exit_ip = "203.0.113.21" }
+  changed_lock_options.lock_state = function() return changed_lock_options.busy and "held" or "unlocked" end
+  changed_lock_options.observe_hook = function() changed_lock_options.busy = true end
+  local changed_lock = fixture(changed_lock_options)
   status = changed_lock.runtime:status()
   t.eq(status.exit_ip, nil)
   t.eq(changed_lock.files[EXIT_IP_CACHE], nil)
+end)
+
+t.test("exit cache commit excludes a switch starting after the final context check", function()
+  local state = fixture({ exit_ip = "203.0.113.22", cache_write_race = true })
+  local status = state.runtime:status()
+  t.eq(state.competing_switch_started, nil)
+  t.eq(state.global.active_node, "old")
+  t.eq(status.exit_ip, "203.0.113.22")
+  t.eq(state.files[EXIT_IP_CACHE], "node=old\nobserved_at=1785326400\nip=203.0.113.22\n")
+  local locked = assert(event_index(state.events, "fs:lock:" .. LOCK))
+  local replaced = assert(event_index(state.events, "fs:rename:" .. EXIT_IP_CACHE .. ".tmp.123:" .. EXIT_IP_CACHE))
+  local unlocked = assert(event_index(state.events, MAIN_UNLOCK))
+  t.truthy(locked < replaced and replaced < unlocked)
 end)
 
 t.test("status never returns another node cache across a switch race", function()
@@ -942,7 +971,7 @@ t.test("status never returns another node cache across a switch race", function(
   t.eq(status.exit_ip, nil)
 end)
 
-t.test("status reuses a fresh cache when an unlocked operation marker is stale", function()
+t.test("exit cache fails closed on a non-idle operation marker", function()
   local files = {
     [STATUS] = "operation=switch\ntime=1\n",
     [EXIT_IP_CACHE] = "node=old\nobserved_at=999\nip=203.0.113.31\n"
@@ -950,7 +979,7 @@ t.test("status reuses a fresh cache when an unlocked operation marker is stale",
   local state = fixture({ shared_files = files, wall_time = function() return 1000 end })
   local status = state.runtime:status()
   t.eq(status.operation, "idle")
-  t.eq(status.exit_ip, "203.0.113.31")
+  t.eq(status.exit_ip, nil)
 end)
 
 t.test("exit IP status accepts strict IPv4 and IPv6 forms and rejects malformed addresses", function()

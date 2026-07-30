@@ -647,12 +647,21 @@ local function parse_exit_ip_cache(value, active, wall_now)
   return ip
 end
 
-function Runtime:_exit_context_current(section_id)
-  local global = self.uci.get_global()
-  if type(global) ~= "table" or global.active_node ~= section_id then return false end
-  if self.fs.lock_state(LOCK_PATH) ~= "unlocked" then return false end
-  if self:_read_optional(TRANSACTION_PATH, 1024) ~= nil then return false end
-  return true
+function Runtime:_with_exit_context(section_id, fn)
+  local acquired, lock = pcall(self.fs.acquire_lock, LOCK_PATH)
+  if not acquired or not lock then return false end
+  local called, context_ok = xpcall(function()
+    local global = self.uci.get_global()
+    if type(global) ~= "table" or global.active_node ~= section_id then return false end
+    if self:_read_optional(TRANSACTION_PATH, 1024) ~= nil then return false end
+    local shared_status = self:_read_optional(STATUS_PATH, 1024) or ""
+    local operation = shared_status:match("operation=([A-Za-z_]+)") or "idle"
+    if operation ~= "idle" then return false end
+    fn()
+    return true
+  end, function() return false end)
+  local released, release_value = pcall(self.fs.release_lock, lock)
+  return called and context_ok and released and action_ok(release_value)
 end
 
 function Runtime:_cached_exit_ip(section_id, wall_now)
@@ -846,19 +855,22 @@ function Runtime:status()
     if can_observe then
       local wall_now = self.wall_time()
       local cached = self:_cached_exit_ip(safe_active, wall_now)
-      if cached and self:_exit_context_current(safe_active) then
-        exit_ip = cached
+      if cached then
+        if not self:_with_exit_context(safe_active, function() exit_ip = cached end) then exit_ip = nil end
       elseif not cached then
         local observation_deadline = self.now() + 5
         local observed, observed_value = pcall(self.exec.observe_exit_ip, "socks", address, tonumber(global.socks_port), global.health_url, observation_deadline)
         if observed and type(observed_value) == "string" then
           observed_value = observed_value:match("^%s*(.-)%s*$")
-          if valid_observed_ip(observed_value) and self:_exit_context_current(safe_active) then
-            exit_ip = observed_value
-            local observed_at = self.wall_time()
-            if type(observed_at) == "number" and observed_at >= 0 and observed_at == math.floor(observed_at) then
-              pcall(self._atomic_write, self, EXIT_IP_CACHE_PATH, "node=" .. safe_active .. "\nobserved_at=" .. tostring(observed_at) .. "\nip=" .. observed_value .. "\n")
-            end
+          if valid_observed_ip(observed_value) then
+            local context_ok = self:_with_exit_context(safe_active, function()
+              exit_ip = observed_value
+              local observed_at = self.wall_time()
+              if type(observed_at) == "number" and observed_at >= 0 and observed_at == math.floor(observed_at) then
+                pcall(self._atomic_write, self, EXIT_IP_CACHE_PATH, "node=" .. safe_active .. "\nobserved_at=" .. tostring(observed_at) .. "\nip=" .. observed_value .. "\n")
+              end
+            end)
+            if not context_ok then exit_ip = nil end
           end
         end
       end
