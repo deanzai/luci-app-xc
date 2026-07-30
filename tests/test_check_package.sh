@@ -30,6 +30,16 @@ local shorthand = _(
 local same_line = translate("Warning")
 -- translate("Comment-only label")
 local arbitrary = 'translate("String-only label")'
+--[[
+translate("Long-comment level-zero label")
+_("Long-comment level-zero shorthand")
+]]
+--[=[
+translate("Long-comment level-one label")
+_("Long-comment level-one shorthand")
+]=]
+local long_string = [[translate("Long-string level-zero label")]]
+local long_string_equals = [=[_("Long-string level-one label")]=]
 return translated, shorthand, same_line
 EOF
 cat > "$tmp/luasrc/commented.htm" <<'EOF'

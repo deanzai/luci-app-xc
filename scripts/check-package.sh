@@ -57,6 +57,18 @@ if [ ! -d "$source_dir" ]; then
 else
   find "$source_dir" -type f \( -name '*.lua' -o -name '*.htm' \) -exec awk '
   function identifier(c) { return c ~ /^[A-Za-z0-9_]$/ }
+  function long_level(text, position, comment, cursor, level) {
+    cursor = position + (comment ? 2 : 0)
+    if (substr(text, cursor, 1) != "[") return -1
+    cursor++; level = 0
+    while (substr(text, cursor, 1) == "=") { cursor++; level++ }
+    return substr(text, cursor, 1) == "[" ? level : -1
+  }
+  function long_delimiter(level, value) {
+    value = "]"
+    while (level > 0) { value = value "="; level-- }
+    return value "]"
+  }
   function reset_file() {
     mode = "normal"; stage = 0; captured = ""; escaped = 0
   }
@@ -82,8 +94,10 @@ else
         if (substr(line, i, 3) == "-->") { mode = "normal"; i += 3 } else i++
         continue
       }
-      if (mode == "long_string") {
-        if (pair == "]]" ) { mode = "normal"; i += 2 } else i++
+      if (mode == "long_comment" || mode == "long_string") {
+        if (substr(line, i, length(long_close)) == long_close) {
+          mode = "normal"; i += length(long_close)
+        } else i++
         continue
       }
       if (mode == "skip_string") {
@@ -129,10 +143,17 @@ else
         finish = index(rest, "%>")
         if (finish) { print substr(rest, 1, finish - 1); i += finish + 4; continue }
       }
+      level = long_level(line, i, 1)
+      if (level >= 0) {
+        mode = "long_comment"; long_close = long_delimiter(level); i += level + 4; continue
+      }
       if (pair == "--" || pair == "//") break
       if (pair == "/*") { mode = "block_comment"; i += 2; continue }
       if (substr(line, i, 4) == "<!--") { mode = "html_comment"; i += 4; continue }
-      if (pair == "[[") { mode = "long_string"; i += 2; continue }
+      level = long_level(line, i, 0)
+      if (level >= 0) {
+        mode = "long_string"; long_close = long_delimiter(level); i += level + 2; continue
+      }
       if (c == "\"" || c == "\047") { mode = "skip_string"; quote = c; escaped = 0; i++; continue }
 
       token = ""
