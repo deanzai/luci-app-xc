@@ -50,6 +50,23 @@ trap 'rm -rf "$translation_tmp"' EXIT HUP INT TERM
 pot_path="${XC_POT_PATH:-po/templates/xc.pot}"
 po_path="${XC_PO_PATH:-po/zh_Hans/xc.po}"
 source_dir="${XC_LUCI_SOURCE_DIR:-luasrc}"
+
+{
+  printf '%s\n' Makefile "$pot_path" "$po_path"
+  [ ! -d root ] || find root -type f -print
+  [ ! -d scripts ] || find scripts -type f -name '*.sh' -print
+  [ ! -d tests ] || find tests -type f -name '*.sh' -print
+  [ ! -d "$source_dir" ] || find "$source_dir" -type f \( -name '*.lua' -o -name '*.htm' \) -print
+} | sort -u > "$translation_tmp/lf-files"
+carriage_return=$(printf '\r')
+while IFS= read -r text_path; do
+  [ -f "$text_path" ] || continue
+  if LC_ALL=C grep -q "$carriage_return" "$text_path"; then
+    echo "FAIL  CRLF line endings are forbidden: $text_path"
+    failures=$(( failures + 1 ))
+  fi
+done < "$translation_tmp/lf-files"
+
 if [ ! -d "$source_dir" ]; then
   echo "FAIL  LuCI source directory is missing: $source_dir"
   failures=$(( failures + 1 ))

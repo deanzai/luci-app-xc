@@ -15,6 +15,37 @@ t.test("package release is bumped for the replacement IPK", function()
   t.contains(read_file("Makefile"), "PKG_RELEASE:=2")
 end)
 
+t.test("package and translation versions stay aligned", function()
+  t.contains(read_file("Makefile"), "PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)")
+end)
+
+t.test("repository attributes force package text to LF", function()
+  t.contains(read_file(".gitattributes"), "* text=auto eol=lf")
+end)
+
+t.test("Linux package and gettext source files contain no carriage returns", function()
+  local manifest = "tests/tmp/lf-files"
+  local command = table.concat({
+    "mkdir -p tests/tmp && find root scripts tests po luasrc",
+    "-path 'tests/tmp' -prune -o -type f \\\(",
+    "-path 'root/usr/bin/*' -o -path 'root/etc/init.d/*'",
+    "-o -path 'root/etc/hotplug.d/*' -o -path 'root/etc/uci-defaults/*'",
+    "-o -name '*.sh' -o -name '*.lua' -o -name '*.htm'",
+    "-o -name '*.po' -o -name '*.pot' \\\) -print | sort > " .. manifest
+  }, " ")
+  assert(os.execute(command) == 0)
+
+  local paths = { "Makefile" }
+  local handle = assert(io.open(manifest, "r"))
+  for path in handle:lines() do paths[#paths + 1] = path end
+  handle:close()
+  os.remove(manifest)
+
+  for _, path in ipairs(paths) do
+    t.eq(read_file(path):find("\r", 1, true), nil, path .. " must use LF line endings")
+  end
+end)
+
 t.test("CI installs required runtimes and runs the complete host verification", function()
   local workflow = read_file(".github/workflows/build.yml")
   local aggregate = read_file("tests/run-host.sh")

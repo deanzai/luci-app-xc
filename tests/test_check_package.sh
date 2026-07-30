@@ -95,6 +95,17 @@ if ! grep -q '^OK  generated /usr/lib/lua/luci/i18n/xc.zh-cn.lmo$' "$tmp/output"
   failures=$((failures + 1))
 fi
 
+cp -R luasrc "$tmp/crlf-luasrc"
+printf 'local value = true\r\nreturn value\r\n' > "$tmp/crlf-luasrc/crlf.lua"
+if run_check po/templates/xc.pot po/zh_Hans/xc.po "$po2lmo" "$tmp/crlf-luasrc"; then
+  echo "FAIL CRLF LuCI source was accepted"
+  failures=$((failures + 1))
+elif ! grep -Fq "FAIL  CRLF line endings are forbidden: $tmp/crlf-luasrc/crlf.lua" "$tmp/output"; then
+  echo "FAIL CRLF LuCI source did not return the stable error"
+  cat "$tmp/output"
+  failures=$((failures + 1))
+fi
+
 cp "$tmp/multiline.po" "$tmp/duplicate.po"
 printf '\nmsgid ""\n"Test"\nmsgstr "重复"\n' >> "$tmp/duplicate.po"
 if run_check "$tmp/multiline.pot" "$tmp/duplicate.po" "$po2lmo"; then
