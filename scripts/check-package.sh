@@ -41,9 +41,14 @@ check po/zh_Hans/xc.po
 
 echo ""
 echo "=== Translation catalog check ==="
+LC_ALL=C
+export LC_ALL
 translation_tmp="${TMPDIR:-/tmp}/xc-translation-check.$$"
+umask 077
 mkdir "$translation_tmp" || exit 1
 trap 'rm -rf "$translation_tmp"' EXIT HUP INT TERM
+pot_path="${XC_POT_PATH:-po/templates/xc.pot}"
+po_path="${XC_PO_PATH:-po/zh_Hans/xc.po}"
 
 awk '
 function emit(mark, rest, finish, value) {
@@ -72,21 +77,79 @@ function emit(mark, rest, finish, value) {
 { emit() }
 ' $(find luasrc -type f \( -name '*.lua' -o -name '*.htm' \) -print) | sort -u > "$translation_tmp/source"
 
-catalog_ids() {
-  awk '/^msgid "/ { value = substr($0, 8, length($0) - 8); if (value != "") print value }' "$1"
+parse_catalog() {
+  awk '
+  function decode(line, out, body, i, c, nextc, number, count) {
+    if (line !~ /^".*"$/) { malformed = 1; return "" }
+    body = substr(line, 2, length(line) - 2)
+    out = ""
+    for (i = 1; i <= length(body); i++) {
+      c = substr(body, i, 1)
+      if (c != "\\") { out = out c; continue }
+      i++
+      if (i > length(body)) { malformed = 1; return out }
+      nextc = substr(body, i, 1)
+      if (nextc == "n") out = out "\n"
+      else if (nextc == "r") out = out "\r"
+      else if (nextc == "t") out = out "\t"
+      else if (nextc == "\\" || nextc == "\"") out = out nextc
+      else if (nextc ~ /^[0-7]$/) {
+        number = nextc + 0
+        count = 1
+        while (count < 3 && i < length(body) && substr(body, i + 1, 1) ~ /^[0-7]$/) {
+          i++; count++; number = (number * 8) + substr(body, i, 1)
+        }
+        out = out sprintf("%c", number)
+      } else { malformed = 1; return out }
+    }
+    return out
+  }
+  function finish() {
+    if (!have) return
+    if (fuzzy) { print "fuzzy catalog entry: " id > "/dev/stderr"; malformed = 1 }
+    if (id != "") {
+      if (id ~ /[\t\r\n]/ || value ~ /[\t\r\n]/) {
+        print "unsupported control character in catalog entry" > "/dev/stderr"; malformed = 1
+      } else print id "\t" value
+    }
+    have = 0; field = ""; id = ""; value = ""; context = ""; fuzzy = 0
+  }
+  /^#,/ { if ($0 ~ /(^|[, ])fuzzy([, ]|$)/) fuzzy = 1; next }
+  /^msgctxt / { context = decode(substr($0, 9)); field = "context"; next }
+  /^msgid / {
+    if (have) finish()
+    have = 1; id = decode(substr($0, 7)); field = "id"; next
+  }
+  /^msgstr / { if (!have) malformed = 1; value = decode(substr($0, 8)); field = "value"; next }
+  /^msgid_plural / || /^msgstr\[/ { malformed = 1; next }
+  /^"/ {
+    continued = decode($0)
+    if (field == "id") id = id continued
+    else if (field == "value") value = value continued
+    else if (field == "context") context = context continued
+    else malformed = 1
+    next
+  }
+  /^[[:space:]]*$/ { finish(); next }
+  /^#/ { next }
+  { malformed = 1 }
+  END { finish(); exit malformed }
+  ' "$1"
 }
 
-catalog_ids po/templates/xc.pot > "$translation_tmp/pot-all"
-catalog_ids po/zh_Hans/xc.po > "$translation_tmp/po-all"
+if ! parse_catalog "$pot_path" > "$translation_tmp/pot-records"; then
+  echo "FAIL  $pot_path is not a supported valid gettext catalog"
+  failures=$(( failures + 1 ))
+fi
+if ! parse_catalog "$po_path" > "$translation_tmp/po-records"; then
+  echo "FAIL  $po_path is not a supported valid gettext catalog"
+  failures=$(( failures + 1 ))
+fi
+cut -f1 "$translation_tmp/pot-records" > "$translation_tmp/pot-all"
+cut -f1 "$translation_tmp/po-records" > "$translation_tmp/po-all"
 sort -u "$translation_tmp/pot-all" > "$translation_tmp/pot"
 sort -u "$translation_tmp/po-all" > "$translation_tmp/po"
 
-for catalog in po/templates/xc.pot po/zh_Hans/xc.po; do
-  if grep -q '^#,.*fuzzy' "$catalog"; then
-    echo "FAIL  $catalog contains fuzzy entries"
-    failures=$(( failures + 1 ))
-  fi
-done
 for kind in pot po; do
   if [ "$(wc -l < "$translation_tmp/$kind-all")" -ne "$(wc -l < "$translation_tmp/$kind")" ]; then
     echo "FAIL  $kind catalog contains duplicate msgids"
@@ -98,17 +161,16 @@ for kind in pot po; do
   fi
 done
 
-if ! awk '
-  /^msgid "/ { id = substr($0, 8, length($0) - 8); next }
-  /^msgstr "/ {
-    value = substr($0, 9, length($0) - 9)
-    if (id != "" && value == "") { print "empty translation: " id; failed = 1 }
-    if (id != "" && value == id && id != "XC" && id != "Xray" && id != "OK" && id != "UUID") {
+if ! awk -F '\t' '
+  {
+    id = $1; value = $2
+    if (value == "") { print "empty translation: " id; failed = 1 }
+    if (value == id && id != "XC" && id != "Xray" && id != "OK" && id != "UUID") {
       print "untranslated entry: " id; failed = 1
     }
   }
   END { exit failed }
-' po/zh_Hans/xc.po; then
+' "$translation_tmp/po-records"; then
   echo "FAIL  Simplified Chinese catalog has empty or untranslated entries"
   failures=$(( failures + 1 ))
 fi
@@ -116,7 +178,18 @@ fi
 if [ -n "${XC_PACKAGE_ROOT:-}" ]; then
   check "$XC_PACKAGE_ROOT/usr/lib/lua/luci/i18n/xc.zh-cn.lmo"
 else
-  echo "EXPECT  /usr/lib/lua/luci/i18n/xc.zh-cn.lmo in built luci-i18n-xc-zh-cn package"
+  po2lmo_tool="${XC_PO2LMO:-}"
+  if [ -z "$po2lmo_tool" ]; then po2lmo_tool=$(command -v po2lmo 2>/dev/null || true); fi
+  lmo_output="$translation_tmp/xc.zh-cn.lmo"
+  if [ -z "$po2lmo_tool" ] || [ ! -x "$po2lmo_tool" ]; then
+    echo "FAIL  po2lmo is required to verify xc.zh-cn.lmo"
+    failures=$(( failures + 1 ))
+  elif "$po2lmo_tool" "$po_path" "$lmo_output" && [ -s "$lmo_output" ]; then
+    echo "OK  generated /usr/lib/lua/luci/i18n/xc.zh-cn.lmo"
+  else
+    echo "FAIL  unable to generate a non-empty xc.zh-cn.lmo"
+    failures=$(( failures + 1 ))
+  fi
 fi
 echo ""
 echo "=== Workflow check ==="

@@ -42,7 +42,10 @@ local level_options = {
   var clearConfirmText = <%=util.serialize_json(translate("Clear the XC log? Shared system entries will remain."))%>;
   var clearOkText = <%=util.serialize_json(translate("XC entries cleared. Xray and system entries remain."))%>;
   var clearFailText = <%=util.serialize_json(translate("Unable to clear the log"))%>;
-  var sourceLabels = { xc: "XC", xray: "Xray" };
+  var sourceLabels = {
+    xc: <%=util.serialize_json(translate("XC"))%>,
+    xray: <%=util.serialize_json(translate("Xray"))%>
+  };
 
   var container = document.getElementById("xc-log-container");
   var state = document.getElementById("xc-log-state");

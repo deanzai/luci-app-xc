@@ -17,6 +17,10 @@ function fixScript(source) {
 
 const logSource = fs.readFileSync("luasrc/view/xc/log.htm", "utf8");
 assert.ok(logSource.includes('translate("Warning")'), "template has Warning level");
+assert.ok(logSource.includes('translate("XC")'), "XC source label is translated server-side");
+assert.ok(logSource.includes('translate("Xray")'), "Xray source label is translated server-side");
+assert.ok(logSource.includes('util.serialize_json(translate("XC"))'), "XC label is safely serialized");
+assert.ok(logSource.includes('util.serialize_json(translate("Xray"))'), "Xray label is safely serialized");
 assert.ok(logSource.indexOf("textContent") >= 0, "template uses safe textContent");
 assert.ok(logSource.indexOf("innerHTML") === -1, "template avoids innerHTML");
 assert.ok(logSource.indexOf("payload.data.entries") >= 0, "template reads structured entries");

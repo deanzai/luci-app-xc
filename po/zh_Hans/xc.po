@@ -342,6 +342,9 @@ msgstr "WebSocket 路径"
 msgid "Working…"
 msgstr "正在处理…"
 
+msgid "XC"
+msgstr "XC"
+
 msgid "XC entries cleared. Xray and system entries remain."
 msgstr "XC 日志已清空，Xray 和系统日志仍保留。"
 
@@ -353,6 +356,9 @@ msgstr "Xray 日志级别"
 
 msgid "Xray node switching"
 msgstr "Xray 节点切换"
+
+msgid "Xray"
+msgstr "Xray"
 
 msgid "Yes"
 msgstr "是"
