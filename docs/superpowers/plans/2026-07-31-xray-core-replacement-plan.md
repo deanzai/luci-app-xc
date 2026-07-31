@@ -1,6 +1,6 @@
 # XC Xray-core 手动替换功能实施计划
 
-> 状态：实施中（21.02 设备验收已完成；24.10 设备复测、错误注入和最终发布验收待执行）
+> 状态：已完成（21.02/24.10 设备验收、错误注入和主机/构建验证均已完成）
 >
 > 目标版本：在不覆盖 OpenWrt/ImmortalWrt `xray-core` 软件包文件的前提下，支持通过 LuCI 上传自建或官方编译的 Xray-core、校验兼容性、切换运行版本、失败自动恢复和手动回滚。
 
@@ -235,10 +235,10 @@ core_delete_failed
 - 新增：`tests/test_core.lua`
 - 修改：`tests/test_platform_static.lua`
 
-- [ ] 先写失败测试：路径、ID、manifest、`system` 解析、非法字符、符号链接和版本列表边界。
-- [ ] 定义 64 MiB 文件限制、manifest 字段上限、版本 ID 白名单和公开返回字段。
-- [ ] 实现纯 Lua 核心元数据模块，所有 IO 通过注入适配器完成。
-- [ ] 运行 Lua 5.1 核心测试和包静态检查。
+- [x] 先写失败测试：路径、ID、manifest、`system` 解析、非法字符、符号链接和版本列表边界。
+- [x] 定义 64 MiB 文件限制、manifest 字段上限、版本 ID 白名单和公开返回字段。
+- [x] 实现纯 Lua 核心元数据模块，所有 IO 通过注入适配器完成。
+- [x] 运行 Lua 5.1 核心测试和包静态检查。
 
 - [x] 实现 `core.lua` 安全 ID/路径/哈希/manifest/版本解析。
 - [x] 覆盖 `tests/test_core.lua`、`tests/test_coremanager.lua` 的路径、哈希、架构、事务与删除测试。
@@ -253,10 +253,10 @@ core_delete_failed
 - 新增：`tests/test_core_validation.lua`
 - 修改：`tests/test_check_package.sh`
 
-- [ ] 先写 ELF、架构、大小、SHA-256、版本输出和配置测试的失败用例。
-- [ ] 实现流式临时文件、空间检查、固定 argv 校验和原子安装。
-- [ ] 验证候选文件不会覆盖 `/usr/bin/xray`，也不会执行任意用户参数。
-- [ ] 覆盖上传中断、哈希不匹配、错误架构、非 ELF、超时和配置不兼容。
+- [x] 先写 ELF、架构、大小、SHA-256、版本输出和配置测试的失败用例。
+- [x] 实现流式临时文件、空间检查、固定 argv 校验和原子安装。
+- [x] 验证候选文件不会覆盖 `/usr/bin/xray`，也不会执行任意用户参数。
+- [x] 覆盖上传中断、哈希不匹配、错误架构、非 ELF、超时和配置不兼容。
 
 - [x] 实现 `coremanager.lua` ELF/架构/哈希/版本/`run -test` 五级校验。
 - [x] 实现 `platform.lua` 流式上传、SHA-256（`/usr/bin/sha256sum` 与 busybox 回退）、固定 argv 与原子写入。
@@ -273,11 +273,11 @@ core_delete_failed
 - 新增：`tests/test_core_runtime.lua`
 - 修改：`tests/test_platform_process.lua`
 
-- [ ] 先写失败测试：候选核心测试、切换前快照、服务失败恢复、重启恢复和系统核心回退。
-- [ ] 实现核心事务文件和 current/previous 原子标记。
-- [ ] 将核心路径注入现有 Xray `run -test`、服务 restart 和状态检查流程。
-- [ ] 用固定 argv 验证 init 脚本，不允许通过 shell 拼接核心路径。
-- [ ] 确认节点切换、节点回滚和核心回滚三者不会互相覆盖状态文件。
+- [x] 先写失败测试：候选核心测试、切换前快照、服务失败恢复、重启恢复和系统核心回退。
+- [x] 实现核心事务文件和 current/previous 原子标记。
+- [x] 将核心路径注入现有 Xray `run -test`、服务 restart 和状态检查流程。
+- [x] 用固定 argv 验证 init 脚本，不允许通过 shell 拼接核心路径。
+- [x] 确认节点切换、节点回滚和核心回滚三者不会互相覆盖状态文件。
 
 - [x] 实现 `current/previous/transaction` 标记、事务恢复与自动回滚。
 - [x] `runtime.lua` 节点切换、配置测试和回滚统一使用 `current` 标记解析的核心。
@@ -295,11 +295,11 @@ core_delete_failed
 - 修改：`root/usr/share/rpcd/acl.d/luci-app-xc.json`
 - 新增：`tests/test_controller_core.lua`
 
-- [ ] 先写端点鉴权、POST、CSRF、大小限制、路径注入和错误码测试。
-- [ ] 实现 multipart 流式上传，上传完成后只返回安全的校验摘要。
-- [ ] 实现无整页刷新的激活、回滚、删除操作和 busy 状态展示。
-- [ ] 删除操作拒绝当前版本、previous 版本和正在事务中的版本。
-- [ ] 处理恢复成功与恢复失败两种结果，向页面明确显示服务是否已停止。
+- [x] 先写端点鉴权、POST、CSRF、大小限制、路径注入和错误码测试。
+- [x] 实现 multipart 流式上传，上传完成后只返回安全的校验摘要。
+- [x] 实现无整页刷新的激活、回滚、删除操作和 busy 状态展示。
+- [x] 删除操作拒绝当前版本、previous 版本和正在事务中的版本。
+- [x] 处理恢复成功与恢复失败两种结果，向页面明确显示服务是否已停止。
 
 - [x] 控制器新增 `/core-status`、`/core-upload`、`/core-activate`、`/core-rollback`、`/core-delete` POST 端点。
 - [x] `core.htm` 使用 FormData 流式上传并校验 `core_file`/`sha256`/`note` 字段名与后端一致。
@@ -316,10 +316,10 @@ core_delete_failed
 - 修改：`tests/test_log_ui.js` 或新增 `tests/test_core_ui.js`
 - 修改：`README.md`、`README_EN.md`
 
-- [ ] 覆盖上传、哈希、架构、版本、当前、回滚、系统核心、恢复和错误提示的完整中文翻译。
-- [ ] 用 DOM/XHR 测试验证按钮禁用、确认、进度、结果和空列表行为。
-- [ ] 更新安装说明：正式包仍依赖 `xray-core`，手动版本只通过插件目录管理。
-- [ ] 更新隐私和安全说明，强调不会覆盖 `/usr/bin/xray`。
+- [x] 覆盖上传、哈希、架构、版本、当前、回滚、系统核心、恢复和错误提示的完整中文翻译。
+- [x] 用 DOM/XHR 测试验证按钮禁用、确认、进度、结果和空列表行为。
+- [x] 更新安装说明：正式包仍依赖 `xray-core`，手动版本只通过插件目录管理。
+- [x] 更新隐私和安全说明，强调不会覆盖 `/usr/bin/xray`。
 
 - [x] `po/templates/xc.pot` 与 `po/zh_Hans/xc.po` 补齐核心管理翻译。
 - [x] `tests/test_core_ui.js` 覆盖按钮禁用、确认、操作结果和空列表。
@@ -331,10 +331,10 @@ core_delete_failed
 - [x] 在 ImmortalWrt/OpenWrt 21.02 环境编译，安装前已备份 `/etc/config/xc` 和核心目录。
 - [x] 上传与设备架构匹配的测试核心，验证 SHA-256、版本和配置检查。
 - [x] 激活已安装且通过完整校验的手动核心，确认节点服务、7890/10809 监听、Exit IP 和日志正常。
-- [ ] 使用故意错误的核心、错误哈希和错误架构验证拒绝流程。
-- [ ] 验证激活后强制停止服务、模拟健康检查失败，确认自动恢复 previous。
-- [ ] 验证 previous 不存在时恢复 `system`，恢复失败时服务进入可识别的 recovery-required 状态。
-- [ ] 在 24.10 上重复核心上传、激活、回滚和 `opkg` 升级/重装兼容性验证。
+- [x] 使用故意错误的核心、错误哈希和错误架构验证拒绝流程（设备错误注入 + 主机适配器测试）。
+- [x] 验证激活后强制停止服务、模拟健康检查失败，确认自动恢复 previous（主机故障注入测试）。
+- [x] 验证 previous 不存在时恢复 `system`，恢复失败时服务进入可识别的 recovery-required 状态（主机故障注入测试，24.10 设备无 previous 时返回 `core_no_rollback`）。
+- [x] 在 24.10 上重复核心上传、激活、回滚和 `opkg` 升级/重装兼容性验证。
 - [x] 构建 21.02/24.10 适配主包和中文包，运行全部主机测试与包检查，并完成 21.02 目标设备验收。
 
 ## 8. 验收标准
