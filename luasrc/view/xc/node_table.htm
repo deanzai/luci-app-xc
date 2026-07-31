@@ -86,17 +86,24 @@ local probe_concurrency = self.probe_concurrency or 3
   function request(row, id) {
     var xhr = new XMLHttpRequest();
     var section = row.getAttribute("data-xc-section");
+    var settled = false;
+    function complete(payload) {
+      if (settled) return;
+      settled = true;
+      if (id === runId) render(row, payload);
+      finish();
+    }
     xhr.open("POST", endpoint, true);
+    xhr.timeout = 12000;
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      if (id === runId) {
-        var payload = null;
-        try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
-        render(row, payload);
-      }
-      finish();
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      complete(payload);
     };
+    xhr.onerror = function() { complete(null); };
+    xhr.ontimeout = function() { complete(null); };
     xhr.send(JSON.stringify({ section: section }));
   }
 

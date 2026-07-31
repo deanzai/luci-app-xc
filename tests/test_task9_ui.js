@@ -37,6 +37,8 @@ function xhrHarness() {
     this.status = status || 200; this.responseText = value; this.readyState = 4;
     if (this.onreadystatechange) this.onreadystatechange();
   };
+  XHR.prototype.fail = function() { if (this.onerror) this.onerror(); };
+  XHR.prototype.expire = function() { if (this.ontimeout) this.ontimeout(); };
   return { XHR, requests };
 }
 
@@ -263,6 +265,16 @@ for (const respond of [
   assert.strictEqual(h.rows[0].latency.style.color, "red");
   assert.strictEqual(h.rows[0].socket.textContent, "Failed");
   assert.strictEqual(h.rows[0].socket.style.color, "red");
+}
+
+for (const fail of [request => request.fail(), request => request.expire()]) {
+  const h = nodeHarness(1);
+  h.rows[0].button.onclick();
+  assert.strictEqual(h.requests[0].timeout, 12000, "probe requests have a bounded browser deadline");
+  fail(h.requests[0]);
+  assert.strictEqual(h.rows[0].latency.textContent, "Error");
+  assert.strictEqual(h.rows[0].socket.textContent, "Failed");
+  assert.strictEqual(h.controls["xc-probe-all"].disabled, false, "failed requests release the queue");
 }
 
 for (const [ping, color] of [[100, "#b7791f"], [200, "#dd6b20"], [300, "red"]]) {

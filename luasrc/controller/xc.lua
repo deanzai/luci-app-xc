@@ -54,10 +54,10 @@ local function respond(payload)
   local encoded_ok, encoded = pcall(jsonc.stringify, payload)
   if not encoded_ok or type(encoded) ~= "string" or encoded == "" then
     http.status(500, status_text[500])
-    pcall(http.write, INTERNAL_ERROR_JSON)
+    http.write(INTERNAL_ERROR_JSON)
     return false
   end
-  pcall(http.write, encoded)
+  http.write(encoded)
   return true
 end
 

@@ -60,6 +60,7 @@ local function controller_fixture(options)
     end,
     write = function(value)
       if options.write_throw then error("password=write-secret") end
+      if options.write_yield then coroutine.yield(value) end
       state.response_text = (state.response_text or "") .. value
     end,
     write_json = function(value)
@@ -264,6 +265,17 @@ t.test("controller JSON serialization preserves objects arrays and safe fallback
     t.eq(state.response_text, '{"ok":false,"code":"internal_error","message":"The request could not be completed."}')
     t.eq(state.response_text:find("stringify%-secret"), nil)
   end
+end)
+
+t.test("controller response writer remains yieldable on LuCI 21.02", function()
+  local controller = controller_fixture({ write_yield = true })
+  local request = coroutine.create(controller.action_status)
+  local resumed, encoded = coroutine.resume(request)
+  t.eq(resumed, true)
+  t.contains(encoded, '"ok":true')
+  t.eq(coroutine.status(request), "suspended")
+  t.eq(coroutine.resume(request), true)
+  t.eq(coroutine.status(request), "dead")
 end)
 
 t.test("get-log defaults a missing level to all and rejects every invalid value", function()
