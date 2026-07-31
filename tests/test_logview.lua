@@ -23,6 +23,11 @@ local function collect(xc_lines, parsed, xray_lines, level)
   })
 end
 
+local function xray_line(epoch, level, pid, message)
+  return os.date("%a %b %d %H:%M:%S %Y", epoch)
+    .. " daemon." .. level .. " xray[" .. tostring(pid) .. "]: " .. message
+end
+
 t.test("logview accepts only the fixed level allowlist and filters exact levels", function()
   local lines, parsed = {}, {}
   for index, level in ipairs({ "error", "warning", "info", "debug" }) do
@@ -51,7 +56,7 @@ t.test("logview converts XC epoch and legacy uptime while preserving display sem
   t.eq(entries[1].time, WALL_TIME - UPTIME + 1595)
   t.eq(entries[1].display_time, "T+00:26:35")
   t.eq(entries[2].time, 1785327995)
-  t.eq(entries[2].display_time, "2026-07-29 20:26:35")
+  t.eq(entries[2].display_time, os.date("%Y-%m-%d %H:%M:%S", 1785327995))
 end)
 
 t.test("logview accepts only exact numeric Xray process tags and normalizes safe fallback text", function()
@@ -99,7 +104,7 @@ t.test("logview stably merges by normalized time and isolates malformed lines", 
     bad = "throw",
     same = { time = 1785327995, level = "info", message = "xc same" }
   }, {
-    "Wed Jul 29 20:26:35 2026 daemon.info xray[12]: xray same"
+    xray_line(1785327995, "info", 12, "xray same")
   }, "all"))
   t.eq(#entries, 3)
   t.eq(entries[1].message, "xc same")
