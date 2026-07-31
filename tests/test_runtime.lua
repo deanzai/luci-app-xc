@@ -8,6 +8,7 @@ local ROLLBACK = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE = "/etc/xc/rollback/active_node"
 local PENDING_ROLLBACK = ROLLBACK .. ".pending"
 local PENDING_ROLLBACK_NODE = ROLLBACK_NODE .. ".pending"
+local CORE_HASH = "51c3e26e4ba03f3aabcdef1234567890abcdef1234567890abcdef1234567890"
 local UNSET_ACTIVE = "!xc-active-unset!"
 local MANIFEST = "/etc/xc/rollback/current"
 local TRANSACTION = "/etc/xc/rollback/transaction"
@@ -236,6 +237,11 @@ local function fixture(options)
       return files[path]
     end,
     exists = function(path) event("fs:exists:" .. path); return files[path] ~= nil end,
+    stat_nofollow = function(path)
+      if options.symlink_core == path then return { type = "symlink" } end
+      if files[path] ~= nil then return { type = "reg", size = #files[path] } end
+      return nil
+    end,
     write_temp = function(path, content)
       if path == EXIT_IP_CACHE and options.cache_write_race then
         local competing_lock = acquire_fixture_lock(LOCK)
@@ -271,6 +277,8 @@ local function fixture(options)
     append = function(path, content) event("fs:append:" .. path); files[path] = (files[path] or "") .. content; return true end
   }
   local exec = {
+    hash_file = function() return options.core_hash or CORE_HASH end,
+    machine = function() return options.machine or "aarch64" end,
     run = function(argv, deadline)
       event("exec:run:" .. table.concat(argv, "|"))
       state.validation_deadlines[#state.validation_deadlines + 1] = deadline
@@ -314,8 +322,13 @@ local function fixture(options)
     end,
     service_state = function() return options.service_state or "running" end
   }
+  local function parse_json(text)
+    local id, version, arch, size, sha256, uploaded_at = text:match('"id":"([^"]+)".-"version":"([^"]+)".-"arch":"([^"]+)".-"size":(%d+).-"sha256":"([^"]+)".-"uploaded_at":(%d+)')
+    if not id then return nil end
+    return { id = id, version = version, arch = arch, size = tonumber(size), sha256 = sha256, uploaded_at = tonumber(uploaded_at) }
+  end
   state.runtime = assert(runtime.new({
-    uci = uci, fs = fs, exec = exec, json = { stringify = stringify },
+    uci = uci, fs = fs, exec = exec, json = { stringify = stringify, parse = parse_json },
     network = function() return "192.168.6.1" end,
     now = options.now or function() return 123 end,
     wall_time = options.wall_time or function() return 1785326400 end,
@@ -834,6 +847,36 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(stringify(status):find("https://", 1, true), nil)
   t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
   t.eq(stringify(tested):find("raw-secret-runtime", 1, true), nil)
+end)
+
+t.test("runtime tests the selected managed Xray core without replacing system path", function()
+  local managed = "v26_6_27-aarch64-51c3e26e4ba03f3a"
+  local managed_path = "/etc/xc/xray/versions/" .. managed .. "/xray"
+  local state = fixture({ files = {
+    [RUNTIME] = "runtime",
+    ["/etc/xc/xray/current"] = managed .. "\n",
+    [managed_path] = "managed-core",
+    ["/etc/xc/xray/versions/" .. managed .. "/manifest.json"] =
+      '{"id":"' .. managed .. '","version":"26.6.27","arch":"aarch64","size":12,"sha256":"' .. CORE_HASH .. '","uploaded_at":1}'
+  } })
+  local tested = state.runtime:test_current()
+  t.eq(tested.ok, true)
+  t.eq(state.events[#state.events], "exec:run:" .. managed_path .. "|run|-test|-c|" .. RUNTIME)
+end)
+
+t.test("runtime refuses a symlinked selected managed Xray core", function()
+  local managed = "v26_6_27-aarch64-51c3e26e4ba03f3a"
+  local managed_path = "/etc/xc/xray/versions/" .. managed .. "/xray"
+  local state = fixture({ symlink_core = managed_path, files = {
+    [RUNTIME] = "runtime",
+    ["/etc/xc/xray/current"] = managed .. "\n",
+    [managed_path] = "managed-core",
+    ["/etc/xc/xray/versions/" .. managed .. "/manifest.json"] =
+      '{"id":"' .. managed .. '","version":"26.6.27","arch":"aarch64","size":12,"sha256":"' .. CORE_HASH .. '","uploaded_at":1}'
+  } })
+  local tested = state.runtime:test_current()
+  t.eq(tested.ok, false)
+  t.eq(tested.code, "test_failed")
 end)
 
 t.test("status observes a bounded whitelisted exit IP through the local proxy", function()

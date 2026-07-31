@@ -16,7 +16,23 @@ end
 t.test("controller root opens settings while status remains a JSON API", function()
   t.contains(source, 'alias("admin", "services", "xc", "settings")')
   t.eq(source:find('alias("admin", "services", "xc", "status")', 1, true), nil)
-  t.contains(source, 'entry({ "admin", "services", "xc", "status" }, call("action_status"))')
+  t.eq(source:find('local dispatcher =', 1, true), nil)
+  t.eq(source:find('require "luci.dispatcher"', 1, true), nil)
+  t.contains(source, 'local function action_target(action)')
+  t.contains(source, 'entry({ "admin", "services", "xc", "status" }, action_target("action_status"))')
+  t.contains(source, 'entry({ "admin", "services", "xc", "core-status" }, action_target("action_core_status"))')
+  t.contains(source, 'entry({ "admin", "services", "xc", "core" }, form("xc/core")')
+  t.eq(source:find('entry({ "admin", "services", "xc", "core" }, cbi("xc/core")', 1, true), nil)
+  t.eq(source:find("local target = call(action)", 1, true), nil)
+  t.eq(source:find(' }, call("', 1, true), nil)
+end)
+
+t.test("controller action routes carry Lua and ucode dispatcher fields", function()
+  t.contains(source, 'module = "luci.controller.xc"')
+  t.contains(source, '["function"] = action')
+  t.contains(source, 'name = action')
+  t.contains(source, 'argv = {}')
+  t.eq(source:find('parameters = {}', 1, true), nil)
 end)
 
 t.test("controller registers the authenticated XC page and action routes", function()
@@ -25,6 +41,7 @@ t.test("controller registers the authenticated XC page and action routes", funct
     { "admin", "services", "xc", "settings" },
     { "admin", "services", "xc", "nodes" },
     { "admin", "services", "xc", "node" },
+    { "admin", "services", "xc", "core" },
     { "admin", "services", "xc", "log" },
     { "admin", "services", "xc", "status" },
     { "admin", "services", "xc", "probe" },
@@ -35,17 +52,23 @@ t.test("controller registers the authenticated XC page and action routes", funct
     { "admin", "services", "xc", "import-commit" },
     { "admin", "services", "xc", "get-log" },
     { "admin", "services", "xc", "clear-log" }
+    ,{ "admin", "services", "xc", "core-status" }
+    ,{ "admin", "services", "xc", "core-upload" }
+    ,{ "admin", "services", "xc", "core-activate" }
+    ,{ "admin", "services", "xc", "core-rollback" }
+    ,{ "admin", "services", "xc", "core-delete" }
   }) do
     t.contains(source, route(path), "missing authenticated route " .. table.concat(path, "/"))
   end
 end)
 
 t.test("controller marks every mutating or body-consuming action POST only", function()
-  for _, action in ipairs({ "probe", "test-current", "switch", "rollback", "import-preview", "import-commit", "clear-log" }) do
-    local declaration = 'post_entry({ "admin", "services", "xc", "' .. action .. '" }'
+  for _, action in ipairs({ "probe", "test-current", "switch", "rollback", "import-preview", "import-commit", "clear-log", "core-upload", "core-activate", "core-rollback", "core-delete" }) do
+    local declaration = 'post_entry({ "admin", "services", "xc", "' .. action .. '" }, "action_'
     t.contains(source, declaration, action .. " must use the POST-only route helper")
   end
   t.contains(source, 'target.post = true')
+  t.eq(source:find('dispatcher.call', 1, true), nil)
   t.contains(source, 'http.getenv("REQUEST_METHOD")')
   t.contains(source, 'method_not_allowed')
 end)
@@ -64,6 +87,7 @@ t.test("controller calls Lua runtime and importer APIs without shell interpolati
   t.contains(source, 'require "xc.platform"')
   t.contains(source, 'require "xc.runtime"')
   t.contains(source, 'require "xc.importer"')
+  t.contains(source, 'require "xc.coremanager"')
   t.contains(source, 'importer.parse(')
   t.contains(source, 'runtime_instance:switch(')
   t.contains(source, 'runtime_instance:rollback()')
@@ -71,6 +95,8 @@ t.test("controller calls Lua runtime and importer APIs without shell interpolati
   t.eq(source:find("io.popen", 1, true), nil)
   t.eq(source:find("luci.sys", 1, true), nil)
   t.contains(source, 'http.formvalue("level")')
+  t.contains(source, 'http.setfilehandler')
+  t.eq(source:find('os.execute', 1, true), nil)
 end)
 
 t.test("controller commits imported nodes atomically and emits whitelisted status", function()

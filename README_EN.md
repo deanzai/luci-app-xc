@@ -13,6 +13,8 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 - **Local import**: Paste share links or upload text/JSON files, preview them, then confirm the import; subscription fetching is not included
 - **Healthy switching**: Validate the Xray configuration, check SOCKS/HTTP listeners and the health URL after startup, and restore the last known-good configuration on failure
 - **Manual rollback**: Restore the previous runtime configuration from the status area or `/usr/bin/xc rollback`
+- **Core management**: Upload one Xray-core ELF in LuCI and verify SHA-256, device architecture, version output, and the current configuration before activation
+- **Core rollback**: Automatically restore the previous core after a failed activation; managed versions never overwrite `/usr/bin/xray`
 - **Status monitoring**: The Settings page shows service state, active node, listeners, and the exit IP observed through the selected node
 - **Log viewer**: One log page merges XC and Xray runtime logs with All/Error/Warning/Info/Debug filtering
 - **Privacy controls**: Access logging is disabled; node passwords, UUIDs, links, raw JSON secrets, and log credentials are redacted
@@ -50,7 +52,7 @@ Clear only truncates the XC log. It cannot erase the shared OpenWrt system log o
 - sing-box kernel support
 - Dedicated node routing
 - Multi-user / multi-config
-- Built-in Xray core upload, replacement, or automatic upgrade in the current version
+- Remote Xray-core downloads, subscription-style upgrades, and automatic remote upgrades
 
 ## Dependencies and compatibility
 
@@ -90,10 +92,10 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-The current source package version is `0.1.0-r6`; a typical artifact is:
+The current source package version is `0.1.0-r7`; a typical artifact is:
 
 ```text
-bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
 ```
 
 ### Direct installation
@@ -101,7 +103,7 @@ bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r6_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r7_all.ipk
 ```
 
 Do not use `opkg --force-depends`. If the device already has an Xray binary installed outside opkg, verify that binary first and use a device-specific package only when its dependency handling is understood; the normal release package retains the `xray-core` dependency.
@@ -116,6 +118,12 @@ After installation, open LuCI: `Services -> Xray node switching`.
 4. **Save configuration**: New/edit/enable/disable changes and port or URL changes still use LuCI “Save & Apply”. This configuration flow is separate from quick switching.
 5. **Probe**: Use “Test” for one node or “Test all” for a batch run. Results are shown in the Latency column.
 6. **Logs**: Filter All, Error, Warning, Info, or Debug and click Refresh. The filter does not change Xray’s configured runtime level.
+
+### Manual Xray-core replacement
+
+Open `Services → Xray node switching → Xray core` and select one Xray ELF executable matching the device architecture. The device computes SHA-256 and checks the ELF header, `xray version` output, and the current configuration with `run -test`; only a validated file is installed.
+
+Activating a core uses the same runtime lock as node switching, saves the current core marker, restarts XC, and checks the service, listeners, and health endpoint. A failed activation restores the previous core automatically; if a manual core has no usable previous marker, page rollback safely returns to the system core. The system package core remains `/usr/bin/xray`; managed versions live under `/etc/xc/xray/versions/` and never overwrite an `opkg`-owned file.
 
 ### SOCKS / HTTP proxy
 

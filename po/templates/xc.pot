@@ -364,6 +364,9 @@ msgstr ""
 msgid "XC runtime and Xray core logs are shown here. Sensitive values are redacted."
 msgstr ""
 
+msgid "Xray core"
+msgstr ""
+
 msgid "Xray log level"
 msgstr ""
 
@@ -371,4 +374,106 @@ msgid "Xray node switching"
 msgstr ""
 
 msgid "Xray"
+msgstr ""
+
+msgid "Actions"
+msgstr ""
+
+msgid "Activate"
+msgstr ""
+
+msgid "Architecture"
+msgstr ""
+
+msgid "Confirm Xray core rollback? The service may restart."
+msgstr ""
+
+msgid "Confirm activation of this Xray core? The service may restart."
+msgstr ""
+
+msgid "Confirm deletion of this inactive Xray core?"
+msgstr ""
+
+msgid "Core file"
+msgstr ""
+
+msgid "Current core"
+msgstr ""
+
+msgid "Delete"
+msgstr ""
+
+msgid "Expected SHA-256 (optional)"
+msgstr ""
+
+msgid "Installed versions"
+msgstr ""
+
+msgid "Manage Xray core versions. Uploaded files are validated before activation; system package files are never overwritten."
+msgstr ""
+
+msgid "Manual core"
+msgstr ""
+
+msgid "No installed core versions"
+msgstr ""
+
+msgid "Note (optional)"
+msgstr ""
+
+msgid "Only a single Xray ELF executable matching this device architecture is accepted."
+msgstr ""
+
+msgid "Refresh status"
+msgstr ""
+
+msgid "Rollback"
+msgstr ""
+
+msgid "Size"
+msgstr ""
+
+msgid "Source"
+msgstr ""
+
+msgid "System core"
+msgstr ""
+
+msgid "The core was validated and installed; it can now be activated."
+msgstr ""
+
+msgid "The interface is not available"
+msgstr ""
+
+msgid "Unknown"
+msgstr ""
+
+msgid "Upload and validate"
+msgstr ""
+
+msgid "Upload and validate core"
+msgstr ""
+
+msgid "Validated"
+msgstr ""
+
+msgid "Binary validated"
+msgstr ""
+
+msgid "Configuration validated"
+msgstr ""
+
+msgid "Validation status"
+msgstr ""
+
+msgid "Version"
+msgstr ""
+
+msgid "Xray core management"
+msgstr ""
+
+msgid "Use system core"
+msgstr ""
+
+msgid "Confirm activation of the system Xray core? The service may restart."
 msgstr ""

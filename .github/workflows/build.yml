@@ -42,7 +42,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-xc-21.02
-          path: bin/packages/*/luci/luci-app-xc_*.ipk
+          path: |
+            bin/packages/**/luci-app-xc_*.ipk
+            bin/packages/**/luci-i18n-xc-zh-cn_*.ipk
 
   build-24_10:
     needs: test
@@ -60,4 +62,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-xc-24.10
-          path: bin/packages/*/luci/luci-app-xc_*.ipk
+          path: |
+            bin/packages/**/luci-app-xc_*.ipk
+            bin/packages/**/luci-i18n-xc-zh-cn_*.ipk

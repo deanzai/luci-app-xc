@@ -1,4 +1,5 @@
 local schema = require "xc.schema"
+local core = require "xc.core"
 
 local M = {}
 local MAX_IMPORT = 524288
@@ -37,7 +38,7 @@ end
 local function safe_result(value)
   if type(value) ~= "table" then return response(false, "internal_error") end
   local output = { ok = value.ok == true, code = tostring(value.code or "internal_error"), message = tostring(value.message or "runtime operation failed") }
-  for _, key in ipairs({ "active_node", "active_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count", "commit_outcome" }) do
+  for _, key in ipairs({ "active_node", "active_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count", "commit_outcome", "current", "current_info", "previous", "versions", "failed_target", "version" }) do
     if value[key] ~= nil then output[key] = value[key] end
   end
   if type(output.node) == "table" then output.node = safe_summary(output.node) end
@@ -264,6 +265,18 @@ function M.main(argv, deps)
   if command == "rollback" and #argv == 1 then return finish(deps, deps.runtime:rollback()) end
   if command == "test" and #argv == 1 then return finish(deps, deps.runtime:test_current()) end
   if command == "recover-pending" and #argv == 1 then return finish(deps, deps.runtime:recover_pending()) end
+  if command == "core-status" and #argv == 1 and deps.core then
+    local recovered_ok, recovered = pcall(deps.core.recover_pending, deps.core)
+    if not recovered_ok or type(recovered) ~= "table" then
+      return finish(deps, response(false, "core_recovery_failed", { recovery_required = true }))
+    end
+    if not recovered.ok then return finish(deps, recovered) end
+    return finish(deps, deps.core:status())
+  end
+  if command == "core-recover" and #argv == 1 and deps.core then return finish(deps, deps.core:recover_pending()) end
+  if command == "core-rollback" and #argv == 1 and deps.core then return finish(deps, deps.core:rollback()) end
+  if command == "core-activate" and #argv == 2 and deps.core
+    and (argv[2] == "system" or core.safe_id(argv[2])) then return finish(deps, deps.core:activate(argv[2])) end
   if command == "render" and #argv == 3 and argv[2] == "--output" and safe_path(argv[3]) then return finish(deps, deps.runtime:render(nil, argv[3])) end
   if command == "import-preview" and #argv == 2 and safe_path(argv[2]) then return finish(deps, preview(argv[2], deps)) end
   if command == "import" and #argv == 2 and safe_path(argv[2]) then return finish(deps, import_commit(argv[2], deps)) end

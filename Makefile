@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-xc
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)
 PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=deanzai <sd423498566@gmail.com>
@@ -49,8 +49,8 @@ define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 root="$${IPKG_INSTROOT:-}"
 case "$$root" in ""|/*) ;; *) exit 1 ;; esac
-mkdir -p "$$root/etc/xc/rollback" "$$root/var/etc/xc" || exit 1
-chmod 0700 "$$root/etc/xc" "$$root/etc/xc/rollback" "$$root/var/etc/xc" || exit 1
+mkdir -p "$$root/etc/xc/rollback" "$$root/etc/xc/xray/versions" "$$root/var/etc/xc" || exit 1
+chmod 0700 "$$root/etc/xc" "$$root/etc/xc/rollback" "$$root/etc/xc/xray" "$$root/etc/xc/xray/versions" "$$root/var/etc/xc" || exit 1
 chmod 0600 "$$root/etc/config/xc" || exit 1
 if [ -z "$$root" ]; then
 	if [ -f /etc/uci-defaults/luci-xc ]; then

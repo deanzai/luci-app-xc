@@ -16,13 +16,16 @@ local function runtime_fixture()
     now = function() return 1 end,
     sleep = yes,
     network = function() return "127.0.0.1" end,
-    json = { stringify = function(value)
-      local parts = {}
-      for key, item in pairs(value) do
-        parts[#parts + 1] = string.format('%q:%q', tostring(key), tostring(item))
-      end
-      return "{" .. table.concat(parts, ",") .. "}"
-    end },
+    json = {
+      stringify = function(value)
+        local parts = {}
+        for key, item in pairs(value) do
+          parts[#parts + 1] = string.format('%q:%q', tostring(key), tostring(item))
+        end
+        return "{" .. table.concat(parts, ",") .. "}"
+      end,
+      parse = function() return nil end
+    },
     uci = {
       get_global = yes, get_node = yes, list_nodes = function() return {} end,
       set_active = yes, clear_active = yes, commit = yes, revert = yes

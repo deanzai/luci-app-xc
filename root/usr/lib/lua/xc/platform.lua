@@ -1,4 +1,5 @@
 local schema = require "xc.schema"
+local core = require "xc.core"
 
 local M = {}
 local unpack = unpack or table.unpack
@@ -13,6 +14,13 @@ end
 
 local function safe_token(value)
   return type(value) == "string" and #value > 0 and #value <= 64 and value:match("^[0-9A-Za-z_-]+$") ~= nil
+end
+
+local function valid_xray_path(path)
+  if path == "/usr/bin/xray" then return true end
+  local id = type(path) == "string" and path:match("^/etc/xc/xray/versions/([a-z0-9][a-z0-9_%-]*)/xray$") or nil
+  if id ~= nil and core.resolve_executable(id) == path then return true end
+  return type(path) == "string" and path:match("^/var/etc/xc/%.core%-upload%-[0-9A-Za-z_-]+$") ~= nil
 end
 
 local function enabled(value) return value == true or value == 1 or value == "1" end
@@ -145,12 +153,12 @@ function M.new(injected)
   local spawn_process = injected.spawn or function(argv, deadline)
     return spawn(nixio, argv, deadline, now_process, sleep_process)
   end
-  local capture_process = injected.capture or function(argv, deadline, maximum)
+  local capture_process = injected.capture or function(argv, deadline, maximum, raw)
     if not valid_argv(argv) or type(maximum) ~= "number" or maximum < 1 or maximum > 262144 then return nil end
     generation_sequence = generation_sequence + 1
     local temporary = "/var/etc/xc/.observe-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence)
     if nfs.stat(temporary) then return nil end
-    if argv[1] == "/sbin/logread" then
+    if raw or argv[1] == "/sbin/logread" then
       local reservation = nixio.open(temporary, nixio.open_flags("wronly", "creat", "excl") + O_NOFOLLOW, 600)
       if not reservation then return nil end
       if reservation:close() ~= true or not spawn_capture(nixio, argv, temporary, deadline, now_process, sleep_process) then
@@ -297,9 +305,116 @@ function M.new(injected)
     return type(information) == "table" and information.type == "dir" and nfs.chmod(path, 700) == true
   end
 
+  local function atomic_write_file(path, content, mode)
+    if not safe_path(path) or type(content) ~= "string" or #content > 1048576 then return false end
+    mode = mode == 700 and 700 or 600
+    for attempt = 1, 32 do
+      generation_sequence = generation_sequence + 1
+      local temporary = path .. ".tmp." .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence) .. "-" .. tostring(attempt)
+      local handle = open_exclusive(temporary)
+      if handle then
+        local offset = 1
+        while offset <= #content do
+          local written = handle:write(content:sub(offset))
+          if type(written) ~= "number" or written < 1 then handle:close(); nfs.unlink(temporary); return false end
+          offset = offset + written
+        end
+        if handle:sync() ~= true or handle:close() ~= true or nfs.chmod(temporary, mode) ~= true
+          or nfs.rename(temporary, path) ~= true then
+          nfs.unlink(temporary)
+          return false
+        end
+        local directory = path:match("^(.+)/[^/]+$")
+        if not directory then return false end
+        local directory_handle = nixio.open(directory, nixio.open_flags("rdonly") + O_NOFOLLOW)
+        if not directory_handle then return false end
+        local synced = directory_handle:sync() == true
+        directory_handle:close()
+        return synced
+      end
+    end
+    return false
+  end
+
   local fs = {
+    stat = function(path)
+      return safe_path(path) and nfs.stat(path) or nil
+    end,
+    stat_nofollow = function(path)
+      if not safe_path(path) then return nil end
+      local prefix, information
+      for component in path:gmatch("[^/]+") do
+        prefix = prefix and prefix .. "/" .. component or "/" .. component
+        local handle = nixio.open(prefix, nixio.open_flags("rdonly") + O_NOFOLLOW)
+        if not handle then return nil end
+        information = handle:stat()
+        if handle:close() ~= true or type(information) ~= "table" then return nil end
+      end
+      return information
+    end,
+    available_space = function(path)
+      if not safe_path(path) or type(nfs.statvfs) ~= "function" then return nil end
+      local value = nfs.statvfs(path)
+      if type(value) ~= "table" or type(value.bavail) ~= "number" then return nil end
+      local unit = type(value.frsize) == "number" and value.frsize or value.bsize
+      if type(unit) ~= "number" or unit < 1 then return nil end
+      return value.bavail * unit
+    end,
+    mkdir = function(path, mode)
+      if not safe_path(path) or type(nfs.mkdirr) ~= "function" then return false end
+      if nfs.mkdirr(path) ~= true then return false end
+      return nfs.chmod(path, mode == 700 and 700 or 600) == true
+    end,
+    list_dir = function(path)
+      if not safe_path(path) then return nil end
+      local iterator = nfs.dir(path)
+      if not iterator then return nil end
+      local values = {}
+      for name in iterator do
+        if type(name) == "string" and #name <= 128 and not name:find("[%z/]") then values[#values + 1] = name end
+        if #values >= 256 then break end
+      end
+      table.sort(values)
+      return values
+    end,
+    write_file = function(path, content, mode)
+      return atomic_write_file(path, content, mode)
+    end,
+    open_upload = function()
+      for attempt = 1, 32 do
+        generation_sequence = generation_sequence + 1
+        local path = "/var/etc/xc/.core-upload-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence) .. "-" .. tostring(attempt)
+        local handle = open_exclusive(path)
+        if handle then return { fd = handle, path = path, size = 0 } end
+      end
+      return nil
+    end,
+    write_upload = function(upload, chunk, maximum)
+      if type(upload) ~= "table" or not upload.fd or type(chunk) ~= "string"
+        or type(maximum) ~= "number" or maximum < 1 or maximum > 67108864 then return false end
+      if upload.size + #chunk > maximum then return false end
+      local offset = 1
+      while offset <= #chunk do
+        local written = upload.fd:write(chunk:sub(offset))
+        if type(written) ~= "number" or written < 1 then return false end
+        offset = offset + written
+      end
+      upload.size = upload.size + #chunk
+      return true
+    end,
+    close_upload = function(upload, keep)
+      if type(upload) ~= "table" or not upload.fd or not safe_path(upload.path) then return false end
+      local synced = upload.fd:sync() == true
+      local closed = upload.fd:close() == true
+      upload.fd = nil
+      if not keep or not synced or not closed then
+        nfs.unlink(upload.path)
+        return false
+      end
+      return nfs.chmod(upload.path, 600) == true
+    end,
     ensure_layout = function()
-      for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/var/etc/xc" }) do
+      for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/etc/xc/xray", "/etc/xc/xray/versions", "/var/etc/xc" }) do
         if not ensure_directory(path) then return false end
       end
       local config = nfs.stat("/etc/config/xc")
@@ -343,6 +458,14 @@ function M.new(injected)
       end
       if handle:close() ~= true then return nil, "io_error" end
       return table.concat(chunks)
+    end,
+    read_prefix = function(path, maximum)
+      if not safe_path(path) or type(maximum) ~= "number" or maximum < 0 or maximum > 1048576 then return nil, "io_error" end
+      local handle, code = nixio.open(path, nixio.open_flags("rdonly") + O_NOFOLLOW)
+      if not handle then return nil, errno_missing(nixio, code) and "missing" or "io_error" end
+      local chunk = handle:read(maximum)
+      if handle:close() ~= true or type(chunk) ~= "string" then return nil, "io_error" end
+      return chunk
     end,
     read_tail = function(path, maximum)
       if not safe_path(path) or type(maximum) ~= "number" or maximum < 0 or maximum > 1048576 then return nil, "io_error" end
@@ -389,6 +512,47 @@ function M.new(injected)
       end
       return nil
     end,
+    copy_file = function(source, destination, maximum, mode)
+      if not safe_path(source) or not safe_path(destination) or source == destination
+        or type(maximum) ~= "number" or maximum < 1 or maximum > 67108864 then return false end
+      local source_handle = nixio.open(source, nixio.open_flags("rdonly") + O_NOFOLLOW)
+      if not source_handle then return false end
+      generation_sequence = generation_sequence + 1
+      local temporary = destination .. ".tmp." .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence)
+      local destination_handle = nixio.open(temporary, nixio.open_flags("wronly", "creat", "excl") + O_NOFOLLOW, mode == 700 and 700 or 600)
+      if not destination_handle then source_handle:close(); return false end
+      local total, copied = 0, true
+      while total <= maximum do
+        local chunk = source_handle:read(math.min(65536, maximum + 1 - total))
+        if chunk == nil then copied = false; break end
+        if chunk == "" then break end
+        total = total + #chunk
+        if total > maximum then copied = false; break end
+        local offset = 1
+        while offset <= #chunk do
+          local written = destination_handle:write(chunk:sub(offset))
+          if type(written) ~= "number" or written < 1 then copied = false; break end
+          offset = offset + written
+        end
+        if not copied then break end
+      end
+      local source_closed = source_handle:close() == true
+      local destination_synced = copied and destination_handle:sync() == true
+      local destination_closed = destination_handle:close() == true
+      if not copied or not source_closed or not destination_synced or not destination_closed
+        or nfs.chmod(temporary, mode == 700 and 700 or 600) ~= true
+        or nfs.rename(temporary, destination) ~= true then
+        nfs.unlink(temporary)
+        return false
+      end
+      local directory = destination:match("^(.+)/[^/]+$")
+      if not directory then return false end
+      local directory_handle = nixio.open(directory, nixio.open_flags("rdonly") + O_NOFOLLOW)
+      if not directory_handle then return false end
+      local synced = directory_handle:sync() == true
+      directory_handle:close()
+      return synced
+    end,
     chmod = function(path, mode)
       local value = nixio_mode(mode)
       return safe_path(path) and value ~= nil and nfs.chmod(path, value) == true
@@ -416,6 +580,11 @@ function M.new(injected)
       if not safe_path(path) then return false end
       if not nfs.stat(path) then return true end
       return nfs.unlink(path) == true
+    end,
+    remove_dir = function(path)
+      if not safe_path(path) or type(nfs.rmdir) ~= "function" then return false end
+      if not nfs.stat(path) then return true end
+      return nfs.rmdir(path) == true
     end,
     allocate_generation = function(directory)
       if not safe_path(directory) then return nil end
@@ -492,11 +661,35 @@ function M.new(injected)
 
   local exec = {
     run = function(argv, deadline)
-      if type(argv) ~= "table" or #argv ~= 5 or argv[1] ~= "/usr/bin/xray" or argv[2] ~= "run"
+      if type(argv) ~= "table" or #argv ~= 5 or not valid_xray_path(argv[1]) or argv[2] ~= "run"
         or argv[3] ~= "-test" or argv[4] ~= "-c" or not safe_path(argv[5]) then return false end
       deadline = deadline or (now_process() + 30)
       if type(deadline) ~= "number" or deadline <= now_process() or deadline > now_process() + 300 then return false end
       return spawn_process(argv, deadline)
+    end,
+    hash_file = function(path, deadline)
+      if not safe_path(path) then return nil end
+      local current = now_process()
+      deadline = deadline or (current + 30)
+      if type(deadline) ~= "number" or deadline <= current or deadline > current + 300 then return nil end
+      local output = capture_process({ "/usr/bin/sha256sum", path }, deadline, 256, true)
+      if not output then output = capture_process({ "/bin/busybox", "sha256sum", path }, deadline, 256, true) end
+      local hash = type(output) == "string" and output:match("^([0-9a-fA-F]+)%s+") or nil
+      return hash and #hash == 64 and hash:lower() or nil
+    end,
+    machine = function(deadline)
+      local current = now_process()
+      deadline = deadline or (current + 5)
+      if type(deadline) ~= "number" or deadline <= current or deadline > current + 30 then return nil end
+      local output = capture_process({ "/bin/uname", "-m" }, deadline, 64, true)
+      return type(output) == "string" and output:match("^([a-zA-Z0-9_%-]+)%s*$") or nil
+    end,
+    xray_version = function(path, deadline)
+      if not valid_xray_path(path) then return nil end
+      local current = now_process()
+      deadline = deadline or (current + 5)
+      if type(deadline) ~= "number" or deadline <= current or deadline > current + 30 then return nil end
+      return capture_process({ path, "version" }, deadline, 2048, true)
     end,
     restart = function()
       return spawn_process({ "/etc/init.d/xc", "restart_prepared" }, now_process() + 30)
@@ -512,26 +705,43 @@ function M.new(injected)
       return capture_process({ "/sbin/logread", "-e", "xray\\[" }, deadline, 262144)
     end,
     listener_ready = function(kind, address, port, deadline)
-      if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) or M.now(nixio) >= deadline then return false end
+      if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port) then return false end
       local family = address:find(":", 1, true) and "inet6" or "inet"
-      local socket = nixio.socket(family, "stream")
-      if not socket then return false end
-      if not socket:setblocking(false) then socket:close(); return false end
-      local connected, connect_error = socket:connect(address, tostring(port))
-      if not connected and connect_error ~= nixio.const.EINPROGRESS and connect_error ~= nixio.const.EWOULDBLOCK
-        and connect_error ~= nixio.const.EAGAIN then socket:close(); return false end
-      if not connected then
-        local remaining = deadline - M.now(nixio)
-        if remaining <= 0 then socket:close(); return false end
-        local descriptor = { { fd = socket, events = nixio.poll_flags("out", "err") } }
-        local ready = nixio.poll(descriptor, math.max(1, math.min(30000, math.floor(remaining * 1000))))
-        if not ready or ready < 1 then socket:close(); return false end
-        local socket_error = socket:getsockopt("socket", "error")
-        if socket_error ~= 0 then socket:close(); return false end
+      local attempts = 0
+      while true do
+        if M.now(nixio) >= deadline then return false end
+        local socket = nixio.socket(family, "stream")
+        if not socket then
+          attempts = attempts + 1
+          if attempts > 150 then return false end
+          sleep_process(0.2)
+        else
+          local blocking = socket:setblocking(false)
+          if not blocking then socket:close(); return false end
+          local connected, connect_error = socket:connect(address, tostring(port))
+          local established = connected
+          if not established and (connect_error == nixio.const.EINPROGRESS or connect_error == nixio.const.EWOULDBLOCK
+            or connect_error == nixio.const.EAGAIN) then
+            local remaining = deadline - M.now(nixio)
+            if remaining > 0 then
+              local descriptor = { { fd = socket, events = nixio.poll_flags("out", "err") } }
+              local ready = nixio.poll(descriptor, math.max(1, math.min(30000, math.floor(remaining * 1000))))
+              if ready and ready >= 1 then
+                local socket_error = socket:getsockopt("socket", "error")
+                established = socket_error == 0
+              end
+            end
+          end
+          socket:close()
+          if established then
+            if M.now(nixio) >= deadline then return false end
+            return true
+          end
+          attempts = attempts + 1
+          if attempts > 150 then return false end
+          sleep_process(0.2)
+        end
       end
-      if M.now(nixio) >= deadline then socket:close(); return false end
-      socket:close()
-      return true
     end,
     health_check = function(kind, address, port, url, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)

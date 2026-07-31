@@ -5,15 +5,42 @@ local jsonc = require "luci.jsonc"
 local schema = require "xc.schema"
 local platform = require "xc.platform"
 local runtime_module = require "xc.runtime"
+local coremanager_module = require "xc.coremanager"
 local importer = require "xc.importer"
 local probe_module = require "xc.probe"
 local logview = require "xc.logview"
 
 local REQUEST_BODY_MAX = 512 * 1024
+local CORE_UPLOAD_MAX = 64 * 1024 * 1024
+local CORE_REQUEST_MAX = CORE_UPLOAD_MAX + 1024 * 1024
 local LOG_READ_MAX = 256 * 1024
 
 local messages = {
   busy = "Another XC operation is in progress.",
+  core_activate_failed = "The Xray core could not be activated.",
+  core_already_active = "The selected Xray core is already active.",
+  core_arch_mismatch = "The uploaded Xray core architecture does not match this device.",
+  core_config_invalid = "The current Xray configuration was rejected by the uploaded core.",
+  core_disk_space_low = "There is not enough storage space for this Xray core.",
+  core_hash_failed = "The uploaded Xray core checksum could not be calculated.",
+  core_hash_invalid = "The expected SHA-256 value is invalid.",
+  core_hash_mismatch = "The uploaded Xray core checksum does not match.",
+  core_install_failed = "The validated Xray core could not be installed.",
+  core_in_use = "The selected Xray core is currently in use or reserved for rollback.",
+  core_invalid_elf = "The uploaded file is not a supported Xray ELF executable.",
+  core_invalid_target = "The selected Xray core is invalid.",
+  core_invalid_upload = "The Xray core upload is invalid.",
+  core_manifest_invalid = "The Xray core metadata is invalid.",
+  core_no_rollback = "No Xray core rollback version is available.",
+  core_not_installed = "The selected Xray core is not installed or has changed.",
+  core_note_invalid = "The Xray core note is invalid.",
+  core_recovered = "The Xray core activation failed and the previous core was restored.",
+  core_recovery_failed = "The Xray core failed and automatic recovery also failed.",
+  core_recovery_required = "Xray core recovery is required before another core operation.",
+  core_runtime_unavailable = "Xray core management is unavailable on this device.",
+  core_upload_too_large = "The uploaded Xray core is too large.",
+  core_delete_failed = "The Xray core could not be deleted.",
+  core_version_invalid = "The Xray core version could not be verified.",
   commit_unknown = "The save result could not be confirmed.",
   committed_hardening_failed = "The configuration was saved but its file mode could not be confirmed.",
   commit_failed = "The configuration could not be saved.",
@@ -38,13 +65,20 @@ local failure_status = {
   missing_node = 404, no_rollback_state = 404,
   method_not_allowed = 405, busy = 409, disabled_node = 409,
   request_too_large = 413, not_implemented = 501,
-  unsupported_node = 422, missing_runtime = 404, test_failed = 502
+  unsupported_node = 422, missing_runtime = 404, test_failed = 502,
+  core_hash_invalid = 400, core_invalid_upload = 400, core_invalid_target = 400, core_note_invalid = 400,
+  core_arch_mismatch = 422, core_invalid_elf = 422, core_config_invalid = 422, core_hash_mismatch = 422,
+  core_disk_space_low = 507,
+  core_upload_too_large = 413, core_busy = 409, core_no_rollback = 404, core_not_installed = 404,
+  core_already_active = 409, core_recovery_required = 409, core_recovered = 502, core_recovery_failed = 503,
+  core_activate_failed = 502, core_install_failed = 500, core_manifest_invalid = 422, core_version_invalid = 422,
+  core_hash_failed = 502, core_runtime_unavailable = 501, core_in_use = 409, core_delete_failed = 500
 }
 
 local status_text = {
   [400] = "Bad Request", [404] = "Not Found", [405] = "Method Not Allowed",
   [409] = "Conflict", [413] = "Content Too Large", [422] = "Unprocessable Content", [500] = "Internal Server Error",
-  [501] = "Not Implemented", [502] = "Bad Gateway"
+  [501] = "Not Implemented", [502] = "Bad Gateway", [507] = "Insufficient Storage"
 }
 
 local INTERNAL_ERROR_JSON = '{"ok":false,"code":"internal_error","message":"The request could not be completed."}'
@@ -73,8 +107,23 @@ local function failure(code)
 end
 
 function index()
+  local function action_target(action)
+    -- Lua 5.1's dispatcher reads name/argv while the 24.10 ucode bridge
+    -- reads module/function. Keep both descriptors in sync so the same
+    -- controller works on every supported LuCI generation. Do not provide
+    -- an empty Lua parameters table: the ucode bridge sees it as an object,
+    -- not an iterable array.
+    return {
+      type = "call",
+      name = action,
+      argv = {},
+      module = "luci.controller.xc",
+      ["function"] = action
+    }
+  end
+
   local function post_entry(path, action)
-    local target = call(action)
+    local target = action_target(action)
     target.post = true
     local node = entry(path, target)
     node.leaf = true
@@ -86,26 +135,33 @@ function index()
   entry({ "admin", "services", "xc", "settings" }, cbi("xc/settings"), _("Settings"), 10).leaf = true
   entry({ "admin", "services", "xc", "nodes" }, cbi("xc/nodes"), _("Nodes"), 20).leaf = true
   entry({ "admin", "services", "xc", "node" }, cbi("xc/node"), nil).leaf = true
+  entry({ "admin", "services", "xc", "core" }, form("xc/core"), _("Xray core"), 25).leaf = true
   entry({ "admin", "services", "xc", "log" }, form("xc/log"), _("Log"), 30).leaf = true
 
-  entry({ "admin", "services", "xc", "status" }, call("action_status")).leaf = true
+  entry({ "admin", "services", "xc", "status" }, action_target("action_status")).leaf = true
+  entry({ "admin", "services", "xc", "core-status" }, action_target("action_core_status")).leaf = true
   post_entry({ "admin", "services", "xc", "probe" }, "action_probe")
   post_entry({ "admin", "services", "xc", "test-current" }, "action_test_current")
   post_entry({ "admin", "services", "xc", "switch" }, "action_switch")
   post_entry({ "admin", "services", "xc", "rollback" }, "action_rollback")
   post_entry({ "admin", "services", "xc", "import-preview" }, "action_import_preview")
   post_entry({ "admin", "services", "xc", "import-commit" }, "action_import_commit")
-  entry({ "admin", "services", "xc", "get-log" }, call("action_get_log")).leaf = true
+  entry({ "admin", "services", "xc", "get-log" }, action_target("action_get_log")).leaf = true
   post_entry({ "admin", "services", "xc", "clear-log" }, "action_clear_log")
+  post_entry({ "admin", "services", "xc", "core-upload" }, "action_core_upload")
+  post_entry({ "admin", "services", "xc", "core-activate" }, "action_core_activate")
+  post_entry({ "admin", "services", "xc", "core-rollback" }, "action_core_rollback")
+  post_entry({ "admin", "services", "xc", "core-delete" }, "action_core_delete")
 end
 
-local function require_post()
+local function require_post(maximum)
   if http.getenv("REQUEST_METHOD") ~= "POST" then failure("method_not_allowed"); return false, "method_not_allowed" end
   local length_text = http.getenv("CONTENT_LENGTH")
   if length_text == nil then failure("validation_failed"); return false, "validation_failed" end
   if not length_text:match("^%d+$") then failure("validation_failed"); return false, "validation_failed" end
   local length = tonumber(length_text) or 0
-  if length > REQUEST_BODY_MAX then failure("request_too_large"); return false, "request_too_large" end
+  maximum = maximum or REQUEST_BODY_MAX
+  if length > maximum then failure("request_too_large"); return false, "request_too_large" end
   return true
 end
 
@@ -130,7 +186,9 @@ local function new_backend()
   if not layout_called or layout_ok ~= true then return nil end
   local runtime_called, runtime_instance = pcall(runtime_module.new, adapters)
   if not runtime_called or not runtime_instance then return nil end
-  return adapters, runtime_instance
+  local core_called, core_instance = pcall(coremanager_module.new, adapters)
+  if not core_called or not core_instance then return adapters, runtime_instance, nil end
+  return adapters, runtime_instance, core_instance
 end
 
 local function record_event(runtime_instance, message, fields, level)
@@ -231,6 +289,220 @@ function action_status()
     exit_ip = status.exit_ip,
     last_error = status.last_error
   })
+end
+
+local function core_event(runtime_instance, message, value)
+  if type(runtime_instance) ~= "table" or type(value) ~= "table" then return end
+  local code = type(value.code) == "string" and value.code or "internal_error"
+  if not code:match("^[a-z][a-z_]*$") then code = "internal_error" end
+  local fields = { code = code, outcome = value.ok and "success" or "failure" }
+  for _, key in ipairs({ "id", "current", "previous", "failed_target" }) do
+    if type(value[key]) == "string" and #value[key] <= 128
+      and value[key]:match("^[a-z0-9][a-z0-9_%-]*$") then fields[key] = value[key] end
+  end
+  if type(value.version) == "table" then
+    if type(value.version.id) == "string" and #value.version.id <= 128
+      and value.version.id:match("^[a-z0-9][a-z0-9_%-]*$") then
+      fields.id = value.version.id
+    end
+    if type(value.version.version) == "string" and #value.version.version <= 64
+      and value.version.version:match("^[a-z0-9][a-z0-9_.%-]*$") then
+      fields.version = value.version.version
+    end
+    if type(value.version.arch) == "string" and #value.version.arch <= 32
+      and value.version.arch:match("^[a-z0-9_]+$") then
+      fields.arch = value.version.arch
+    end
+    if type(value.version.size) == "number" and value.version.size >= 0
+      and value.version.size <= CORE_UPLOAD_MAX then
+      fields.size = math.floor(value.version.size)
+    end
+    if type(value.version.sha256) == "string" and #value.version.sha256 == 64
+      and value.version.sha256:match("^[0-9A-Fa-f]+$") then
+      fields.sha256 = value.version.sha256:sub(1, 16):lower()
+    end
+  end
+  record_event(runtime_instance, message, fields, value.ok and "info" or "error")
+end
+
+local function core_exception_value(core_instance)
+  local fallback = { ok = false, code = "core_recovery_required", recovery_required = true }
+  if type(core_instance) ~= "table" then return fallback end
+  local recovered_called, recovered = pcall(core_instance.recover_pending, core_instance)
+  if recovered_called and type(recovered) == "table"
+    and (recovered.recovery_required == true or recovered.current ~= nil
+      or recovered.previous ~= nil or recovered.failed_target ~= nil)
+    then
+    return recovered
+  end
+  local status_called, status = pcall(core_instance.status, core_instance)
+  if status_called and type(status) == "table" and status.recovery_required == true then
+    return status
+  end
+  return fallback
+end
+
+local function core_failure_response(code, value)
+  if type(code) ~= "string" or not code:match("^[a-z][a-z_]*$") then code = "core_activate_failed" end
+  local payload = { ok = false, code = code, message = messages[code] or "The request failed safely." }
+  if type(value) == "table" then
+    if value.recovery_required == true then payload.recovery_required = true end
+    for _, key in ipairs({ "current", "previous", "failed_target" }) do
+      if type(value[key]) == "string" and #value[key] <= 128
+        and value[key]:match("^[a-z0-9][a-z0-9_%-]*$") then payload[key] = value[key] end
+    end
+  end
+  http.status(failure_status[code] or 500, status_text[failure_status[code] or 500])
+  respond(payload)
+end
+
+local function core_result(runtime_instance, value, message)
+  if type(value) ~= "table" then
+    core_event(runtime_instance, message, { ok = false, code = "core_activate_failed" })
+    failure("core_activate_failed"); return
+  end
+  core_event(runtime_instance, message, value)
+  if not value.ok then core_failure_response(value.code or "core_activate_failed", value); return end
+  success(value)
+end
+
+function action_core_status()
+  local _, runtime_instance, core_instance = new_backend()
+  if not core_instance then failure("core_runtime_unavailable"); return end
+  local recovered_ok, recovered = pcall(core_instance.recover_pending, core_instance)
+  if recovered_ok and type(recovered) == "table" then core_event(runtime_instance, "core recovery", recovered) end
+  if not recovered_ok or type(recovered) ~= "table" or not recovered.ok then
+    local recovery_failure = recovered_ok and type(recovered) == "table"
+      and recovered or core_exception_value(core_instance)
+    if not recovered_ok then core_event(runtime_instance, "core recovery", recovery_failure) end
+    core_failure_response(recovery_failure.code or "core_recovery_required", recovery_failure)
+    return
+  end
+  local called, status = pcall(core_instance.status, core_instance)
+  if not called or type(status) ~= "table" then
+    local status_failure = core_exception_value(core_instance)
+    core_event(runtime_instance, "core status", status_failure)
+    core_failure_response(status_failure.code or "core_recovery_required", status_failure)
+    return
+  end
+  if not status.ok then core_failure_response(status.code or "core_recovery_required", status); return end
+  success(status)
+end
+
+function action_core_upload()
+  local valid, code = require_post(CORE_REQUEST_MAX)
+  if not valid then return end
+  local adapters, runtime_instance, core_instance = new_backend()
+  if not core_instance or type(http.setfilehandler) ~= "function"
+    or type(adapters.fs.open_upload) ~= "function" or type(adapters.fs.write_upload) ~= "function"
+    or type(adapters.fs.close_upload) ~= "function" then
+    core_event(runtime_instance, "core upload completed", { ok = false, code = "core_runtime_unavailable" })
+    failure("core_runtime_unavailable"); return
+  end
+
+  local upload, upload_closed, upload_error, field_seen
+  local handler_ok = pcall(http.setfilehandler, function(field, chunk, eof)
+    local field_name = type(field) == "table" and field.name or field
+    if field_name ~= "core_file" then return end
+    field_seen = true
+    if upload_error then return end
+    if not upload then upload = adapters.fs.open_upload() end
+    if not upload then upload_error = "core_install_failed"; return end
+    if chunk and #chunk > 0 and not adapters.fs.write_upload(upload, chunk, CORE_UPLOAD_MAX) then upload_error = "core_upload_too_large" end
+    if eof and not upload_error then
+      upload_closed = adapters.fs.close_upload(upload, true)
+      if not upload_closed then upload_error = "core_install_failed" end
+    end
+  end)
+  if not handler_ok then core_event(runtime_instance, "core upload completed", { ok = false, code = "core_runtime_unavailable" }); failure("core_runtime_unavailable"); return end
+
+  local form_ok, expected, note = pcall(function()
+    http.formvalue("core_file")
+    return http.formvalue("sha256"), http.formvalue("note")
+  end)
+  if not form_ok or upload_error then
+    if upload and not upload_closed then pcall(adapters.fs.close_upload, upload, false) end
+    if upload then pcall(adapters.fs.remove, upload.path) end
+    local code = upload_error or "core_invalid_upload"
+    core_event(runtime_instance, "core upload completed", { ok = false, code = code })
+    failure(code); return
+  end
+  if not field_seen or not upload or not upload_closed then
+    core_event(runtime_instance, "core upload completed", { ok = false, code = "core_invalid_upload" })
+    failure("core_invalid_upload"); return
+  end
+  local checked_ok, checked = pcall(core_instance.validate, core_instance, upload.path, expected, note)
+  if not checked_ok or type(checked) ~= "table" or not checked.ok then
+    pcall(adapters.fs.remove, upload.path)
+    local code = checked_ok and checked.code or "core_activate_failed"
+    core_event(runtime_instance, "core upload completed", { ok = false, code = code })
+    failure(code); return
+  end
+  local installed_ok, installed = pcall(core_instance.install, core_instance, upload.path, checked.manifest)
+  pcall(adapters.fs.remove, upload.path)
+  if not installed_ok or type(installed) ~= "table" or not installed.ok then
+    local code = installed_ok and installed.code or "core_install_failed"
+    core_event(runtime_instance, "core upload completed", { ok = false, code = code })
+    failure(code); return
+  end
+  core_event(runtime_instance, "core upload completed", installed)
+  success(installed)
+end
+
+function action_core_activate()
+  local valid = require_post()
+  if not valid then return end
+  local _, runtime_instance, core_instance = new_backend()
+  if not core_instance then
+    core_event(runtime_instance, "core activation", { ok = false, code = "core_runtime_unavailable" })
+    failure("core_runtime_unavailable"); return
+  end
+  local target = http.formvalue("id")
+  local called, value = pcall(core_instance.activate, core_instance, target)
+  if not called then
+    value = core_exception_value(core_instance)
+    core_event(runtime_instance, "core activation", value)
+    core_failure_response(value.code or "core_activate_failed", value)
+    return
+  end
+  core_result(runtime_instance, value, "core activation")
+end
+
+function action_core_rollback()
+  local valid = require_post()
+  if not valid then return end
+  local _, runtime_instance, core_instance = new_backend()
+  if not core_instance then
+    core_event(runtime_instance, "core rollback", { ok = false, code = "core_runtime_unavailable" })
+    failure("core_runtime_unavailable"); return
+  end
+  local called, value = pcall(core_instance.rollback, core_instance)
+  if not called then
+    value = core_exception_value(core_instance)
+    core_event(runtime_instance, "core rollback", value)
+    core_failure_response(value.code or "core_activate_failed", value)
+    return
+  end
+  core_result(runtime_instance, value, "core rollback")
+end
+
+function action_core_delete()
+  local valid = require_post()
+  if not valid then return end
+  local _, runtime_instance, core_instance = new_backend()
+  if not core_instance then
+    core_event(runtime_instance, "core deletion", { ok = false, code = "core_runtime_unavailable" })
+    failure("core_runtime_unavailable"); return
+  end
+  local target = http.formvalue("id")
+  local called, value = pcall(core_instance.delete, core_instance, target)
+  if not called then
+    value = core_exception_value(core_instance)
+    core_event(runtime_instance, "core deletion", value)
+    core_failure_response(value.code or "core_activate_failed", value)
+    return
+  end
+  core_result(runtime_instance, value, "core deletion")
 end
 
 function action_test_current()

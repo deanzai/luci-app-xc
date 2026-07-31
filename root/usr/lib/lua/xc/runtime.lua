@@ -1,5 +1,6 @@
 local generator = require "xc.generator"
 local schema = require "xc.schema"
+local core = require "xc.core"
 
 local M = {}
 local Runtime = {}
@@ -23,7 +24,6 @@ local EXIT_IP_CACHE_TTL = 60
 local LOG_LEVEL_DEBUG = "debug"
 local LOG_LEVEL_INFO = "info"
 local LOG_LEVEL_ERROR = "error"
-local XRAY_TEST = { "/usr/bin/xray", "run", "-test", "-c", RUNTIME_PATH }
 local VALIDATION_TIMEOUT = 30
 local sanitize_text
 
@@ -140,6 +140,30 @@ local function action_ok(value)
   return true
 end
 
+local function selected_xray(self)
+  local fs = self.fs
+  local marker_path = core.marker_path("current")
+  local marker_text, read_error = fs.read(marker_path, 128)
+  if marker_text == nil and read_error == "missing" then return core.system_path() end
+  local marker = core.read_marker(marker_text)
+  local path = marker and core.resolve_executable(marker) or nil
+  if not path then return nil end
+  if marker == "system" then return path end
+  if type(fs.stat_nofollow) ~= "function" or type(self.json.parse) ~= "function"
+    or type(self.exec.machine) ~= "function" or type(self.exec.hash_file) ~= "function" then return nil end
+  local stat_called, stat = pcall(fs.stat_nofollow, path)
+  if not stat_called or type(stat) ~= "table" or stat.type ~= "reg" then return nil end
+  local manifest_called, manifest_text = pcall(fs.read, core.manifest_path(marker), core.MANIFEST_MAX_SIZE)
+  if not manifest_called or type(manifest_text) ~= "string" then return nil end
+  local parsed_called, manifest = pcall(core.parse_manifest, manifest_text, self.json.parse)
+  if not parsed_called or not manifest or manifest.id ~= marker or tonumber(stat.size) ~= manifest.size then return nil end
+  local machine_called, machine_value = pcall(self.exec.machine, self.now() + 5)
+  if not machine_called or core.normalize_arch(machine_value) ~= manifest.arch then return nil end
+  local hash_called, actual_hash = pcall(self.exec.hash_file, path, self.now() + 30)
+  if not hash_called or not core.safe_sha256(actual_hash) or actual_hash:lower() ~= manifest.sha256 then return nil end
+  return path
+end
+
 local function enabled(value)
   return value == true or value == 1 or value == "1"
 end
@@ -149,6 +173,12 @@ local function read_node(uci, section_id)
   if outcome == "ok" and type(node) == "table" then return node end
   if outcome == "missing" and node == nil then return nil, "missing_node" end
   return nil, "internal_error"
+end
+
+function Runtime:_xray_test_argv(config_path)
+  local path = selected_xray(self)
+  if not path then return nil end
+  return { path, "run", "-test", "-c", config_path }
 end
 
 local function active_marker(active)
@@ -456,8 +486,8 @@ function Runtime:_restore_transaction(transaction, old)
   local ok = xpcall(function()
     if old.config ~= nil then
       local config_path = generation_paths(transaction.generation)
-      local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], config_path }
-      if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then error("old runtime validation failed", 0) end
+      local argv = self:_xray_test_argv(config_path)
+      if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then error("old runtime validation failed", 0) end
       self:_atomic_write(RUNTIME_PATH, old.config)
     elseif not self:_checked_remove(RUNTIME_PATH) then error("runtime removal failed", 0) end
     if not self:_apply_active(old.active) then error("active recovery failed", 0) end
@@ -524,8 +554,8 @@ function Runtime:_validate_live(transaction)
   if type(global) ~= "table" then return false end
   local marker_ok, marker = pcall(active_marker, global.active_node)
   if not marker_ok or #marker ~= transaction.new_active_size or checksum(marker) ~= transaction.new_active_hash then return false end
-  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], RUNTIME_PATH }
-  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
+  local argv = self:_xray_test_argv(RUNTIME_PATH)
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
   return true
 end
 
@@ -712,8 +742,8 @@ function Runtime:_switch_locked(section_id)
   local encoded, node_id, encode_error = self:_encode(section_id)
   if encode_error then return encode_error end
   self:_atomic_write(CANDIDATE_PATH, encoded)
-  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
-  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
+  local argv = self:_xray_test_argv(CANDIDATE_PATH)
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -773,8 +803,8 @@ function Runtime:_rollback_locked()
   local node_id, marker_ok = decode_active_marker(marker)
   if not marker_ok then return result(false, "no_rollback_state") end
   self:_atomic_write(CANDIDATE_PATH, config)
-  local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], CANDIDATE_PATH }
-  if not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
+  local argv = self:_xray_test_argv(CANDIDATE_PATH)
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -904,8 +934,8 @@ end
 function Runtime:test_current()
   local ok, value = xpcall(function()
     if not self.fs.exists(RUNTIME_PATH) then return result(false, "missing_runtime") end
-    local argv = { XRAY_TEST[1], XRAY_TEST[2], XRAY_TEST[3], XRAY_TEST[4], XRAY_TEST[5] }
-    if action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then return result(true, "test_passed") end
+    local argv = self:_xray_test_argv(RUNTIME_PATH)
+    if argv and action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then return result(true, "test_passed") end
     return result(false, "test_failed")
   end, function() return result(false, "internal_error") end)
   if not ok or not value.ok then self.last_error = value.code or "internal_error" end
@@ -1012,7 +1042,7 @@ function M.new(adapters)
     uci = { "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert" },
     fs = { "acquire_lock", "release_lock", "lock_state", "allocate_generation", "list_generation_files", "trash_generation", "delete_trashed_generation", "read", "write_temp", "chmod", "fsync", "fsync_dir", "close", "rename", "exists", "remove" },
     exec = { "run", "restart", "stop", "listener_ready", "health_check", "service_state" },
-    json = { "stringify" }
+    json = { "stringify", "parse" }
   }
   for adapter, names in pairs(methods) do
     for _, name in ipairs(names) do if type(adapters[adapter][name]) ~= "function" then return nil, "invalid runtime adapters" end end

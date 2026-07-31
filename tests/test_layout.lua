@@ -12,7 +12,7 @@ t.test("Makefile exists", function()
 end)
 
 t.test("package release is bumped for the replacement IPK", function()
-  t.contains(read_file("Makefile"), "PKG_RELEASE:=6")
+  t.contains(read_file("Makefile"), "PKG_RELEASE:=7")
 end)
 
 t.test("package and translation versions stay aligned", function()

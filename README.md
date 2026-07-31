@@ -13,6 +13,8 @@
 - **本地导入**：粘贴分享链接或上传文本/JSON 文件，先预览，确认后导入；不提供订阅拉取
 - **安全切换**：切换前校验 Xray 配置，启动后检查 SOCKS/HTTP 监听和健康检查 URL；失败时恢复上一份可用配置
 - **手动回滚**：保留上一份运行配置，可从状态区域或 `/usr/bin/xc rollback` 回滚
+- **核心管理**：可在 LuCI 上传单个 Xray-core ELF，校验 SHA-256、设备架构、版本和当前配置后再激活
+- **核心回滚**：核心激活失败时自动恢复上一个核心；手动版本不会覆盖 `/usr/bin/xray`
 - **状态监控**：设置页内显示服务状态、当前节点、监听端点和经当前节点访问得到的出口 IP
 - **日志查看**：单一日志页合并 XC 插件日志和 Xray 运行日志，支持全部/错误/警告/信息/调试筛选
 - **隐私保护**：访问日志关闭；节点密码、UUID、分享链接、raw JSON 中的敏感字段和日志中的凭据自动脱敏
@@ -52,7 +54,7 @@ Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`
 - ❌ sing-box 内核支持（纯xray-core）
 - ❌ 专用节点分流页面配置功能
 - ❌ 多用户 / 多配置
-- ❌ 当前版本内置的 Xray 核心上传、替换和自动升级
+- ❌ Xray-core 自动下载、订阅式升级和远程升级
 
 ## 依赖与兼容性
 
@@ -92,10 +94,10 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r6`，常见产物路径为：
+当前源码包版本为 `0.1.0-r7`，常见产物路径为：
 
 ```text
-bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
 ```
 
 ### 路由器直接安装
@@ -103,7 +105,7 @@ bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r6_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r7_all.ipk
 ```
 
 不要使用 `opkg --force-depends`。如果设备已经手动安装了未被 opkg 管理的 Xray，应先确认核心可执行文件和版本，再使用不覆盖该核心的设备适配包；正式发布包仍保留 `xray-core` 依赖。
@@ -118,6 +120,12 @@ opkg install /tmp/luci-app-xc_0.1.0-r6_all.ipk
 4. **配置保存**：新增、编辑、启用/禁用、端口或 URL 修改仍使用 LuCI 的“保存并应用”。这是配置管理流程，与节点快速切换流程分开。
 5. **测速**：使用“测速”测试单个节点，或使用“全部测速”按配置的并发度批量测试；结果显示在“延迟”列。
 6. **日志**：按全部、错误、警告、信息或调试筛选，点击刷新读取最新内容。筛选不会改变 Xray 的后台日志级别。
+
+### Xray-core 手动替换
+
+打开 `服务 → Xray node switching → Xray core`，选择与设备架构匹配的单个 Xray ELF 可执行文件。插件会在设备端计算 SHA-256，并检查 ELF 架构、`xray version` 输出和当前配置的 `run -test`；校验通过后才会写入版本目录。
+
+核心激活使用与节点切换相同的运行锁，更新前保存当前核心，重启后检查服务、监听器和健康检查。失败时自动恢复上一份核心；如果当前是手动核心但没有可用的 previous 标记，页面“回滚”会安全回到系统核心。系统包核心始终指向 `/usr/bin/xray`，手动版本存放在 `/etc/xc/xray/versions/`，不会改写 `opkg` 管理的文件。
 
 ### SOCKS / HTTP 代理
 

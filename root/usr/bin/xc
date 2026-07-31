@@ -2,12 +2,15 @@
 local ok, code = pcall(function()
   local platform = require "xc.platform"
   local runtime_module = require "xc.runtime"
+  local coremanager_module = require "xc.coremanager"
   local cli = require "xc.cli"
   local importer = require "xc.importer"
   local adapters = platform.new()
   assert(adapters.fs.ensure_layout())
   local runtime = assert(runtime_module.new(adapters))
+  local core_manager = assert(coremanager_module.new(adapters))
   adapters.runtime = runtime
+  adapters.core = core_manager
   adapters.importer = importer
   adapters.output = function(value) io.stdout:write(value, "\n") end
   return cli.main(arg, adapters)

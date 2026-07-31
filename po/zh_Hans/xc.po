@@ -366,6 +366,9 @@ msgstr "XC 日志已清空，Xray 和系统日志仍保留。"
 msgid "XC runtime and Xray core logs are shown here. Sensitive values are redacted."
 msgstr "此处显示 XC 运行日志和 Xray 内核日志，敏感信息已脱敏。"
 
+msgid "Xray core"
+msgstr "Xray 核心"
+
 msgid "Xray log level"
 msgstr "Xray 日志级别"
 
@@ -374,3 +377,105 @@ msgstr "Xray 节点切换"
 
 msgid "Xray"
 msgstr "Xray"
+
+msgid "Actions"
+msgstr "操作"
+
+msgid "Activate"
+msgstr "激活"
+
+msgid "Architecture"
+msgstr "架构"
+
+msgid "Confirm Xray core rollback? The service may restart."
+msgstr "确认回滚 Xray 核心？服务可能会重启。"
+
+msgid "Confirm activation of this Xray core? The service may restart."
+msgstr "确认激活这个 Xray 核心？服务可能会重启。"
+
+msgid "Confirm deletion of this inactive Xray core?"
+msgstr "确认删除这个未激活的 Xray 核心？"
+
+msgid "Core file"
+msgstr "核心文件"
+
+msgid "Current core"
+msgstr "当前核心"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Expected SHA-256 (optional)"
+msgstr "期望 SHA-256（可选）"
+
+msgid "Installed versions"
+msgstr "已安装版本"
+
+msgid "Manage Xray core versions. Uploaded files are validated before activation; system package files are never overwritten."
+msgstr "管理 Xray 核心版本。文件会先校验，激活时不会覆盖系统软件包文件。"
+
+msgid "Manual core"
+msgstr "手动核心"
+
+msgid "No installed core versions"
+msgstr "暂无已安装核心"
+
+msgid "Note (optional)"
+msgstr "备注（可选）"
+
+msgid "Only a single Xray ELF executable matching this device architecture is accepted."
+msgstr "只接受与当前设备架构匹配的单个 Xray ELF 可执行文件。"
+
+msgid "Refresh status"
+msgstr "刷新状态"
+
+msgid "Rollback"
+msgstr "回滚"
+
+msgid "Size"
+msgstr "大小"
+
+msgid "Source"
+msgstr "来源"
+
+msgid "System core"
+msgstr "系统核心"
+
+msgid "The core was validated and installed; it can now be activated."
+msgstr "核心已校验并安装，现在可以激活。"
+
+msgid "The interface is not available"
+msgstr "接口尚未启用"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "Upload and validate"
+msgstr "上传并校验"
+
+msgid "Upload and validate core"
+msgstr "上传并校验核心"
+
+msgid "Validated"
+msgstr "已校验"
+
+msgid "Binary validated"
+msgstr "已完成二进制校验"
+
+msgid "Configuration validated"
+msgstr "已完成配置校验"
+
+msgid "Validation status"
+msgstr "校验状态"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Xray core management"
+msgstr "Xray 核心管理"
+
+msgid "Use system core"
+msgstr "使用系统核心"
+
+msgid "Confirm activation of the system Xray core? The service may restart."
+msgstr "确认切换到系统 Xray 核心？服务可能会重启。"

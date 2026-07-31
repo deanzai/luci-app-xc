@@ -15,6 +15,7 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
     "list_generation_files", "trash_generation", "delete_trashed_generation", "listener_ready", "health_check", "observe_exit_ip",
     "service_state", "stringify"
   }) do t.contains(source, name .. " = function") end
+  t.contains(source, "stat_nofollow = function")
   t.contains(source, "nixio.open")
   t.contains(source, ':lock("tlock")')
   t.contains(source, ":sync()")
@@ -35,6 +36,13 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.eq(source:find(":flock", 1, true), nil)
   t.eq(source:find("384", 1, true), nil)
   t.eq(source:find("448", 1, true), nil)
+end)
+
+t.test("platform nofollow stat checks every path component", function()
+  local source = read_file("root/usr/lib/lua/xc/platform.lua")
+  t.contains(source, 'for component in path:gmatch("[^/]+") do')
+  t.contains(source, 'prefix = prefix and prefix .. "/" .. component')
+  t.contains(source, 'nixio.open(prefix, nixio.open_flags("rdonly") + O_NOFOLLOW)')
 end)
 
 t.test("platform syncs a nofollow directory fd without the unsupported O_DIRECTORY flag", function()
@@ -139,6 +147,15 @@ t.test("CLI entrypoint loads concrete adapters and emits JSON only", function()
   t.contains(source, 'require "xc.cli"')
   t.contains(source, "adapters.fs.ensure_layout()")
   t.eq(source:find("io.stderr", 1, true), nil)
+  t.contains(source, 'require "xc.coremanager"')
+  t.contains(source, "adapters.core = core_manager")
+end)
+
+t.test("CLI core status recovers pending transactions before reading status", function()
+  local source = read_file("root/usr/lib/lua/xc/cli.lua")
+  local recover = assert(source:find('pcall(deps.core.recover_pending, deps.core)', 1, true))
+  local status = assert(source:find('return finish(deps, deps.core:status())', 1, true))
+  t.truthy(recover < status)
 end)
 
 t.test("platform provisions private runtime directories on a clean filesystem", function()
@@ -203,4 +220,122 @@ t.test("runtime restart uses a prepared fixed-argv action while ordinary reload 
   t.contains(reload_body, "stop || return 1")
   local prepared_body = assert(init:match("restart_prepared%(%) {%s*(.-)%s*}"))
   t.truthy(prepared_body:find("XC_RUNTIME_PREPARED=1", 1, true) < prepared_body:find("stop", 1, true))
+end)
+
+t.test("core.lua rejects shell, io.popen, and unsafe path traversal", function()
+  local source = read_file("root/usr/lib/lua/xc/core.lua")
+  t.eq(source:find("os.execute", 1, true), nil)
+  t.eq(source:find("io.popen", 1, true), nil)
+  t.eq(source:find('"shell"', 1, true), nil)
+  t.eq(source:find("'shell'", 1, true), nil)
+  t.contains(source, "VERSIONS_DIR")
+  t.contains(source, "SYSTEM_XRAY")
+  t.contains(source, "safe_id")
+  t.contains(source, "safe_path")
+  t.contains(source, "/etc/xc/xray/")
+end)
+
+t.test("init script recovers a pending core transaction before resolving xray", function()
+  local init = read_file("root/etc/init.d/xc")
+  t.contains(init, "if [ -f /etc/xc/xray/transaction ]; then")
+  t.contains(init, "/usr/bin/xc core-recover")
+  t.contains(init, 'XC_RUNTIME_PREPARED" != "1"')
+  local start_body = assert(init:match("start_service%(%) {%s*(.-)%s*}"))
+  local transaction_index = start_body:find("transaction", 1, true)
+  local prepared_index = start_body:find('"$XC_RUNTIME_PREPARED" != "1"', 1, true)
+  t.truthy(transaction_index)
+  t.truthy(prepared_index)
+  t.truthy(transaction_index > prepared_index)
+end)
+
+t.test("init script rejects symlinked manual cores and only accepts safe IDs", function()
+  local init = read_file("root/etc/init.d/xc")
+  t.contains(init, "[ ! -L \"$path\" ]")
+  local resolve_body = assert(init:match("resolve_xray%(%) {%s*(.-)%s*}"))
+  t.contains(resolve_body, "*[!a-z0-9_-]*")
+  t.contains(resolve_body, "/etc/xc/xray/versions/$current/xray")
+  t.contains(resolve_body, "-x \"$path\"")
+  t.contains(resolve_body, "/etc/xc/xray/versions/$current/manifest.json")
+  t.contains(resolve_body, "sha256sum \"$path\"")
+  t.contains(resolve_body, '"$manifest_id" = "$current"')
+  t.contains(resolve_body, 'ls -ld "$path" 2>/dev/null')
+  t.contains(resolve_body, 'ls -ld "$manifest" 2>/dev/null')
+  t.eq(resolve_body:find('stat -c %a', 1, true), nil)
+end)
+
+t.test("core upload streams a single fixed field and removes temp files on failure", function()
+  local source = read_file("luasrc/controller/xc.lua")
+  t.contains(source, "http.setfilehandler")
+  t.contains(source, 'local field_name = type(field) == "table" and field.name or field')
+  t.contains(source, 'if field_name ~= "core_file" then return end')
+  t.contains(source, "adapters.fs.write_upload(upload, chunk, CORE_UPLOAD_MAX)")
+  t.contains(source, "adapters.fs.close_upload(upload, true)")
+  local coremanager = read_file("root/usr/lib/lua/xc/coremanager.lua")
+  t.contains(coremanager, "self.fs.read_prefix(path, MAX_HEADER)")
+  t.contains(coremanager, '"read_prefix"')
+  t.contains(coremanager, "self.fs.chmod(path, 700)")
+  local platform = read_file("root/usr/lib/lua/xc/platform.lua")
+  t.contains(platform, 'path:match("^/var/etc/xc/%.core%-upload%-[0-9A-Za-z_-]+$")')
+  local removals = 0
+  for _ in source:gmatch("pcall%(adapters%.fs%.remove, upload%.path%)") do removals = removals + 1 end
+  t.truthy(removals >= 2)
+end)
+
+t.test("platform listener_ready retries while the listener is not ready", function()
+  package.loaded["xc.platform"] = nil
+  local platform = require "xc.platform"
+  local connects = 0
+  local now_value = 100.0
+  local function fake_handle()
+    local current = tostring(now_value) .. " 200.00\n"
+    return {
+      read = function() return current end,
+      close = function() return true end
+    }
+  end
+  local function advance()
+    now_value = now_value + 0.5
+  end
+  local function build(succeed_on)
+    connects = 0
+    local nixio = {
+      socket = function()
+        return {
+          setblocking = function() return true end,
+          connect = function()
+            connects = connects + 1
+            if connects >= succeed_on then return true, 0 end
+            return nil, 111
+          end,
+          getsockopt = function() return 0 end,
+          close = function() return true end
+        }
+      end,
+      poll_flags = function() return 12 end,
+      poll = function() return 1 end,
+      const = { EINPROGRESS = 115, EWOULDBLOCK = 11, EAGAIN = 11 },
+      open = function(path, flags)
+        if path == "/proc/uptime" then advance(); return fake_handle() end
+        return nil
+      end,
+      open_flags = function() return 0 end,
+      sysinfo = function() return {} end,
+      nanosleep = function() end
+    }
+    return platform.new({
+      nixio = nixio,
+      fs = {}, cursor = { foreach = function() end }, uci_module = {},
+      jsonc = { parse = function() end, stringify = function() return "{}" end },
+      now = function() return now_value end
+    })
+  end
+
+  local adapters = build(2)
+  t.eq(adapters.exec.listener_ready("socks", "192.168.13.1", 7890, now_value + 10), true)
+  t.eq(connects, 2)
+
+  now_value = 100.0
+  local timeout_adapters = build(math.huge)
+  t.eq(timeout_adapters.exec.listener_ready("http", "192.168.13.1", 10809, now_value + 2), false)
+  t.truthy(connects < 150)
 end)

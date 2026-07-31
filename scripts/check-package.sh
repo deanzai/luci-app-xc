@@ -26,16 +26,20 @@ check root/usr/lib/lua/xc/runtime.lua
 check root/usr/lib/lua/xc/probe.lua
 check root/usr/lib/lua/xc/platform.lua
 check root/usr/lib/lua/xc/cli.lua
+check root/usr/lib/lua/xc/core.lua
+check root/usr/lib/lua/xc/coremanager.lua
 check luasrc/controller/xc.lua
 check luasrc/model/cbi/xc/settings.lua
 check luasrc/model/cbi/xc/nodes.lua
 check luasrc/model/cbi/xc/node.lua
 check luasrc/model/cbi/xc/log.lua
+check luasrc/model/cbi/xc/core.lua
 check luasrc/view/xc/status.htm
 check luasrc/view/xc/node_table.htm
 check luasrc/view/xc/ping.htm
 check luasrc/view/xc/import.htm
 check luasrc/view/xc/log.htm
+check luasrc/view/xc/core.htm
 check po/templates/xc.pot
 check po/zh_Hans/xc.po
 

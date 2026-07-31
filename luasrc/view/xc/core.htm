@@ -1,0 +1,350 @@
+<%
+local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
+%>
+<div id="xc-core-page"
+  data-core-status-url="<%=dispatcher.build_url("admin", "services", "xc", "core-status")%>"
+  data-core-upload-url="<%=dispatcher.build_url("admin", "services", "xc", "core-upload")%>"
+  data-core-activate-url="<%=dispatcher.build_url("admin", "services", "xc", "core-activate")%>"
+  data-core-rollback-url="<%=dispatcher.build_url("admin", "services", "xc", "core-rollback")%>"
+  data-core-delete-url="<%=dispatcher.build_url("admin", "services", "xc", "core-delete")%>"
+  data-core-token="<%=token%>">
+  <div class="cbi-section">
+    <h3><%:Xray core management%></h3>
+    <p class="cbi-section-descr"><%:Manage Xray core versions. Uploaded files are validated before activation; system package files are never overwritten.%></p>
+  </div>
+
+  <div class="cbi-section xc-core-current">
+    <h3><%:Current core%></h3>
+    <dl class="cbi-value-list">
+      <dt><%:Source%></dt><dd id="xc-core-current-source"><%:System core%></dd>
+      <dt><%:Version%></dt><dd id="xc-core-current-version"><%:Unavailable%></dd>
+      <dt><%:Architecture%></dt><dd id="xc-core-current-arch"><%:Unavailable%></dd>
+      <dt>SHA-256</dt><dd id="xc-core-current-sha256" class="xc-core-hash"><%:Unavailable%></dd>
+      <dt><%:Runtime status%></dt><dd id="xc-core-current-status" class="xc-core-status xc-core-status-unknown"><%:Unknown%></dd>
+    </dl>
+    <div class="cbi-page-actions">
+      <input id="xc-core-system-action" type="button" class="cbi-button cbi-button-action"
+        data-core-action="activate" data-core-id="system" value="<%:Use system core%>" disabled="disabled" />
+      <input id="xc-core-refresh" type="button" class="cbi-button cbi-button-apply" value="<%:Refresh status%>" />
+    </div>
+  </div>
+
+  <div class="cbi-section xc-core-upload-section">
+    <h3><%:Upload and validate core%></h3>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-core-upload-file"><%:Core file%></label>
+      <div class="cbi-value-field">
+        <input id="xc-core-upload-file" name="core_file" type="file" accept="application/octet-stream" />
+        <div class="cbi-value-description"><%:Only a single Xray ELF executable matching this device architecture is accepted.%></div>
+      </div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-core-upload-sha256"><%:Expected SHA-256 (optional)%></label>
+      <div class="cbi-value-field"><input id="xc-core-upload-sha256" name="sha256" type="text" maxlength="64" autocomplete="off" /></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-core-upload-note"><%:Note (optional)%></label>
+      <div class="cbi-value-field"><input id="xc-core-upload-note" name="note" type="text" maxlength="256" autocomplete="off" /></div>
+    </div>
+    <div class="cbi-page-actions">
+      <input id="xc-core-upload" type="button" class="cbi-button cbi-button-action" value="<%:Upload and validate%>" disabled="disabled" />
+    </div>
+  </div>
+
+  <div class="cbi-section xc-core-installed">
+    <h3><%:Installed versions%></h3>
+    <div class="table xc-core-version-table">
+      <div class="tr table-titles">
+        <div class="th"><%:Version%></div>
+        <div class="th"><%:Architecture%></div>
+        <div class="th"><%:Size%></div>
+        <div class="th">SHA-256</div>
+        <div class="th"><%:Validation status%></div>
+        <div class="th"><%:Actions%></div>
+      </div>
+      <div id="xc-core-versions"></div>
+    </div>
+  </div>
+
+  <div id="xc-core-operation-state" class="cbi-section xc-core-operation-state" role="status" aria-live="polite"></div>
+</div>
+
+<style type="text/css">
+.xc-core-hash { word-break: break-all; font-family: monospace; }
+.xc-core-status-running { color: #278a2a; }
+.xc-core-status-error { color: #c33; }
+.xc-core-status-unknown { color: #777; }
+.xc-core-version-table .td, .xc-core-version-table .th { vertical-align: middle; }
+.xc-core-version-actions input { margin: 0 0.25em 0.25em 0; }
+.xc-core-operation-state:empty { display: none; }
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+  "use strict";
+
+  var page = document.getElementById("xc-core-page");
+  if (!page) return;
+
+  var text = {
+    unavailable: <%=util.serialize_json(translate("Unavailable"))%>,
+    unknown: <%=util.serialize_json(translate("Unknown"))%>,
+    running: <%=util.serialize_json(translate("Running"))%>,
+    error: <%=util.serialize_json(translate("Error"))%>,
+    system: <%=util.serialize_json(translate("System core"))%>,
+    manual: <%=util.serialize_json(translate("Manual core"))%>,
+    systemActivate: <%=util.serialize_json(translate("Use system core"))%>,
+    current: <%=util.serialize_json(translate("Current"))%>,
+    rollback: <%=util.serialize_json(translate("Rollback"))%>,
+    activate: <%=util.serialize_json(translate("Activate"))%>,
+    remove: <%=util.serialize_json(translate("Delete"))%>,
+    validated: <%=util.serialize_json(translate("Validated"))%>,
+    binaryValidated: <%=util.serialize_json(translate("Binary validated"))%>,
+    fullValidated: <%=util.serialize_json(translate("Configuration validated"))%>,
+    empty: <%=util.serialize_json(translate("No installed core versions"))%>,
+    unavailableAction: <%=util.serialize_json(translate("The interface is not available"))%>,
+    completed: <%=util.serialize_json(translate("Operation completed"))%>,
+    uploaded: <%=util.serialize_json(translate("The core was validated and installed; it can now be activated."))%>,
+    confirmActivate: <%=util.serialize_json(translate("Confirm activation of this Xray core? The service may restart."))%>,
+    confirmRollback: <%=util.serialize_json(translate("Confirm Xray core rollback? The service may restart."))%>,
+    confirmRemove: <%=util.serialize_json(translate("Confirm deletion of this inactive Xray core?"))%>
+    ,confirmSystem: <%=util.serialize_json(translate("Confirm activation of the system Xray core? The service may restart."))%>
+  };
+
+  var elements = {
+    source: document.getElementById("xc-core-current-source"),
+    version: document.getElementById("xc-core-current-version"),
+    arch: document.getElementById("xc-core-current-arch"),
+    sha256: document.getElementById("xc-core-current-sha256"),
+    status: document.getElementById("xc-core-current-status"),
+    file: document.getElementById("xc-core-upload-file"),
+    shaInput: document.getElementById("xc-core-upload-sha256"),
+    note: document.getElementById("xc-core-upload-note"),
+    upload: document.getElementById("xc-core-upload"),
+    versions: document.getElementById("xc-core-versions"),
+    operation: document.getElementById("xc-core-operation-state"),
+    system: document.getElementById("xc-core-system-action"),
+    refresh: document.getElementById("xc-core-refresh")
+  };
+  if (elements.system) elements.system.setAttribute("data-core-id", "system");
+
+  function safeId(value) {
+    return typeof value === "string" && value.length <= 128 && /^[a-z0-9][a-z0-9_%-]*$/.test(value);
+  }
+
+  function safeVersion(value) {
+    return typeof value === "string" && value.length <= 64 && /^[a-z0-9][a-z0-9_.%-]*$/.test(value);
+  }
+
+  function safeArch(value) {
+    return typeof value === "string" && value.length <= 32 && /^[a-z0-9_]+$/.test(value);
+  }
+
+  function safeHash(value) {
+    return typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
+  }
+
+  function setText(element, value) {
+    if (element) element.textContent = value;
+  }
+
+  function currentSource(value) {
+    if (value === "system") return text.system;
+    if (value === "manual") return text.manual;
+    return text.unavailable;
+  }
+
+  function currentStatus(value) {
+    if (value === "running") return text.running;
+    if (value === "error") return text.error;
+    return text.unknown;
+  }
+
+  function renderStatus(payload) {
+    payload = payload && typeof payload === "object" ? payload : {};
+    var current = payload.current_info && typeof payload.current_info === "object" ? payload.current_info :
+      (payload.current && typeof payload.current === "object" ? payload.current : {});
+    var marker = typeof payload.current === "string" ? payload.current : (current.source || "system");
+    if (Array.isArray(payload.versions)) {
+      for (var i = 0; i < payload.versions.length; i++) {
+        if (payload.versions[i] && payload.versions[i].id === marker) { current = payload.versions[i]; break; }
+      }
+    }
+    var status = payload.status || payload.current_status || current.status;
+    setText(elements.source, currentSource(marker));
+    setText(elements.version, safeVersion(current.version) ? current.version : text.unavailable);
+    setText(elements.arch, safeArch(current.arch) ? current.arch : text.unavailable);
+    setText(elements.sha256, safeHash(current.sha256) ? current.sha256.toLowerCase() : text.unavailable);
+    setText(elements.status, currentStatus(status));
+    if (elements.system) {
+      elements.system.disabled = marker === "system";
+      elements.system.value = marker === "system" ? text.current : text.systemActivate;
+    }
+    if (elements.status) elements.status.className = "xc-core-status xc-core-status-" +
+      (status === "running" || status === "error" ? status : "unknown");
+  }
+
+  function request(method, url, body, callback) {
+    if (typeof XMLHttpRequest !== "function") { unavailable(); return; }
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      callback(payload && typeof payload === "object" ? payload : null);
+    };
+    xhr.open(method, url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(page.getAttribute("data-core-token") || ""), true);
+    if (typeof body === "string") xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+    xhr.send(body || null);
+  }
+
+  function loadStatus() {
+    if (typeof XMLHttpRequest !== "function") { unavailable(); return; }
+    request("GET", page.getAttribute("data-core-status-url"), null, function(payload) {
+      if (!payload || payload.ok !== true || !payload.data) { unavailable(); return; }
+      renderStatus(payload.data);
+      renderVersions(payload.data.versions);
+    });
+  }
+
+  function clear(element) {
+    while (element && element.firstChild) element.removeChild(element.firstChild);
+  }
+
+  function validVersion(value) {
+    return value && typeof value === "object" && safeId(value.id) && safeVersion(value.version) &&
+      safeArch(value.arch) && safeHash(value.sha256) && typeof value.size === "number" &&
+      isFinite(value.size) && Math.floor(value.size) === value.size && value.size >= 0 &&
+      value.size <= 67108864 && (!value.validation || value.validation === "binary" || value.validation === "full");
+  }
+
+  function validationText(value) {
+    if (value === "full") return text.fullValidated;
+    if (value === "binary") return text.binaryValidated;
+    return text.validated;
+  }
+
+  function cell(row, value, className) {
+    var item = document.createElement("div");
+    item.className = "td" + (className ? " " + className : "");
+    item.textContent = value;
+    row.appendChild(item);
+    return item;
+  }
+
+  function actionButton(action, id, label, disabled, confirmation) {
+    var button = document.createElement("input");
+    button.type = "button";
+    button.className = "cbi-button cbi-button-action";
+    button.value = label;
+    button.setAttribute("data-core-action", action);
+    button.setAttribute("data-core-id", id);
+    button.disabled = disabled === true;
+    button.onclick = function() {
+      if (button.disabled || !confirm(confirmation)) return;
+      var url = page.getAttribute("data-core-" + (action === "delete" ? "delete" : action) + "-url");
+      var body = "id=" + encodeURIComponent(id);
+      request("POST", url, body, function(payload) {
+        if (!payload || payload.ok !== true) {
+          elements.operation.textContent = payload && payload.message ? payload.message : text.unavailableAction;
+          return;
+        }
+        elements.operation.textContent = text.completed;
+        loadStatus();
+      });
+    };
+    return button;
+  }
+
+  function renderVersions(values) {
+    clear(elements.versions);
+    var count = 0;
+    if (Array.isArray(values)) {
+      for (var index = 0; index < values.length; index++) {
+        var version = values[index];
+        if (!validVersion(version)) continue;
+        var row = document.createElement("div");
+        row.className = "tr" + (version.current === true ? " xc-core-version-current" : "");
+        row.setAttribute("data-core-id", version.id);
+        cell(row, version.version);
+        cell(row, version.arch);
+        cell(row, String(version.size));
+        cell(row, version.sha256.toLowerCase(), "xc-core-hash");
+         cell(row, version.current === true ? text.current : version.previous === true ? text.rollback : validationText(version.validation));
+        var actions = document.createElement("div");
+        actions.className = "td xc-core-version-actions";
+        if (version.current === true) {
+          actions.appendChild(actionButton("current", version.id, text.current, true, ""));
+        } else if (version.previous === true) {
+          actions.appendChild(actionButton("rollback", version.id, text.rollback, false, text.confirmRollback));
+        } else {
+          actions.appendChild(actionButton("activate", version.id, text.activate, false, text.confirmActivate));
+          actions.appendChild(actionButton("delete", version.id, text.remove, false, text.confirmRemove));
+        }
+        row.appendChild(actions);
+        elements.versions.appendChild(row);
+        count++;
+      }
+    }
+    if (count === 0) elements.versions.textContent = text.empty;
+  }
+
+  function updateUploadState() {
+    elements.upload.disabled = !(elements.file && elements.file.files && elements.file.files.length > 0);
+  }
+
+  function unavailable() {
+    elements.operation.textContent = text.unavailableAction;
+  }
+
+  elements.file.onchange = updateUploadState;
+  elements.system.onclick = function() {
+    if (elements.system.disabled || typeof XMLHttpRequest !== "function" || !confirm(text.confirmSystem)) return;
+    request("POST", page.getAttribute("data-core-activate-url"), "id=system", function(payload) {
+      if (!payload || payload.ok !== true) {
+        elements.operation.textContent = payload && payload.message ? payload.message : text.unavailableAction;
+        return;
+      }
+      elements.operation.textContent = text.completed;
+      loadStatus();
+    });
+  };
+  elements.upload.onclick = function() {
+    if (elements.upload.disabled || typeof XMLHttpRequest !== "function" || typeof FormData !== "function") { unavailable(); return; }
+    var form = new FormData();
+    form.append("core_file", elements.file.files[0]);
+    form.append("sha256", elements.shaInput.value || "");
+    form.append("note", elements.note.value || "");
+    elements.upload.disabled = true;
+    request("POST", page.getAttribute("data-core-upload-url"), form, function(payload) {
+      elements.upload.disabled = false;
+      if (!payload || payload.ok !== true) {
+        elements.operation.textContent = payload && payload.message ? payload.message : text.unavailableAction;
+        return;
+      }
+      elements.operation.textContent = text.uploaded;
+      elements.file.value = "";
+      updateUploadState();
+      loadStatus();
+    });
+  };
+  elements.refresh.onclick = loadStatus;
+  updateUploadState();
+  loadStatus();
+
+  window.XCCoreUI = {
+    endpoints: {
+      status: page.getAttribute("data-core-status-url"),
+      upload: page.getAttribute("data-core-upload-url"),
+      activate: page.getAttribute("data-core-activate-url"),
+      rollback: page.getAttribute("data-core-rollback-url"),
+      remove: page.getAttribute("data-core-delete-url")
+    },
+    renderStatus: renderStatus,
+    renderVersions: renderVersions
+  };
+}());
+//]]>
+</script>
