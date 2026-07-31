@@ -53,6 +53,7 @@ t.test("CI installs required runtimes and runs the complete host verification", 
   t.contains(workflow, "lua5.1 -v")
   t.contains(workflow, "node --version")
   t.contains(workflow, "sh tests/run-host.sh")
+  t.contains(workflow, "FEED_DIR: ${{ github.workspace }}/..")
   t.eq(workflow:find("if command -v lua5.1", 1, true), nil)
   t.contains(aggregate, '"$lua51" tests/run.lua')
   t.contains(aggregate, "node tests/test_task9_ui.js")

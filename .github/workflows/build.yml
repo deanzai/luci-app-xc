@@ -35,6 +35,7 @@ jobs:
         uses: openwrt/gh-action-sdk@797d0e3d0eb13b355c3447f60d0179d4b43089e2
         env:
           ARCH: x86_64-openwrt-21.02
+          FEED_DIR: ${{ github.workspace }}/..
           PACKAGES: luci-app-xc
           BUILD_LOG: 1
           V: s
@@ -55,6 +56,7 @@ jobs:
         uses: openwrt/gh-action-sdk@797d0e3d0eb13b355c3447f60d0179d4b43089e2
         env:
           ARCH: x86_64-24.10.8
+          FEED_DIR: ${{ github.workspace }}/..
           PACKAGES: luci-app-xc
           BUILD_LOG: 1
           V: s
