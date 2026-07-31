@@ -1,17 +1,49 @@
 # luci-app-xc
 
-适用于 OpenWrt / ImmortalWrt 21.02–24.10 的 LuCI Xray 节点管理插件。
+适用于 OpenWrt / ImmortalWrt 21.02–24.10 的 LuCI Xray 自建节点管理与切换插件。
+
+插件使用 Xray-core 作为运行内核，只管理一组自建节点。启用后，当前选中的节点作为统一出口；暂不实现订阅、透明代理或专用分流。
 
 ## 功能
 
-- **节点管理**：新增、编辑、删除自建节点，支持 VLESS、VMess、Trojan、Shadowsocks、SOCKS、raw outbound
-- **手动切换**：选择一个节点后所有流量统一走该节点
-- **快速测速**：单节点或全部测试，并发度 1–5（默认 3），参考 SSR Plus 风格
-- **本地导入**：通过粘贴或文件导入分享链接，预览确认后提交
-- **健康切换**：切换节点时自动验证 Xray 配置、监听端口和 HTTP 健康检查，失败自动回滚
-- **手动回滚**：保留上一份可用配置，一键恢复
-- **状态监控**：5 秒轮询显示运行状态、Endpoints 与出口 IP
-- **日志查看**：尾部读取 / 清空操作日志，明文内容自动脱敏
+- **节点管理**：新增、编辑、删除和启用/禁用节点
+- **协议支持**：结构化支持 VLESS、VMess、Trojan、Shadowsocks、SOCKS；不常见组合可填写完整的 raw outbound JSON
+- **快速切换**：节点行内直接切换，成功后当前节点高亮，不需要等待 CBI 页面保存并刷新
+- **节点测速**：单节点测速或全部测速；并发度可设置为 1–5，默认 3。测速是连通性与延迟测试，不是带宽测速
+- **本地导入**：粘贴分享链接或上传文本/JSON 文件，先预览，确认后导入；不提供订阅拉取
+- **安全切换**：切换前校验 Xray 配置，启动后检查 SOCKS/HTTP 监听和健康检查 URL；失败时恢复上一份可用配置
+- **手动回滚**：保留上一份运行配置，可从状态区域或 `/usr/bin/xc rollback` 回滚
+- **状态监控**：设置页内显示服务状态、当前节点、监听端点和经当前节点访问得到的出口 IP
+- **日志查看**：单一日志页合并 XC 插件日志和 Xray 运行日志，支持全部/错误/警告/信息/调试筛选
+- **隐私保护**：访问日志关闭；节点密码、UUID、分享链接、raw JSON 中的敏感字段和日志中的凭据自动脱敏
+
+## 设置项
+
+设置页中的主要选项如下：
+
+| 设置 | 说明 | 默认值 |
+| --- | --- | --- |
+| Enable | 启用或停用 XC 服务 | 关闭 |
+| Xray log level | 控制 Xray 后台实际产生的运行日志 | `warning` |
+| Active node | 选择当前统一出口节点；只有启用的节点可选 | 未选择 |
+| Listen mode | 当前支持 LAN 地址 | `lan` |
+| Listen address | 从 `network.lan` 自动获取，页面只读；失败时回退 `127.0.0.1` | 自动 |
+| SOCKS port | 本地 SOCKS5 监听端口 | `7890` |
+| HTTP port | 本地 HTTP CONNECT 监听端口 | `10809` |
+| Probe concurrency | 全部测速时的并发数 | `3` |
+| Probe timeout | 单节点连通性测试超时时间，范围 1–10 秒 | `3` 秒 |
+| Probe URL | 节点测速使用的 HTTP/HTTPS 地址 | `https://www.gstatic.com/generate_204` |
+| Health check URL | 切换后健康检查及出口 IP 检测地址 | `https://api.ipify.org` |
+| Health check timeout | 切换后的健康检查超时时间，范围 1–30 秒 | `15` 秒 |
+
+Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`warning` 产生警告和错误，`info` 产生信息及更严重日志，`debug` 产生完整调试日志。日志页的筛选只是筛选已经产生的日志，不会让 Xray 临时生成更低级别的日志。
+
+日志页只有一个页签，显示两类来源：
+
+- XC 自身的启动、停止、切换、测速、导入、回滚、配置渲染和错误记录
+- Xray 运行时日志（通过系统日志读取，访问日志保持关闭）
+
+“清空日志”只清空 XC 自身日志，不会清除 OpenWrt 的共享系统日志或 Xray 历史记录。
 
 ## 不包含
 
@@ -20,18 +52,30 @@
 - ❌ sing-box 内核支持
 - ❌ 专用节点分流
 - ❌ 多用户 / 多配置
+- ❌ 当前版本内置的 Xray 核心上传、替换和自动升级
 
-## 依赖
+## 依赖与兼容性
 
-- `luci-compat` `lua` `libuci-lua` `luci-lib-jsonc`
-- `curl` `ca-bundle`
-- `xray-core`（建议 >= 1.8.0）
+- `luci-compat`、`lua`、`libuci-lua`、`luci-lib-jsonc`
+- `curl`、`ca-bundle`
+- `xray-core`：由目标 OpenWrt/ImmortalWrt 的 feeds 提供，插件不内置核心
+
+同一份插件源码可以在 21.02 或 24.10 的 SDK/Buildroot 中分别编译，但必须使用对应版本的构建环境和 feeds：
+
+```text
+21.02 SDK/Buildroot -> 21.02 版 luci-app-xc IPK + 21.02 版 xray-core
+24.10 SDK/Buildroot -> 24.10 版 luci-app-xc IPK + 24.10 版 xray-core
+```
+
+不要把 21.02 环境生成的 IPK 当作 24.10 的正式包直接发布。插件包本身虽为 `all` 架构，依赖和 LuCI/核心版本仍由目标发行版决定。
+
+最低支持 Lua 5.1 和 LuCI 21.02；代码不依赖 sing-box，也不要求升级 21.02 的 Go 工具链。
 
 ## 安装
 
 ### 通过 feeds 源
 
-```
+```sh
 cd /path/to/openwrt
 echo "src-git xc https://github.com/deanzai/luci-app-xc.git" >> feeds.conf.default
 ./scripts/feeds update xc
@@ -39,69 +83,84 @@ echo "src-git xc https://github.com/deanzai/luci-app-xc.git" >> feeds.conf.defau
 make package/luci-app-xc/compile V=s
 ```
 
-### SDK 编译
+### SDK 或源码树编译
 
-```
+```sh
 git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 ./scripts/feeds update base
-./scripts/feeds install luci-compat luci-lib-jsonc
+./scripts/feeds install luci-compat luci-lib-jsonc xray-core
 make package/luci-app-xc/compile V=s
 ```
 
-编译产物位于 `bin/packages/*/luci/luci-app-xc_0.1.0-1_all.ipk`。
+当前源码包版本为 `0.1.0-r6`，常见产物路径为：
+
+```text
+bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
+```
 
 ### 路由器直接安装
 
+安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
+
+```sh
+opkg install /tmp/luci-app-xc_0.1.0-r6_all.ipk
 ```
-opkg install /tmp/luci-app-xc_0.1.0-1_all.ipk
-```
 
-安装前会自动备份旧 xc 脚本配置到 `/etc/xc/legacy-backup-<timestamp>/`。
+不要使用 `opkg --force-depends`。如果设备已经手动安装了未被 opkg 管理的 Xray，应先确认核心可执行文件和版本，再使用不覆盖该核心的设备适配包；正式发布包仍保留 `xray-core` 依赖。
 
-## 使用
+## 使用流程
 
-1. 安装后登录 LuCI -> 服务 -> Xray node switching
-2. **设置页**：开启插件，配置监听地址和端口
-3. **节点页**：添加自建节点（支持 VLESS、VMess 等协议）
-4. **状态页**：查看运行状态、测试节点、切换或回滚
-5. **导入页**：粘贴分享链接或上传文件，预览后确认
+安装后打开 LuCI：`服务 → Xray node switching`。
+
+1. **设置**：启用插件，检查监听地址、端口、测速和健康检查参数。
+2. **节点**：新增或编辑自建节点；节点列表同行提供测速、切换、编辑和删除操作。
+3. **切换**：点击目标节点的“切换”。插件会独立完成验证、启动、健康检查和必要的回滚；不需要先点击“保存并应用”。
+4. **配置保存**：新增、编辑、启用/禁用、端口或 URL 修改仍使用 LuCI 的“保存并应用”。这是配置管理流程，与节点快速切换流程分开。
+5. **测速**：使用“测速”测试单个节点，或使用“全部测速”按配置的并发度批量测试；结果显示在“延迟”列。
+6. **日志**：按全部、错误、警告、信息或调试筛选，点击刷新读取最新内容。筛选不会改变 Xray 的后台日志级别。
 
 ### SOCKS / HTTP 代理
 
-启用插件后默认监听：
-- SOCKS5：`192.168.6.1:7890`
-- HTTP CONNECT：`192.168.6.1:10809`
+启用并成功切换节点后，插件监听在当前 LAN 地址的：
 
-## 迁移
+- SOCKS5：`<LAN 地址>:7890`
+- HTTP CONNECT：`<LAN 地址>:10809`
 
-如果从旧版 xc 脚本升级，首次安装时自动：
-1. 备份旧配置到 `/etc/xc/legacy-backup-<timestamp>/`
-2. 转换节点到新 UCI 格式
-3. 仅在新配置通过 Xray 验证后禁用旧服务
+监听地址不是固定的 `192.168.6.1`，而是从设备的 `network.lan` 自动获取。实际地址和端口以状态区域显示为准。
 
-## 恢复
+### 出口 IP
 
-如果新配置出现问题，手动回滚：
+状态页的 `Exit IP` 是通过 XC 本地 SOCKS 监听、经当前节点访问健康检查 URL 后观察到的公网 IP，不是路由器本地 WAN 地址。结果会在受保护的运行目录中短暂缓存；服务或监听不健康时显示 `Unavailable`。
 
-```
+## 迁移与恢复
+
+如果从旧版 xc 切换脚本升级，首次安装会在 `/etc/xc/legacy-backup-<timestamp>/` 创建权限受限的备份，并在验证通过后接管服务：
+
+1. 备份旧的节点、当前配置、运行配置和旧服务文件（存在时）
+2. 将旧节点转换为新 UCI 格式
+3. 用 Xray `run -test` 验证候选配置
+4. 接管成功后停止并禁用旧的 `xc-xray` 服务
+
+迁移失败时保留旧服务和备份，不应强行覆盖配置。出现运行问题时可执行：
+
+```sh
+/usr/bin/xc status
+/usr/bin/xc test
 /usr/bin/xc rollback
 ```
 
-或从备份手动恢复：
+也可以从备份目录手动恢复，然后重新启动旧版脚本服务。恢复前请先确认备份目录和目标文件，避免覆盖新的有效配置。
 
-```
-cp /etc/xc/legacy-backup-*/nodes.json /etc/xc/nodes.json
-# 然后重新安装旧版 xc 脚本
-```
+## 开发与验证
 
-## 开发
-
-```
+```sh
 git clone https://github.com/deanzai/luci-app-xc.git
 cd luci-app-xc
 sh scripts/bootstrap-lua.sh
-.tools/lua5.1 tests/run.lua
+sh tests/run-host.sh
 ```
+
+提交前应在目标 21.02/24.10 构建环境分别编译，并在实际设备验证 LuCI 菜单、配置保存、节点切换、测速、日志和回滚。
 
 ## 许可证
 

@@ -1,37 +1,79 @@
 # luci-app-xc
 
-A LuCI Xray node management plugin for OpenWrt / ImmortalWrt 21.02-24.10.
+A LuCI Xray self-hosted node management and switching plugin for OpenWrt / ImmortalWrt 21.02-24.10.
+
+The plugin uses Xray-core as its runtime kernel and manages one self-hosted node set. The selected node is used as the unified outbound. Subscription management, transparent proxying, and dedicated routing are intentionally out of scope.
 
 ## Features
 
-- **Node Management**: Create, edit, delete self-hosted nodes; supports VLESS, VMess, Trojan, Shadowsocks, SOCKS, raw outbound
-- **Manual Switching**: Select one node; all traffic uses that node
-- **Quick Probes**: Single or bulk node test with configurable concurrency (1-5, default 3), SSR Plus-style
-- **Local Import**: Paste share links or upload files; preview before commit
-- **Healthy Switching**: Automatic Xray config validation, port health checks, and rollback on failure
-- **Manual Rollback**: One-click restore of the last working configuration
-- **Status Monitoring**: 5-second polling with endpoints and exit IP
-- **Log Viewer**: Tail and clear operational logs; secrets automatically redacted
+- **Node management**: Create, edit, delete, and enable/disable nodes
+- **Protocols**: Structured VLESS, VMess, Trojan, Shadowsocks, and SOCKS support; use a complete raw outbound JSON object for uncommon combinations
+- **Quick switching**: Switch from the node row; the successful active node is highlighted without waiting for a CBI save-and-refresh cycle
+- **Node probes**: Test one node or all nodes; concurrency is configurable from 1 to 5 and defaults to 3. This is a connectivity/latency test, not a bandwidth test
+- **Local import**: Paste share links or upload text/JSON files, preview them, then confirm the import; subscription fetching is not included
+- **Healthy switching**: Validate the Xray configuration, check SOCKS/HTTP listeners and the health URL after startup, and restore the last known-good configuration on failure
+- **Manual rollback**: Restore the previous runtime configuration from the status area or `/usr/bin/xc rollback`
+- **Status monitoring**: The Settings page shows service state, active node, listeners, and the exit IP observed through the selected node
+- **Log viewer**: One log page merges XC and Xray runtime logs with All/Error/Warning/Info/Debug filtering
+- **Privacy controls**: Access logging is disabled; node passwords, UUIDs, links, raw JSON secrets, and log credentials are redacted
 
-## Not Included
+## Settings
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| Enable | Enable or disable the XC service | Disabled |
+| Xray log level | Controls which Xray runtime messages are generated | `warning` |
+| Active node | Select the unified outbound; only enabled nodes are listed | Not selected |
+| Listen mode | LAN address mode | `lan` |
+| Listen address | Derived read-only from `network.lan`, with `127.0.0.1` as fallback | Automatic |
+| SOCKS port | Local SOCKS5 listener port | `7890` |
+| HTTP port | Local HTTP CONNECT listener port | `10809` |
+| Probe concurrency | Number of simultaneous requests for “Test all” | `3` |
+| Probe timeout | Per-node connectivity timeout, 1-10 seconds | `3` seconds |
+| Probe URL | HTTP/HTTPS endpoint used by node probes | `https://www.gstatic.com/generate_204` |
+| Health check URL | Endpoint used after switching and for exit-IP observation | `https://api.ipify.org` |
+| Health check timeout | Post-switch health-check timeout, 1-30 seconds | `15` seconds |
+
+The Xray level controls log generation: `error` produces errors only, `warning` produces warnings and errors, `info` includes informational messages, and `debug` enables the most verbose runtime output. The log-page filter only filters logs that already exist; selecting Debug there cannot make an Xray configured at Error emit debug entries.
+
+The single Log page combines:
+
+- XC lifecycle, switching, probing, import, rollback, rendering, and error records
+- Xray runtime records read from the system log; access logging remains disabled
+
+Clear only truncates the XC log. It cannot erase the shared OpenWrt system log or historical Xray entries.
+
+## Not included
 
 - Subscription management
 - Transparent proxy (TPROXY / TUN)
 - sing-box kernel support
 - Dedicated node routing
 - Multi-user / multi-config
+- Built-in Xray core upload, replacement, or automatic upgrade in the current version
 
-## Dependencies
+## Dependencies and compatibility
 
-- `luci-compat` `lua` `libuci-lua` `luci-lib-jsonc`
-- `curl` `ca-bundle`
-- `xray-core` (>= 1.8.0 recommended)
+- `luci-compat`, `lua`, `libuci-lua`, `luci-lib-jsonc`
+- `curl`, `ca-bundle`
+- `xray-core`, supplied by the target OpenWrt/ImmortalWrt feeds; the plugin does not bundle the core
+
+The same plugin source can be built on 21.02 or 24.10, but each target requires its own SDK/Buildroot and feeds:
+
+```text
+21.02 SDK/Buildroot -> 21.02 luci-app-xc IPK + 21.02 xray-core
+24.10 SDK/Buildroot -> 24.10 luci-app-xc IPK + 24.10 xray-core
+```
+
+Do not publish an IPK built in a 21.02 environment as the native 24.10 package. Even though the LuCI package is `all` architecture, its dependencies and runtime compatibility still come from the target distribution.
+
+The minimum compatibility baseline is Lua 5.1 and LuCI 21.02. The plugin does not use sing-box and does not require upgrading the Go toolchain on 21.02.
 
 ## Installation
 
 ### Via feeds
 
-```
+```sh
 cd /path/to/openwrt
 echo "src-git xc https://github.com/deanzai/luci-app-xc.git" >> feeds.conf.default
 ./scripts/feeds update xc
@@ -39,68 +81,84 @@ echo "src-git xc https://github.com/deanzai/luci-app-xc.git" >> feeds.conf.defau
 make package/luci-app-xc/compile V=s
 ```
 
-### SDK build
+### SDK or source-tree build
 
-```
+```sh
 git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 ./scripts/feeds update base
-./scripts/feeds install luci-compat luci-lib-jsonc
+./scripts/feeds install luci-compat luci-lib-jsonc xray-core
 make package/luci-app-xc/compile V=s
 ```
 
-Artifact: `bin/packages/*/luci/luci-app-xc_0.1.0-1_all.ipk`
+The current source package version is `0.1.0-r6`; a typical artifact is:
 
-### Direct install
-
-```
-opkg install /tmp/luci-app-xc_0.1.0-1_all.ipk
+```text
+bin/packages/*/luci/luci-app-xc_0.1.0-r6_all.ipk
 ```
 
-Legacy xc config is automatically backed up to `/etc/xc/legacy-backup-<timestamp>/`.
+### Direct installation
+
+Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
+
+```sh
+opkg install /tmp/luci-app-xc_0.1.0-r6_all.ipk
+```
+
+Do not use `opkg --force-depends`. If the device already has an Xray binary installed outside opkg, verify that binary first and use a device-specific package only when its dependency handling is understood; the normal release package retains the `xray-core` dependency.
 
 ## Usage
 
-1. After install, open LuCI -> Services -> Xray node switching
-2. **Settings**: Enable the plugin, configure listen address and ports
-3. **Nodes**: Add self-hosted nodes
-4. **Status**: View runtime status, test nodes, switch or rollback
-5. **Import**: Paste share links or upload files; preview then commit
+After installation, open LuCI: `Services -> Xray node switching`.
 
-### SOCKS / HTTP Proxy
+1. **Settings**: Enable XC and review listener, probe, and health-check settings.
+2. **Nodes**: Add or edit self-hosted nodes. Each row provides probe, switch, edit, and delete actions.
+3. **Switch**: Click “Switch” on the target row. Validation, startup, health checks, and rollback run independently; “Save & Apply” is not required first.
+4. **Save configuration**: New/edit/enable/disable changes and port or URL changes still use LuCI “Save & Apply”. This configuration flow is separate from quick switching.
+5. **Probe**: Use “Test” for one node or “Test all” for a batch run. Results are shown in the Latency column.
+6. **Logs**: Filter All, Error, Warning, Info, or Debug and click Refresh. The filter does not change Xray’s configured runtime level.
 
-When enabled, listens on:
-- SOCKS5: `192.168.6.1:7890`
-- HTTP CONNECT: `192.168.6.1:10809`
+### SOCKS / HTTP proxy
 
-## Migration
+After XC is enabled and a node is successfully selected, listeners use the current LAN address:
 
-When upgrading from a legacy xc script, the first install will:
-1. Back up old config to `/etc/xc/legacy-backup-<timestamp>/`
-2. Convert nodes to the new UCI format
-3. Disable the old service only after the new config passes Xray validation
+- SOCKS5: `<LAN address>:7890`
+- HTTP CONNECT: `<LAN address>:10809`
 
-## Rollback
+The address is derived from `network.lan`, not hard-coded to `192.168.6.1`. Use the status area for the actual endpoint.
 
-If the new config has issues:
+### Exit IP
 
-```
+`Exit IP` is the public IP observed by requesting the health-check URL through XC’s local SOCKS listener and the selected node. It is not the router’s WAN address. A protected runtime cache avoids repeated requests for a short period; the UI shows `Unavailable` when service or listener health is insufficient.
+
+## Migration and recovery
+
+When upgrading from the legacy xc switching script, the first installation creates a restricted backup under `/etc/xc/legacy-backup-<timestamp>/` and takes over only after validation:
+
+1. Back up legacy nodes, current/runtime configuration, and legacy service files when present.
+2. Convert legacy nodes to the new UCI format.
+3. Validate the candidate with Xray `run -test`.
+4. Stop and disable the old `xc-xray` service only after takeover succeeds.
+
+If migration fails, the legacy service and backup remain available. For runtime recovery:
+
+```sh
+/usr/bin/xc status
+/usr/bin/xc test
 /usr/bin/xc rollback
 ```
 
-Or manually from backup:
+Manual restoration from a backup is also possible, but verify the backup directory and target files before replacing a working configuration.
 
-```
-cp /etc/xc/legacy-backup-*/nodes.json /etc/xc/nodes.json
-```
+## Development and verification
 
-## Development
-
-```
+```sh
 git clone https://github.com/deanzai/luci-app-xc.git
 cd luci-app-xc
 sh scripts/bootstrap-lua.sh
-.tools/lua5.1 tests/run.lua
+sh tests/run-host.sh
 ```
+
+Before a release, build separately in the target 21.02 and 24.10 environments and verify the LuCI menu, configuration save, node switching, probing, logging, and rollback on real devices.
 
 ## License
 
