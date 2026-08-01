@@ -13,7 +13,6 @@ LUCI_PKGARCH:=all
 
 define Package/$(PKG_NAME)/conffiles
 /etc/config/xc
-/etc/xc/
 endef
 
 define Package/$(PKG_NAME)/preinst

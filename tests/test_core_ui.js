@@ -12,6 +12,10 @@ assert.ok(model.includes('section.template = "xc/core"'), "core page delegates r
 assert.ok(model.includes("m.submit = false"), "core page does not submit a CBI form");
 assert.ok(model.includes("m.reset = false"), "core page does not render a reset action");
 assert.ok(model.includes("m.cancel = false"), "core page does not render a cancel action");
+assert.strictEqual(model.includes("XC runtime and Xray core logs are shown here"), false,
+  "core page must not repeat the log page description");
+assert.strictEqual(model.includes('translate("Xray")'), false,
+  "core page should not render a duplicate outer title");
 
 for (const id of [
   "xc-core-page", "xc-core-current-source", "xc-core-current-version",
@@ -31,6 +35,11 @@ assert.strictEqual(view.includes("innerHTML"), false, "core UI must render untru
 assert.strictEqual(view.includes("eval("), false, "core UI must not evaluate server data");
 assert.ok(view.includes("data-core-action"), "core actions are explicit data attributes");
 assert.ok(view.includes("confirm("), "destructive actions require confirmation");
+assert.strictEqual(view.includes('dl class="cbi-value-list"'), false,
+  "current core status uses LuCI table rows instead of definition-list layout");
+assert.ok(view.includes('<div class="table xc-core-current-table">'), "current core status has a table wrapper");
+assert.ok(view.includes('<div class="tr">'), "current core status has status-style rows");
+assert.ok(view.includes('<div class="td left"'), "current core status has left/right cells");
 
 function hasClass(node, name) {
   return (" " + node.className + " ").indexOf(" " + name + " ") >= 0;

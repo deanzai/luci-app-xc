@@ -15,6 +15,12 @@ t.test("package release is bumped for the replacement IPK", function()
   t.contains(read_file("Makefile"), "PKG_RELEASE:=9")
 end)
 
+t.test("runtime XC directory is not declared as an opkg conffile", function()
+  local makefile = read_file("Makefile")
+  t.eq(makefile:find("\n/etc/xc/\n", 1, true), nil,
+    "opkg conffiles must contain files, not the runtime directory")
+end)
+
 t.test("package and translation versions stay aligned", function()
   t.contains(read_file("Makefile"), "PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)")
 end)

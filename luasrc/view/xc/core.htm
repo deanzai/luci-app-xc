@@ -16,13 +16,28 @@ local util = require "luci.util"
 
   <div class="cbi-section xc-core-current">
     <h3><%:Current core%></h3>
-    <dl class="cbi-value-list">
-      <dt><%:Source%></dt><dd id="xc-core-current-source"><%:System core%></dd>
-      <dt><%:Version%></dt><dd id="xc-core-current-version"><%:Unavailable%></dd>
-      <dt><%:Architecture%></dt><dd id="xc-core-current-arch"><%:Unavailable%></dd>
-      <dt>SHA-256</dt><dd id="xc-core-current-sha256" class="xc-core-hash"><%:Unavailable%></dd>
-      <dt><%:Runtime status%></dt><dd id="xc-core-current-status" class="xc-core-status xc-core-status-unknown"><%:Unknown%></dd>
-    </dl>
+    <div class="table xc-core-current-table">
+      <div class="tr">
+        <div class="td left" width="33%"><%:Source%></div>
+        <div class="td left" id="xc-core-current-source"><%:System core%></div>
+      </div>
+      <div class="tr">
+        <div class="td left" width="33%"><%:Version%></div>
+        <div class="td left" id="xc-core-current-version"><%:Unavailable%></div>
+      </div>
+      <div class="tr">
+        <div class="td left" width="33%"><%:Architecture%></div>
+        <div class="td left" id="xc-core-current-arch"><%:Unavailable%></div>
+      </div>
+      <div class="tr">
+        <div class="td left" width="33%">SHA-256</div>
+        <div class="td left xc-core-hash" id="xc-core-current-sha256"><%:Unavailable%></div>
+      </div>
+      <div class="tr">
+        <div class="td left" width="33%"><%:Runtime status%></div>
+        <div class="td left xc-core-status xc-core-status-unknown" id="xc-core-current-status"><%:Unknown%></div>
+      </div>
+    </div>
     <div class="cbi-page-actions">
       <input id="xc-core-system-action" type="button" class="cbi-button cbi-button-action"
         data-core-action="activate" data-core-id="system" value="<%:Use system core%>" disabled="disabled" />

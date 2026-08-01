@@ -128,7 +128,7 @@ local function display_epoch(value)
   return called and type(result) == "string" and result or "unknown"
 end
 
-local function fields_message(message, fields)
+local function fields_message(message, fields, node_names)
   local parts = { sanitize(message, MESSAGE_MAX) }
   if fields ~= nil then
     local keys = {}
@@ -140,7 +140,10 @@ local function fields_message(message, fields)
       if index > 16 then break end
       local value = fields[key]
       local safe
-      if sensitive_key(key) then safe = "[redacted]"
+      if key == "node" and type(value) == "string" and type(node_names) == "table"
+        and type(node_names[value]) == "string" and node_names[value] ~= "" then
+        safe = sanitize(node_names[value], 128)
+      elseif sensitive_key(key) then safe = "[redacted]"
       elseif type(value) == "string" or type(value) == "number" or type(value) == "boolean" then safe = sanitize(value, 128)
       else safe = "[redacted]" end
       parts[#parts + 1] = key:sub(1, 64) .. "=" .. safe
@@ -166,7 +169,7 @@ local function parse_xc(line, options, order)
   end
   return {
     time = epoch, display_time = shown, level = value.level, source = "xc",
-    message = fields_message(value.message, value.fields), _order = order
+    message = fields_message(value.message, value.fields, options.node_names), _order = order
   }
 end
 

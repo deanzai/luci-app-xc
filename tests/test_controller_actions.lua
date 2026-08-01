@@ -95,7 +95,10 @@ local function controller_fixture(options)
     },
     uci = {
       get_node = options.get_node or function() return node, "ok" end,
-      list_nodes = function() return options.existing_nodes or {} end,
+      list_nodes = function()
+        if type(options.existing_nodes) == "function" then return options.existing_nodes() end
+        return options.existing_nodes or {}
+      end,
       stage_nodes = function()
         if options.stage_throw then error("password=stage-secret") end
         return options.stage_ok ~= false
@@ -225,6 +228,42 @@ t.test("get-log returns merged structured entries and an XC-only clear scope", f
   t.eq(state.response.data.entries[2].source, "xray")
   t.eq(state.xray_deadline, 7202)
   t.eq(state.fs_events[1], "read_tail:/var/log/xc.log:262144")
+end)
+
+t.test("get-log maps structured node IDs to current UCI node names for display", function()
+  local line = "xc-node"
+  local controller, state = controller_fixture({
+    level = "info",
+    existing_nodes = {
+      { id = "safe_node", name = "Main Node" },
+      { id = "other_node", name = "Backup Node" }
+    },
+    log_content = line,
+    log_json = { [line] = {
+      time = 1785327994, level = "info", message = "node switched",
+      fields = { node = "safe_node", code = "switched" }
+    } }
+  })
+  controller.action_get_log()
+  t.eq(state.response.ok, true)
+  t.contains(state.response.data.entries[1].message, "node=Main Node")
+  t.eq(state.response.data.entries[1].message:find("safe_node", 1, true), nil)
+end)
+
+t.test("get-log still returns logs when node name lookup fails", function()
+  local line = "xc-node"
+  local controller, state = controller_fixture({
+    level = "info",
+    existing_nodes = function() error("password=list-secret") end,
+    log_content = line,
+    log_json = { [line] = {
+      time = 1785327994, level = "info", message = "node switched",
+      fields = { node = "safe_node" }
+    } }
+  })
+  controller.action_get_log()
+  t.eq(state.response.ok, true)
+  t.contains(state.response.data.entries[1].message, "node=safe_node")
 end)
 
 t.test("get-log serializes an empty entry list as a JSON array", function()

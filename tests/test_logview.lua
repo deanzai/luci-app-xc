@@ -12,15 +12,17 @@ local function adapter(values)
   end }
 end
 
-local function collect(xc_lines, parsed, xray_lines, level)
-  return logview.collect({
+local function collect(xc_lines, parsed, xray_lines, level, extra)
+  local options = {
     xc = table.concat(xc_lines or {}, "\n"),
     xray = table.concat(xray_lines or {}, "\n"),
     level = level,
     json = adapter(parsed or {}),
     wall_time = WALL_TIME,
     uptime = UPTIME
-  })
+  }
+  for key, value in pairs(extra or {}) do options[key] = value end
+  return logview.collect(options)
 end
 
 local function xray_line(epoch, level, pid, message)
@@ -125,6 +127,42 @@ t.test("logview strictly validates XC field types without poisoning neighboring 
   t.contains(entries[1].message, "safe")
   t.contains(entries[1].message, "node=alpha")
   t.contains(entries[1].message, "attempts=2")
+end)
+
+t.test("logview displays safe node names for exact node fields only", function()
+  local line = "node-name"
+  local entries = assert(collect({ line }, {
+    [line] = {
+      time = 1, level = "info", message = "node switched",
+      fields = { node = "safe_node", code = "switched" }
+    }
+  }, nil, "all", { node_names = { safe_node = "Main Node" } }))
+  t.eq(entries[1].message, "node switched code=switched node=Main Node")
+end)
+
+t.test("logview keeps unknown node IDs when no safe display name exists", function()
+  local line = "unknown-node"
+  local entries = assert(collect({ line }, {
+    [line] = {
+      time = 1, level = "info", message = "node switched",
+      fields = { node = "node_59fd05f7589dcec55835dc7c39bcc20b" }
+    }
+  }, nil, "all", { node_names = { safe_node = "Main Node" } }))
+  t.contains(entries[1].message, "node=node_59fd05f7589dcec55835dc7c39bcc20b")
+end)
+
+t.test("logview redacts unsafe node display names without falling back to internal ID", function()
+  local line = "unsafe-node-name"
+  local entries = assert(collect({ line }, {
+    [line] = {
+      time = 1, level = "warning", message = "node probe completed",
+      fields = { node = "safe_node" }
+    }
+  }, nil, "all", { node_names = { safe_node = "office vless://uuid@secret.invalid token=SECRET" } }))
+  t.contains(entries[1].message, "node=office [redacted] token=[redacted]")
+  t.eq(entries[1].message:find("safe_node", 1, true), nil)
+  t.eq(entries[1].message:find("secret.invalid", 1, true), nil)
+  t.eq(entries[1].message:find("SECRET", 1, true), nil)
 end)
 
 t.test("logview bounds inputs entries and UTF-8 messages", function()

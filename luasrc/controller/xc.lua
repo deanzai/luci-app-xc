@@ -264,6 +264,21 @@ local function public_nodes(nodes)
   return output
 end
 
+local function node_name_map(adapters)
+  if type(adapters) ~= "table" or type(adapters.uci) ~= "table"
+    or type(adapters.uci.list_nodes) ~= "function" then return nil end
+  local called, nodes = pcall(adapters.uci.list_nodes)
+  if not called or type(nodes) ~= "table" then return nil end
+  local output = {}
+  for _, node in ipairs(nodes) do
+    if type(node) == "table" and schema.safe_section_id(node.id)
+      and type(node.name) == "string" and node.name ~= "" and #node.name <= 256 then
+      output[node.id] = node.name
+    end
+  end
+  return output
+end
+
 local function append_warnings(first, second)
   local output = {}
   for _, warning in ipairs(first or {}) do output[#output + 1] = warning end
@@ -660,7 +675,7 @@ function action_get_log()
   end
   local normalized, entries = pcall(logview.collect, {
     xc = xc_content or "", xray = xray_content, level = level, json = adapters.json,
-    wall_time = wall_time, uptime = uptime
+    wall_time = wall_time, uptime = uptime, node_names = node_name_map(adapters)
   })
   if not normalized or type(entries) ~= "table" then failure("internal_error"); return end
   success({ entries = entries, clear_scope = "xc" })
