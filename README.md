@@ -108,8 +108,8 @@ GitHub Actions 同时构建 OpenWrt 21.02 和 24.10。21.02 的旧版 `luci.mk` 
 24.10: luci-app-xc_0.1.0-r9_all.ipk
 ```
 
-中文翻译包也遵循相同规则：21.02 可能为
-`luci-i18n-xc-zh-cn_0.1.0_all.ipk`，24.10 为
+中文翻译包由 LuCI 的 PO 版本单独生成：当前 CI 中 21.02 为
+`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`，24.10 也为
 `luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`。安装时以对应 CI 构建产物的实际文件名为准。
 
 ### 路由器直接安装

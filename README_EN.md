@@ -106,10 +106,9 @@ GitHub Actions builds both OpenWrt 21.02 and 24.10. The older 21.02
 24.10: luci-app-xc_0.1.0-r9_all.ipk
 ```
 
-Translation packages follow the same rule: 21.02 may produce
-`luci-i18n-xc-zh-cn_0.1.0_all.ipk`, while 24.10 produces
-`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`. Use the exact filename from the CI artifact
-for the target release.
+Translation packages use the LuCI PO version independently: the current CI
+produces `luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk` for both 21.02 and 24.10. Use the
+exact filename from the CI artifact for the target release.
 
 ### Direct installation
 
