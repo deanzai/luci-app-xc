@@ -100,6 +100,18 @@ make package/luci-app-xc/compile V=s
 bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
+GitHub Actions 同时构建 OpenWrt 21.02 和 24.10。21.02 的旧版 `luci.mk` 可能忽略
+`PKG_RELEASE`，因此 21.02 构建产物可能使用不带 release 后缀的文件名：
+
+```text
+21.02: luci-app-xc_0.1.0_all.ipk
+24.10: luci-app-xc_0.1.0-r9_all.ipk
+```
+
+中文翻译包也遵循相同规则：21.02 可能为
+`luci-i18n-xc-zh-cn_0.1.0_all.ipk`，24.10 为
+`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`。安装时以对应 CI 构建产物的实际文件名为准。
+
 ### 路由器直接安装
 
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：

@@ -324,7 +324,7 @@ core_delete_failed
 - [x] `po/templates/xc.pot` 与 `po/zh_Hans/xc.po` 补齐核心管理翻译。
 - [x] `tests/test_core_ui.js` 覆盖按钮禁用、确认、操作结果和空列表。
 - [x] README/README_EN 补充核心管理使用说明与隐私说明。
-- [x] 版本号提升至 `0.1.0-r7`，避免覆盖旧 IPK。
+- [x] 版本号提升至 `0.1.0-r9`，避免覆盖旧 IPK，并包含慢速切换与 Lua 5.1 长运行兼容修复。
 
 ### Task 6：构建与设备验收
 

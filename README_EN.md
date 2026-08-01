@@ -98,6 +98,19 @@ The current source package version is `0.1.0-r9`; a typical artifact is:
 bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
+GitHub Actions builds both OpenWrt 21.02 and 24.10. The older 21.02
+`luci.mk` may ignore `PKG_RELEASE`, so its artifact can omit the release suffix:
+
+```text
+21.02: luci-app-xc_0.1.0_all.ipk
+24.10: luci-app-xc_0.1.0-r9_all.ipk
+```
+
+Translation packages follow the same rule: 21.02 may produce
+`luci-i18n-xc-zh-cn_0.1.0_all.ipk`, while 24.10 produces
+`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`. Use the exact filename from the CI artifact
+for the target release.
+
 ### Direct installation
 
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
