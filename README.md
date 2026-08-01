@@ -94,10 +94,10 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r7`，常见产物路径为：
+当前源码包版本为 `0.1.0-r9`，常见产物路径为：
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
 ### 路由器直接安装
@@ -105,7 +105,7 @@ bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r7_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
 不要使用 `opkg --force-depends`。如果设备已经手动安装了未被 opkg 管理的 Xray，应先确认核心可执行文件和版本，再使用不覆盖该核心的设备适配包；正式发布包仍保留 `xray-core` 依赖。

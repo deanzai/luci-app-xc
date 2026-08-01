@@ -254,6 +254,17 @@ for (const respond of [
   assert.strictEqual(h.rows[2].switchButton.disabled, false);
 }
 
+for (const fail of [request => request.fail(), request => request.expire()]) {
+  const h = nodeHarness(3);
+  h.rows[2].switchButton.onclick();
+  assert.strictEqual(h.requests[0].timeout, 60000, "switch requests have a bounded browser deadline");
+  fail(h.requests[0]);
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switch failed");
+  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), true, "network failure keeps the prior highlight");
+  assert.strictEqual(h.rows[2].switchButton.value, "Switch");
+  assert.strictEqual(h.rows[2].switchButton.disabled, false);
+}
+
 for (const respond of [
   request => request.respond({ ok: false }),
   request => request.respond({ ok: true }),

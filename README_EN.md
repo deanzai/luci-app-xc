@@ -92,10 +92,10 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-The current source package version is `0.1.0-r7`; a typical artifact is:
+The current source package version is `0.1.0-r9`; a typical artifact is:
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
 ### Direct installation
@@ -103,7 +103,7 @@ bin/packages/**/luci-app-xc_0.1.0-r7_all.ipk
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r7_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r9_all.ipk
 ```
 
 Do not use `opkg --force-depends`. If the device already has an Xray binary installed outside opkg, verify that binary first and use a device-specific package only when its dependency handling is understood; the normal release package retains the `xray-core` dependency.

@@ -155,10 +155,14 @@ local probe_concurrency = self.probe_concurrency or 3
     var xhr = new XMLHttpRequest();
     xhr.open("POST", switchEndpoint, true);
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4) return;
-      var payload = null;
-      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+    // A switch includes restart and health checks (up to 30 seconds each).
+    // Keep the browser deadline above that backend budget so a slow but valid
+    // switch cannot be reported as failed while it is still being committed.
+    xhr.timeout = 60000;
+    var settled = false;
+    function complete(payload) {
+      if (settled) return;
+      settled = true;
       switching = false;
       if (payload && payload.ok === true && payload.data) {
         setActive(section);
@@ -167,7 +171,15 @@ local probe_concurrency = self.probe_concurrency or 3
         setActive(activeSection);
         switchState.textContent = switchFailedText;
       }
+    }
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      complete(payload);
     };
+    xhr.onerror = function() { complete(null); };
+    xhr.ontimeout = function() { complete(null); };
     xhr.send(JSON.stringify({ section: section }));
   }
 

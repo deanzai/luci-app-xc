@@ -591,7 +591,9 @@ function M.new(injected)
       for attempt = 1, 64 do
         generation_sequence = generation_sequence + 1
         local milliseconds = math.floor(M.now(nixio) * 1000)
-        local token = string.format("%x-%x-%x", milliseconds, nixio.getpid(), generation_sequence)
+        -- Lua 5.1 on 21.02 rejects values above the native integer range for %x.
+        -- Decimal components keep long-uptime devices able to allocate rollback generations.
+        local token = tostring(milliseconds) .. "-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence)
         local reservation = directory .. "/.reserve-" .. token
         if not nfs.stat(directory .. "/generation-" .. token .. ".config")
           and not nfs.stat(directory .. "/generation-" .. token .. ".active")

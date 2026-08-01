@@ -87,6 +87,44 @@ t.test("platform syncs a nofollow directory fd without the unsupported O_DIRECTO
   t.eq(regular_closed, true)
 end)
 
+t.test("platform allocates generation tokens when uptime milliseconds exceed 32-bit integers", function()
+  package.loaded["xc.platform"] = nil
+  local platform = require "xc.platform"
+  local files = {}
+  local fake_fs = {
+    stat = function(path) return files[path] and { type = "reg" } or nil end,
+    unlink = function(path) files[path] = nil; return true end,
+    dir = function() return function() return nil end end,
+    chmod = function() return true end,
+    rename = function(source, destination)
+      files[destination], files[source] = files[source], nil
+      return true
+    end
+  }
+  local fake_nixio = {
+    open_flags = function() return 0 end,
+    getpid = function() return 42 end,
+    open = function(path)
+      if path == "/proc/uptime" then
+        return {
+          read = function() return "3516071.77 13848543.32\n" end,
+          close = function() return true end
+        }
+      end
+      files[path] = true
+      return { sync = function() return true end, close = function() return true end }
+    end
+  }
+  local adapters = platform.new({
+    nixio = fake_nixio, fs = fake_fs, now = function() return 3516071.77 end,
+    cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  local token = adapters.fs.allocate_generation("/etc/xc/rollback")
+  t.truthy(token)
+  t.truthy(token:match("^3516071770%-42%-%d+$"))
+end)
+
 t.test("platform captures Xray logs with fixed argv bounded output and a finite deadline", function()
   local calls = {}
   local adapters = require("xc.platform").new({
