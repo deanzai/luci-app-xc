@@ -446,7 +446,7 @@ function M.build(global, node)
 
   local selected, err = M.build_outbound(node, "proxy-selected")
   if not selected then return nil, err end
-  return {
+  local config = {
     log = { access = "none", loglevel = xray_log_level, dnsLog = false },
     inbounds = {
       {
@@ -475,6 +475,8 @@ function M.build(global, node)
       rules = routing.build(global)
     }
   }
+  config.dns = routing.dns(global)
+  return config
 end
 
 return M

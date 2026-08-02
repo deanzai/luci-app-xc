@@ -12,7 +12,7 @@ t.test("Makefile exists", function()
 end)
 
 t.test("package release is bumped for the replacement IPK", function()
-  t.contains(read_file("Makefile"), "PKG_RELEASE:=12")
+  t.contains(read_file("Makefile"), "PKG_RELEASE:=13")
 end)
 
 t.test("runtime XC directory is not declared as an opkg conffile", function()

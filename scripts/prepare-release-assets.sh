@@ -1,7 +1,7 @@
 #!/bin/sh
 # Copy SDK output to uniquely named, platform-labelled release assets.
 # Package filenames and control metadata are normalized to the current release:
-#   luci-app-xc_0.1.0-r12_all_openwrt-23.05.ipk
+#   luci-app-xc_0.1.0-r13_all_openwrt-23.05.ipk
 set -eu
 
 platform=${1:-}

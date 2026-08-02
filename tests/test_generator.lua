@@ -186,23 +186,53 @@ t.test("applies the preset geo routing rules to the selected outbound", function
     uuid = UUID_ONE, transport = "tcp", security = "none"
   }))
 
-  t.eq(#cfg.routing.rules, 10)
-  t.eq(cfg.routing.rules[2].domain[1], "geosite:category-ads-all")
-  t.eq(cfg.routing.rules[2].outboundTag, "block")
-  t.eq(cfg.routing.rules[3].ip[1], "geoip:private")
-  t.eq(cfg.routing.rules[3].outboundTag, "direct")
-  t.eq(cfg.routing.rules[4].domain[1], "geosite:private")
+  t.eq(#cfg.routing.rules, 11)
+  t.eq(cfg.routing.rules[3].domain[1], "geosite:category-ads-all")
+  t.eq(cfg.routing.rules[3].outboundTag, "block")
+  t.eq(cfg.routing.rules[4].ip[1], "geoip:private")
   t.eq(cfg.routing.rules[4].outboundTag, "direct")
+  t.eq(cfg.routing.rules[5].domain[1], "geosite:private")
   t.eq(cfg.routing.rules[5].outboundTag, "direct")
-  t.eq(cfg.routing.rules[6].outboundTag, "proxy-selected")
-  t.eq(cfg.routing.rules[7].domain[1], "geosite:geolocation-!cn")
+  t.eq(cfg.routing.rules[6].outboundTag, "direct")
   t.eq(cfg.routing.rules[7].outboundTag, "proxy-selected")
-  t.eq(cfg.routing.rules[8].ip[1], "geoip:cn")
-  t.eq(cfg.routing.rules[8].outboundTag, "direct")
-  t.eq(cfg.routing.rules[9].domain[1], "geosite:cn")
+  t.eq(cfg.routing.rules[8].domain[1], "geosite:geolocation-!cn")
+  t.eq(cfg.routing.rules[8].outboundTag, "proxy-selected")
+  t.eq(cfg.routing.rules[9].ip[1], "geoip:cn")
   t.eq(cfg.routing.rules[9].outboundTag, "direct")
-  t.eq(cfg.routing.rules[10].outboundTag, "proxy-selected")
+  t.eq(cfg.routing.rules[10].domain[1], "geosite:cn")
+  t.eq(cfg.routing.rules[10].outboundTag, "direct")
+  t.eq(cfg.routing.rules[11].outboundTag, "proxy-selected")
   t.eq(has_key(cfg, "reality-uk"), false)
+end)
+
+t.test("adds split DNS servers and routes remote DNS queries through the selected outbound", function()
+  local cfg = assert(generator.build(global(), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, transport = "tcp", security = "none"
+  }))
+
+  t.eq(cfg.dns.queryStrategy, "UseIPv4")
+  t.eq(cfg.dns.disableCache, false)
+  t.eq(cfg.dns.disableFallbackIfMatch, true)
+  t.eq(#cfg.dns.servers, 4)
+  t.eq(cfg.dns.servers[1].tag, "remote-dns")
+  t.eq(cfg.dns.servers[1].address, "https://8.8.8.8/dns-query")
+  t.eq(cfg.dns.servers[1].domains[1], "geosite:geolocation-!cn")
+  t.eq(cfg.dns.servers[1].skipFallback, true)
+  t.eq(cfg.dns.servers[2].address, "223.5.5.5")
+  t.eq(cfg.dns.servers[2].domains[1], "geosite:cn")
+  t.eq(cfg.dns.servers[2].skipFallback, true)
+  t.eq(cfg.dns.servers[3].address, "localhost")
+  t.eq(cfg.dns.servers[3].domains[1], "geosite:private")
+  t.eq(cfg.dns.servers[3].skipFallback, true)
+  t.eq(cfg.dns.servers[4].tag, "remote-dns2")
+  t.eq(cfg.dns.servers[4].address, "https://1.1.1.1/dns-query")
+  t.eq(cfg.dns.servers[4].domains, nil)
+  t.eq(cfg.dns.servers[4].skipFallback, false)
+
+  t.eq(cfg.routing.rules[1].type, "field")
+  assert_array_equal(cfg.routing.rules[1].inboundTag, { "remote-dns", "remote-dns2" })
+  t.eq(cfg.routing.rules[1].outboundTag, "proxy-selected")
 end)
 
 t.test("disables geo preset rules without removing private network protection", function()
@@ -212,6 +242,7 @@ t.test("disables geo preset rules without removing private network protection", 
   }))
   t.eq(#cfg.routing.rules, 1)
   assert_array_equal(cfg.routing.rules[1].ip, PRIVATE_CIDRS)
+  t.eq(cfg.dns, nil)
 end)
 
 t.test("returns independent deterministic routing tables", function()
@@ -220,9 +251,13 @@ t.test("returns independent deterministic routing tables", function()
     uuid = UUID_ONE, transport = "tcp", security = "none"
   }
   local first = assert(generator.build(global(), node))
-  first.routing.rules[1].ip[1] = "mutated-by-caller"
+  first.routing.rules[1].inboundTag[1] = "mutated-by-caller"
+  first.routing.rules[2].ip[1] = "mutated-by-caller"
+  first.dns.servers[1].domains[1] = "mutated-by-caller"
   local second = assert(generator.build(global(), node))
-  assert_array_equal(second.routing.rules[1].ip, PRIVATE_CIDRS)
+  assert_array_equal(second.routing.rules[1].inboundTag, { "remote-dns", "remote-dns2" })
+  assert_array_equal(second.routing.rules[2].ip, PRIVATE_CIDRS)
+  t.eq(second.dns.servers[1].domains[1], "geosite:geolocation-!cn")
 end)
 
 t.test("maps VLESS Reality over TCP without changing credential bytes", function()

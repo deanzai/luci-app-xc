@@ -56,6 +56,36 @@ local PRESET_RULES = {
   }
 }
 
+local REMOTE_DNS_TAGS = { "remote-dns", "remote-dns2" }
+
+local DNS_SERVERS = {
+  {
+    tag = "remote-dns",
+    address = "https://8.8.8.8/dns-query",
+    domains = {
+      "geosite:geolocation-!cn", "geosite:openai", "geosite:youtube",
+      "geosite:twitter", "geosite:telegram", "geosite:tiktok",
+      "geosite:netflix", "geosite:google", "geosite:facebook"
+    },
+    skipFallback = true
+  },
+  {
+    address = "223.5.5.5",
+    domains = { "geosite:cn" },
+    skipFallback = true
+  },
+  {
+    address = "localhost",
+    domains = { "geosite:private" },
+    skipFallback = true
+  },
+  {
+    tag = "remote-dns2",
+    address = "https://1.1.1.1/dns-query",
+    skipFallback = false
+  }
+}
+
 local function copy(value)
   if type(value) ~= "table" then return value end
   local output = {}
@@ -99,10 +129,26 @@ function M.required_assets(global, fs)
   return { M.GEOSITE_PATH, M.GEOIP_PATH }
 end
 
-function M.build(global)
-  local rules = {
-    { type = "field", ip = copy(PRIVATE_CIDRS), outboundTag = "direct" }
+function M.dns(global)
+  if type(global) == "table" and not enabled(global.routing_enabled) then return nil end
+  return {
+    servers = copy(DNS_SERVERS),
+    queryStrategy = "UseIPv4",
+    disableCache = false,
+    disableFallbackIfMatch = true
   }
+end
+
+function M.build(global)
+  local rules = {}
+  if type(global) ~= "table" or enabled(global.routing_enabled) then
+    rules[#rules + 1] = {
+      type = "field",
+      inboundTag = copy(REMOTE_DNS_TAGS),
+      outboundTag = "proxy-selected"
+    }
+  end
+  rules[#rules + 1] = { type = "field", ip = copy(PRIVATE_CIDRS), outboundTag = "direct" }
   if type(global) == "table" and not enabled(global.routing_enabled) then return rules end
   for _, rule in ipairs(PRESET_RULES) do rules[#rules + 1] = copy(rule) end
   return rules
