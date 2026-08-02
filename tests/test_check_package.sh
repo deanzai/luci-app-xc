@@ -152,5 +152,24 @@ for state in valid empty missing; do
   fi
 done
 
+if ! run_check po/templates/xc.pot po/zh_Hans/xc.po "$po2lmo"; then
+  echo "FAIL baseline package check failed while asserting build matrix"
+  cat "$tmp/output"
+  failures=$((failures + 1))
+else
+  for platform in 21.02 23.05 24.10; do
+    if ! grep -q "^OK  matrix includes $platform$" "$tmp/output"; then
+      echo "FAIL build matrix is missing $platform"
+      cat "$tmp/output"
+      failures=$((failures + 1))
+    fi
+  done
+  if ! grep -q '^OK  release assets include explicit platform suffixes$' "$tmp/output"; then
+    echo "FAIL release asset naming check is missing"
+    cat "$tmp/output"
+    failures=$((failures + 1))
+  fi
+fi
+
 [ "$failures" -eq 0 ] || exit 1
 echo "PASS check-package gettext and LMO mutation tests"

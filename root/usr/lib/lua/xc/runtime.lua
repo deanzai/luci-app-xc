@@ -1,6 +1,7 @@
 local generator = require "xc.generator"
 local schema = require "xc.schema"
 local core = require "xc.core"
+local routing = require "xc.routing"
 
 local M = {}
 local Runtime = {}
@@ -109,6 +110,7 @@ local messages = {
   no_enabled_nodes = "no enabled nodes are available",
   invalid_output = "invalid output path",
   generation_failed = "configuration generation failed",
+  routing_assets_missing = "Geo routing assets are missing",
   encoding_failed = "configuration encoding failed",
   validation_failed = "Xray rejected the candidate configuration",
   restart_failed = "Xray service restart failed",
@@ -316,6 +318,9 @@ end
 function Runtime:_encode(section_id)
   local global, node, load_error = self:_load(section_id)
   if load_error then return nil, nil, load_error end
+  for _, path in ipairs(routing.required_assets(global)) do
+    if not self.fs.exists(path) then return nil, nil, result(false, "routing_assets_missing") end
+  end
   local config = generator.build(global, node)
   if not config then return nil, nil, result(false, "generation_failed") end
   local encoded = generator.encode(config, self.json)

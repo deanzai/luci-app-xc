@@ -1,4 +1,5 @@
 local schema = require "xc.schema"
+local routing = require "xc.routing"
 
 local M = {}
 local RAW_FRAGMENT = {}
@@ -471,9 +472,7 @@ function M.build(global, node)
     },
     routing = {
       domainStrategy = "AsIs",
-      rules = {
-        { type = "field", ip = copy_array(PRIVATE_CIDRS), outboundTag = "direct" }
-      }
+      rules = routing.build(global)
     }
   }
 end

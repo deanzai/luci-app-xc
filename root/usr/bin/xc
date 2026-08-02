@@ -1,4 +1,6 @@
 #!/usr/bin/lua
+local nixio = require "nixio"
+pcall(nixio.setenv, "XRAY_LOCATION_ASSET", "/usr/share/xray")
 local ok, code = pcall(function()
   local platform = require "xc.platform"
   local runtime_module = require "xc.runtime"

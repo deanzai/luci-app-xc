@@ -152,7 +152,7 @@ t.test("builds compatible unauthenticated SOCKS and HTTP inbounds", function()
   end
 end)
 
-t.test("puts the selected outbound first and routes only exact literal CIDRs directly", function()
+t.test("puts the selected outbound first and keeps literal private CIDRs directly routed", function()
   local cfg = assert(generator.build(global(), {
     protocol = "vless", server = "vless.invalid", port = 443,
     uuid = UUID_ONE, transport = "tcp", security = "none"
@@ -166,13 +166,52 @@ t.test("puts the selected outbound first and routes only exact literal CIDRs dir
   t.eq(cfg.outbounds[3].tag, "block")
   t.eq(cfg.outbounds[3].protocol, "blackhole")
   t.eq(cfg.routing.domainStrategy, "AsIs")
-  t.eq(#cfg.routing.rules, 1)
-  t.eq(cfg.routing.rules[1].type, "field")
-  t.eq(cfg.routing.rules[1].outboundTag, "direct")
-  assert_array_equal(cfg.routing.rules[1].ip, PRIVATE_CIDRS)
+  t.truthy(#cfg.routing.rules > 1)
+  local private_rule
+  for _, rule in ipairs(cfg.routing.rules) do
+    if rule.ip and #rule.ip == #PRIVATE_CIDRS then private_rule = rule end
+  end
+  t.truthy(private_rule)
+  t.eq(private_rule.type, "field")
+  t.eq(private_rule.outboundTag, "direct")
+  assert_array_equal(private_rule.ip, PRIVATE_CIDRS)
   t.eq(has_key(cfg, "reality_uk"), false)
   t.eq(has_key(cfg, "reality_uk_id"), false)
   t.eq(#cfg.outbounds, 3, "must not add a dedicated-domain outbound")
+end)
+
+t.test("applies the preset geo routing rules to the selected outbound", function()
+  local cfg = assert(generator.build(global(), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, transport = "tcp", security = "none"
+  }))
+
+  t.eq(#cfg.routing.rules, 10)
+  t.eq(cfg.routing.rules[2].domain[1], "geosite:category-ads-all")
+  t.eq(cfg.routing.rules[2].outboundTag, "block")
+  t.eq(cfg.routing.rules[3].ip[1], "geoip:private")
+  t.eq(cfg.routing.rules[3].outboundTag, "direct")
+  t.eq(cfg.routing.rules[4].domain[1], "geosite:private")
+  t.eq(cfg.routing.rules[4].outboundTag, "direct")
+  t.eq(cfg.routing.rules[5].outboundTag, "direct")
+  t.eq(cfg.routing.rules[6].outboundTag, "proxy-selected")
+  t.eq(cfg.routing.rules[7].domain[1], "geosite:geolocation-!cn")
+  t.eq(cfg.routing.rules[7].outboundTag, "proxy-selected")
+  t.eq(cfg.routing.rules[8].ip[1], "geoip:cn")
+  t.eq(cfg.routing.rules[8].outboundTag, "direct")
+  t.eq(cfg.routing.rules[9].domain[1], "geosite:cn")
+  t.eq(cfg.routing.rules[9].outboundTag, "direct")
+  t.eq(cfg.routing.rules[10].outboundTag, "proxy-selected")
+  t.eq(has_key(cfg, "reality-uk"), false)
+end)
+
+t.test("disables geo preset rules without removing private network protection", function()
+  local cfg = assert(generator.build(global({ routing_enabled = "0" }), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, transport = "tcp", security = "none"
+  }))
+  t.eq(#cfg.routing.rules, 1)
+  assert_array_equal(cfg.routing.rules[1].ip, PRIVATE_CIDRS)
 end)
 
 t.test("returns independent deterministic routing tables", function()
@@ -403,23 +442,23 @@ t.test("emits representative configs accepted by Xray when available", function(
     xray = "xray"
   end
   local cases = {
-    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1", routing_enabled = "0" }), {
       protocol = "vless", server = "reality.invalid", port = 443,
       uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
       transport = "tcp", security = "reality", sni = "cover.invalid",
       public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
     })), accepted = true },
-    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1", routing_enabled = "0" }), {
       protocol = "vless", server = "reality.invalid", port = 443,
       uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision-udp443",
       transport = "tcp", security = "reality", sni = "cover.invalid",
       public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
     })), accepted = true },
-    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1", routing_enabled = "0" }), {
       protocol = "raw", raw_outbound = '{"protocol":"freedom","tag":"old","settings":{"domainStrategy":"UseIP"}}'
     })), accepted = true }
   }
-  local invalid_flow = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+  local invalid_flow = assert(generator.build(global({ listen_address = "127.0.0.1", routing_enabled = "0" }), {
     protocol = "vless", server = "reality.invalid", port = 443,
     uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
     transport = "tcp", security = "reality", sni = "cover.invalid",

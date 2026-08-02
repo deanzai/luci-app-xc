@@ -2,7 +2,7 @@
 
 A LuCI Xray self-hosted node management and switching plugin for OpenWrt / ImmortalWrt 21.02-24.10.
 
-The plugin uses Xray-core as its runtime kernel and manages one self-hosted node set. The selected node is used as the unified outbound. Subscription management, transparent proxying, and dedicated routing are intentionally out of scope.
+The plugin uses Xray-core as its runtime kernel and manages one self-hosted node set. The selected node is used as the unified outbound with built-in GeoIP/GeoSite preset routing. Subscription management, transparent proxying, and user-defined dedicated-node routing remain out of scope.
 
 ## Features
 
@@ -17,6 +17,7 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 - **Core rollback**: Automatically restore the previous core after a failed activation; managed versions never overwrite `/usr/bin/xray`
 - **Status monitoring**: The Settings page shows service state, active node, listeners, and the exit IP observed through the selected node
 - **Log viewer**: One log page merges XC and Xray runtime logs with All/Error/Warning/Info/Debug filtering
+- **Preset routing**: Applies the recovered GeoIP/GeoSite domestic-direct, foreign-proxy, ad-blocking, and custom domain rules through the selected outbound
 - **Privacy controls**: Access logging is disabled; node passwords, UUIDs, links, raw JSON secrets, and log credentials are redacted
 
 ## Settings
@@ -25,6 +26,7 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 | --- | --- | --- |
 | Enable | Enable or disable the XC service | Disabled |
 | Xray log level | Controls which Xray runtime messages are generated | `warning` |
+| Geo routing | Enable the built-in GeoIP/GeoSite preset routing; disabling it keeps only private-network direct routing | `1` |
 | Active node | Select the unified outbound; only enabled nodes are listed | Not selected |
 | Listen mode | LAN address mode | `lan` |
 | Listen address | Derived read-only from `network.lan`, with `127.0.0.1` as fallback | Automatic |
@@ -50,7 +52,7 @@ Clear only truncates the XC log. It cannot erase the shared OpenWrt system log o
 - Subscription management
 - Transparent proxy (TPROXY / TUN)
 - sing-box kernel support
-- Dedicated node routing
+- User-defined dedicated-node routing pages
 - Multi-user / multi-config
 - Remote Xray-core downloads, subscription-style upgrades, and automatic remote upgrades
 
@@ -60,16 +62,31 @@ Clear only truncates the XC log. It cannot erase the shared OpenWrt system log o
 - `curl`, `ca-bundle`
 - `xray-core`, supplied by the target OpenWrt/ImmortalWrt feeds; the plugin does not bundle the core
 
-The same plugin source can be built on 21.02 or 24.10, but each target requires its own SDK/Buildroot and feeds:
+The same plugin source can be built on 21.02, 23.05, or 24.10, but each target requires its own SDK/Buildroot and feeds:
 
 ```text
 21.02 SDK/Buildroot -> 21.02 luci-app-xc IPK + 21.02 xray-core
+23.05 SDK/Buildroot -> 23.05 luci-app-xc IPK + 23.05 xray-core
 24.10 SDK/Buildroot -> 24.10 luci-app-xc IPK + 24.10 xray-core
 ```
 
-Do not publish an IPK built in a 21.02 environment as the native 24.10 package. Even though the LuCI package is `all` architecture, its dependencies and runtime compatibility still come from the target distribution.
+Do not publish an IPK built in one distribution environment as the native package for another. Even though the LuCI package is `all` architecture, its dependencies and runtime compatibility still come from the target distribution.
 
-The minimum compatibility baseline is Lua 5.1 and LuCI 21.02. The plugin does not use sing-box and does not require upgrading the Go toolchain on 21.02.
+The minimum compatibility baseline is Lua 5.1 and LuCI 21.02; 23.05 and 24.10 use their respective LuCI/Xray feeds. The plugin does not use sing-box and does not require upgrading the Go toolchain on 21.02.
+
+## Geo routing assets
+
+When `Geo routing` is enabled, both files must exist on the device:
+
+```text
+/usr/share/xray/geosite.dat
+/usr/share/xray/geoip.dat
+```
+
+XC checks them before rendering, switching, and startup. If either file is missing it returns
+`routing_assets_missing` and does not start an invalid configuration. The data files are not
+embedded in the LuCI IPK; copy them from the target distribution's Xray asset package or a
+verified device. For troubleshooting, disable `Geo routing` to keep only private-network direct routing.
 
 ## Installation
 
@@ -92,31 +109,46 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-The current source package version is `0.1.0-r9`; a typical artifact is:
+The current source package version is `0.1.0-r10`; a typical artifact is:
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r10_all.ipk
 ```
 
-GitHub Actions builds both OpenWrt 21.02 and 24.10. The older 21.02
-`luci.mk` may ignore `PKG_RELEASE`, so its artifact can omit the release suffix:
+GitHub Actions builds OpenWrt 21.02, 23.05, and 24.10. The older 21.02
+`luci.mk` may ignore `PKG_RELEASE`, so an SDK output can omit the release suffix. Before
+uploading, CI adds an explicit platform suffix to every IPK so Release assets cannot be
+mistaken for one another:
 
 ```text
-21.02: luci-app-xc_0.1.0_all.ipk
-24.10: luci-app-xc_0.1.0-r9_all.ipk
+21.02: luci-app-xc_0.1.0_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r10_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r10_all_openwrt-24.10.ipk
 ```
 
-Translation packages use the LuCI PO version independently: the current CI
-produces `luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk` for both 21.02 and 24.10. Use the
-exact filename from the CI artifact for the target release.
+Translation packages use the LuCI PO version independently and receive the same suffix:
+
+```text
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-24.10.ipk
+```
+
+Each platform artifact also contains `SHA256SUMS-openwrt-<version>.txt`. Install only the main
+and translation IPKs matching the device distribution; do not infer cross-release compatibility
+from the `all` package architecture.
 
 ### Direct installation
 
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r9_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r10_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r10_all.ipk
 ```
+
+When using GitHub Release assets, replace both paths with files carrying the same platform suffix.
+The translation package is not a runtime dependency of the main package, so it must be installed
+explicitly for a complete Simplified Chinese interface.
 
 Do not use `opkg --force-depends`. If the device already has an Xray binary installed outside opkg, verify that binary first and use a device-specific package only when its dependency handling is understood; the normal release package retains the `xray-core` dependency.
 
@@ -178,7 +210,7 @@ sh scripts/bootstrap-lua.sh
 sh tests/run-host.sh
 ```
 
-Before a release, build separately in the target 21.02 and 24.10 environments and verify the LuCI menu, configuration save, node switching, probing, logging, and rollback on real devices.
+Before a release, build separately in the target 21.02, 23.05, and 24.10 environments and verify the LuCI menu, configuration save, node switching, probing, logging, and rollback on real devices.
 
 ## License
 

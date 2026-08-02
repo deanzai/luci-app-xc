@@ -49,6 +49,7 @@ resolve_xray() {
 
 start_service() {
 	local xray_path
+	export XRAY_LOCATION_ASSET=/usr/share/xray
 	mkdir -p /etc/xc/rollback /etc/xc/xray/versions /var/etc/xc /var/log || return 1
 	chmod 0700 /etc/xc /etc/xc/rollback /etc/xc/xray /etc/xc/xray/versions /var/etc/xc || return 1
 	chmod 0600 /etc/config/xc || return 1

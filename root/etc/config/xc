@@ -1,6 +1,7 @@
 config global 'global'
 	option enabled '0'
 	option xray_log_level 'warning'
+	option routing_enabled '1'
 	option listen_mode 'lan'
 	option listen_address ''
 	option socks_port '7890'

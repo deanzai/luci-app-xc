@@ -16,6 +16,8 @@ local STATUS = "/var/run/xc-status"
 local LOG = "/var/log/xc.log"
 local LOG_LOCK = "/var/lock/xc-log.lock"
 local EXIT_IP_CACHE = "/var/etc/xc/exit-ip-cache"
+local GEOSITE = "/usr/share/xray/geosite.dat"
+local GEOIP = "/usr/share/xray/geoip.dat"
 
 local function checksum(value)
   local hash = 5381
@@ -131,6 +133,12 @@ local function fixture(options)
   options = options or {}
   local events, files = options.events or {}, options.shared_files or {}
   for path, content in pairs(options.files or {}) do files[path] = content end
+  files[GEOSITE] = files[GEOSITE] or "geosite"
+  files[GEOIP] = files[GEOIP] or "geoip"
+  if options.missing_assets then
+    if options.missing_assets.geosite then files[GEOSITE] = nil end
+    if options.missing_assets.geoip then files[GEOIP] = nil end
+  end
   local global = options.global or { active_node = "old", socks_port = 7890, http_port = 10809 }
   global.health_url = global.health_url or "https://health.invalid/generate_204"
   global.health_timeout = global.health_timeout or 5
@@ -365,6 +373,23 @@ t.test("render rejects missing and disabled active nodes", function()
   result = disabled.runtime:render(nil, "/tmp/render.json")
   t.eq(result.ok, false)
   t.eq(result.code, "disabled_node")
+end)
+
+t.test("render refuses preset routing when either geo asset is missing", function()
+  for _, missing in ipairs({ "geosite", "geoip" }) do
+    local state = fixture({ missing_assets = { [missing] = true } })
+    local result = state.runtime:render("new", "/tmp/render.json")
+    t.eq(result.ok, false)
+    t.eq(result.code, "routing_assets_missing")
+    t.eq(state.files["/tmp/render.json"], nil)
+    for _, event in ipairs(state.events) do t.eq(event:match("^exec:run:"), nil) end
+  end
+
+  local disabled = fixture({
+    missing_assets = { geosite = true, geoip = true },
+    global = { routing_enabled = "0", active_node = "old", socks_port = 7890, http_port = 10809 }
+  })
+  t.eq(disabled.runtime:render("new", "/tmp/render.json").ok, true)
 end)
 
 t.test("render auto-selects only a sole enabled node and writes atomically", function()

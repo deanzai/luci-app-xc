@@ -28,6 +28,11 @@ xray_log_level:value("debug", translate("Debug"))
 xray_log_level.default = "warning"
 xray_log_level.rmempty = false
 
+local routing_enabled = global:option(Flag, "routing_enabled", translate("Geo routing"),
+  translate("Use GeoIP and GeoSite routing rules."))
+routing_enabled.default = "1"
+routing_enabled.rmempty = false
+
 local active_node = global:option(ListValue, "active_node", translate("Active node"))
 active_node.rmempty = true
 active_node:value("", translate("Not selected"))

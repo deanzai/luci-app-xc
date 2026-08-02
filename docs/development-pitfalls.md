@@ -66,7 +66,7 @@ git \
   status
 ```
 
-## 3. OpenWrt 21.02 构建兼容
+## 3. OpenWrt 21.02/23.05/24.10 构建兼容
 
 最低支持版本为 OpenWrt/ImmortalWrt 21.02，指定构建源为：
 
@@ -94,6 +94,18 @@ PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)
 ```
 
 每次构建后必须检查 IPK 的 control 信息和 SHA256，不能只看文件名。
+
+23.05 和 24.10 也必须使用各自版本的 SDK/Buildroot 与 feeds；不能把一个版本的
+`luci.mk`、LuCI 运行时或 `xray-core` 混入另一个版本。仓库 CI 固定构建三套平台：
+
+```text
+OpenWrt 21.02 -> ARCH=x86_64-openwrt-21.02
+OpenWrt 23.05 -> ARCH=x86_64-23.05.6
+OpenWrt 24.10 -> ARCH=x86_64-24.10.8
+```
+
+IPK 虽然标记为 `all` 架构，依赖的 LuCI/运行时 ABI 和 Xray 包仍由目标发行版决定。
+设备安装时必须选择同一平台的主包与中文包。
 
 ## 4. Xray 依赖与设备现有内核
 
@@ -288,6 +300,18 @@ Xray 日志设置决定后台产生哪些日志：
 - IPK control 信息。
 - 真实设备验证结果。
 
+CI 上传前会调用 `scripts/prepare-release-assets.sh`，将 SDK 原始文件名复制为带平台后缀
+的资产，例如：
+
+```text
+luci-app-xc_0.1.0-r9_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r9_all_openwrt-23.05.ipk
+SHA256SUMS-openwrt-23.05.txt
+```
+
+Release 不应同时上传无后缀的同名 IPK；21.02 即使因旧 `luci.mk` 生成了不带 `-r9` 的
+原始文件，也必须经过脚本加上 `openwrt-21.02` 后缀再发布。
+
 ## 15. 固定验证和发布顺序
 
 后续扩展功能统一使用以下顺序：
@@ -296,7 +320,7 @@ Xray 日志设置决定后台产生哪些日志：
 修改源码
 -> 定向回归测试
 -> 完整宿主测试
--> OpenWrt 21.02 构建
+-> OpenWrt 21.02/23.05/24.10 构建
 -> 检查 IPK control 和 SHA256
 -> 备份目标机配置
 -> 安装 IPK

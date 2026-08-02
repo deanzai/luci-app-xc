@@ -81,6 +81,12 @@ msgstr "文件读取失败"
 msgid "Flow"
 msgstr "流控"
 
+msgid "Geo routing"
+msgstr "Geo 分流"
+
+msgid "Use GeoIP and GeoSite routing rules."
+msgstr "使用 GeoIP 和 GeoSite 分流规则。"
+
 msgid "gRPC service name"
 msgstr "gRPC 服务名称"
 

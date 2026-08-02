@@ -2,7 +2,7 @@
 
 适用于 OpenWrt / ImmortalWrt 21.02–24.10 的 LuCI Xray 自建节点管理与切换插件。
 
-插件使用 Xray-core 作为运行内核，只管理一组自建节点。启用后，当前选中的节点作为统一出口；暂不实现订阅、透明代理或专用分流。
+插件使用 Xray-core 作为运行内核，只管理一组自建节点。启用后，当前选中的节点作为统一出口，并应用内置 GeoIP/GeoSite 预设分流；暂不实现订阅、透明代理或可视化专用节点分流。
 
 ## 功能
 
@@ -27,6 +27,7 @@
 | --- | --- | --- |
 | Enable | 启用或停用 XC 服务 | 关闭 |
 | Xray log level | 控制 Xray 后台实际产生的运行日志 | `warning` |
+| Geo routing | 启用预设 GeoIP/GeoSite 分流；关闭后仅保留私有网段直连 | `1` |
 | Active node | 选择当前统一出口节点；只有启用的节点可选 | 未选择 |
 | Listen mode | 当前支持 LAN 地址 | `lan` |
 | Listen address | 从 `network.lan` 自动获取，页面只读；失败时回退 `127.0.0.1` | 自动 |
@@ -52,7 +53,7 @@ Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`
 - ❌ 订阅管理（用的自建节点，不加入额外的订阅功能）
 - ❌ 透明代理（TPROXY / TUN）
 - ❌ sing-box 内核支持（纯xray-core）
-- ❌ 专用节点分流页面配置功能
+- ❌ 可视化专用节点分流页面配置功能（内置预设规则仍会生效）
 - ❌ 多用户 / 多配置
 - ❌ Xray-core 自动下载、订阅式升级和远程升级
 
@@ -62,16 +63,30 @@ Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`
 - `curl`、`ca-bundle`
 - `xray-core`：由目标 OpenWrt/ImmortalWrt 的 feeds 提供，插件不内置核心
 
-同一份插件源码可以在 21.02 或 24.10 的 SDK/Buildroot 中分别编译，但必须使用对应版本的构建环境和 feeds：
+同一份插件源码可以在 21.02、23.05 或 24.10 的 SDK/Buildroot 中分别编译，但必须使用对应版本的构建环境和 feeds：
 
 ```text
 21.02 SDK/Buildroot -> 21.02 版 luci-app-xc IPK + 21.02 版 xray-core
+23.05 SDK/Buildroot -> 23.05 版 luci-app-xc IPK + 23.05 版 xray-core
 24.10 SDK/Buildroot -> 24.10 版 luci-app-xc IPK + 24.10 版 xray-core
 ```
 
-不要把 21.02 环境生成的 IPK 当作 24.10 的正式包直接发布。插件包本身虽为 `all` 架构，依赖和 LuCI/核心版本仍由目标发行版决定。
+不要把一个发行版环境生成的 IPK 当作其他发行版的正式包直接发布。插件包本身虽为 `all` 架构，依赖和 LuCI/核心版本仍由目标发行版决定。
 
-最低支持 Lua 5.1 和 LuCI 21.02；代码不依赖 sing-box，也不要求升级 21.02 的 Go 工具链。
+最低支持 Lua 5.1 和 LuCI 21.02；23.05 和 24.10 使用各自 feeds 中的 LuCI/Xray 依赖。代码不依赖 sing-box，也不要求升级 21.02 的 Go 工具链。
+
+## Geo 分流资源
+
+启用 `Geo routing` 时，设备必须同时存在以下两个文件：
+
+```text
+/usr/share/xray/geosite.dat
+/usr/share/xray/geoip.dat
+```
+
+插件会在渲染、切换和启动前检查文件；任一文件缺失都会返回
+`routing_assets_missing`，不会启动错误配置。资源文件不打包进 LuCI IPK，需从目标
+发行版的 Xray 资源包或已验证设备同步。临时排查时可在设置页关闭 `Geo routing`，此时只保留私有网段直连。
 
 ## 安装
 
@@ -94,31 +109,43 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r9`，常见产物路径为：
+当前源码包版本为 `0.1.0-r10`，常见产物路径为：
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r9_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r10_all.ipk
 ```
 
-GitHub Actions 同时构建 OpenWrt 21.02 和 24.10。21.02 的旧版 `luci.mk` 可能忽略
-`PKG_RELEASE`，因此 21.02 构建产物可能使用不带 release 后缀的文件名：
+GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02 的旧版 `luci.mk` 可能忽略
+`PKG_RELEASE`，因此 SDK 原始产物可能使用不带 release 后缀的文件名。CI 会在上传前为每个
+原始 IPK 加上明确的平台后缀，避免 Release 中出现无法判断目标系统的同名文件：
 
 ```text
-21.02: luci-app-xc_0.1.0_all.ipk
-24.10: luci-app-xc_0.1.0-r9_all.ipk
+21.02: luci-app-xc_0.1.0_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r10_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r10_all_openwrt-24.10.ipk
 ```
 
-中文翻译包由 LuCI 的 PO 版本单独生成：当前 CI 中 21.02 为
-`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`，24.10 也为
-`luci-i18n-xc-zh-cn_0.1.0-r9_all.ipk`。安装时以对应 CI 构建产物的实际文件名为准。
+中文翻译包由 LuCI 的 PO 版本单独生成，并使用相同的平台后缀：
+
+```text
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-24.10.ipk
+```
+
+每个平台的 CI 资产还包含对应的 `SHA256SUMS-openwrt-<版本>.txt`。安装时只选择与设备
+发行版匹配的两个 IPK（主包和中文包），不要根据 `all` 架构判断跨版本兼容。
 
 ### 路由器直接安装
 
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r9_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r10_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r10_all.ipk
 ```
+
+如果使用 GitHub Release 资产，请将上面两个文件替换为同一平台后缀的 IPK；中文包不是
+主包的运行时依赖，必须显式安装才会显示完整简体中文界面。
 
 不要使用 `opkg --force-depends`。如果设备已经手动安装了未被 opkg 管理的 Xray，应先确认核心可执行文件和版本，再使用不覆盖该核心的设备适配包；正式发布包仍保留 `xray-core` 依赖。
 
@@ -180,7 +207,7 @@ sh scripts/bootstrap-lua.sh
 sh tests/run-host.sh
 ```
 
-提交前应在目标 21.02/24.10 构建环境分别编译，并在实际设备验证 LuCI 菜单、配置保存、节点切换、测速、日志和回滚。
+提交前应在目标 21.02/23.05/24.10 构建环境分别编译，并在实际设备验证 LuCI 菜单、配置保存、节点切换、测速、日志和回滚。
 
 ## 许可证
 

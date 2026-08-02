@@ -73,7 +73,7 @@ make package/luci-app-xc/compile V=s
 
 ## Build & Release
 
-- CI: GitHub Actions runs `test` → `build-21_02` + `build-24_10` (sequential).
+- CI: GitHub Actions runs `test` → `build-21_02` + `build-23_05` + `build-24_10` (sequential).
 - IPKs are artifacts, not committed (`*.ipk` in `.gitignore`).
 - Version: `PKG_VERSION` + `PKG_RELEASE` in Makefile. PO version is `$(PKG_VERSION)-r$(PKG_RELEASE)`.
 - 21.02 build compat: old `luci.mk` may ignore `PKG_RELEASE`; build copies may temporarily inline the full version string but this must not be committed.

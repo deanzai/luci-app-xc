@@ -22,6 +22,7 @@ check root/usr/bin/xc
 check root/usr/lib/lua/xc/schema.lua
 check root/usr/lib/lua/xc/importer.lua
 check root/usr/lib/lua/xc/generator.lua
+check root/usr/lib/lua/xc/routing.lua
 check root/usr/lib/lua/xc/runtime.lua
 check root/usr/lib/lua/xc/probe.lua
 check root/usr/lib/lua/xc/platform.lua
@@ -42,6 +43,7 @@ check luasrc/view/xc/log.htm
 check luasrc/view/xc/core.htm
 check po/templates/xc.pot
 check po/zh_Hans/xc.po
+check scripts/prepare-release-assets.sh
 
 echo ""
 echo "=== Translation catalog check ==="
@@ -334,6 +336,19 @@ if grep -q "24.10" .github/workflows/build.yml 2>/dev/null; then
   echo "OK  matrix includes 24.10"
 else
   echo "MISS  24.10 in build matrix"
+  failures=$(( failures + 1 ))
+fi
+if grep -q "23.05" .github/workflows/build.yml 2>/dev/null; then
+  echo "OK  matrix includes 23.05"
+else
+  echo "MISS  23.05 in build matrix"
+  failures=$(( failures + 1 ))
+fi
+if grep -q "prepare-release-assets.sh" .github/workflows/build.yml 2>/dev/null && \
+   grep -q "platform suffix" scripts/prepare-release-assets.sh 2>/dev/null; then
+  echo "OK  release assets include explicit platform suffixes"
+else
+  echo "MISS  release asset platform suffix preparation"
   failures=$(( failures + 1 ))
 fi
 echo ""

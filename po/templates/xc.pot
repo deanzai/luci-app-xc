@@ -79,6 +79,12 @@ msgstr ""
 msgid "Flow"
 msgstr ""
 
+msgid "Geo routing"
+msgstr ""
+
+msgid "Use GeoIP and GeoSite routing rules."
+msgstr ""
+
 msgid "gRPC service name"
 msgstr ""
 

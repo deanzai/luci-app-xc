@@ -39,13 +39,34 @@ jobs:
           PACKAGES: luci-app-xc
           BUILD_LOG: 1
           V: s
-      - name: Upload IPK
+      - name: Prepare platform-labelled release assets
+        run: sh scripts/prepare-release-assets.sh openwrt-21.02 bin/packages dist
+      - name: Upload platform-labelled IPK assets
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-xc-21.02
-          path: |
-            bin/packages/**/luci-app-xc_*.ipk
-            bin/packages/**/luci-i18n-xc-zh-cn_*.ipk
+          name: luci-app-xc-openwrt-21.02
+          path: dist/*
+
+  build-23_05:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with SDK (23.05)
+        uses: openwrt/gh-action-sdk@797d0e3d0eb13b355c3447f60d0179d4b43089e2
+        env:
+          ARCH: x86_64-23.05.6
+          FEED_DIR: ${{ github.workspace }}/..
+          PACKAGES: luci-app-xc
+          BUILD_LOG: 1
+          V: s
+      - name: Prepare platform-labelled release assets
+        run: sh scripts/prepare-release-assets.sh openwrt-23.05 bin/packages dist
+      - name: Upload platform-labelled IPK assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-xc-openwrt-23.05
+          path: dist/*
 
   build-24_10:
     needs: test
@@ -60,10 +81,10 @@ jobs:
           PACKAGES: luci-app-xc
           BUILD_LOG: 1
           V: s
-      - name: Upload IPK
+      - name: Prepare platform-labelled release assets
+        run: sh scripts/prepare-release-assets.sh openwrt-24.10 bin/packages dist
+      - name: Upload platform-labelled IPK assets
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-xc-24.10
-          path: |
-            bin/packages/**/luci-app-xc_*.ipk
-            bin/packages/**/luci-i18n-xc-zh-cn_*.ipk
+          name: luci-app-xc-openwrt-24.10
+          path: dist/*
