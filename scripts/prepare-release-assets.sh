@@ -1,7 +1,7 @@
 #!/bin/sh
 # Copy SDK output to uniquely named, platform-labelled release assets.
 # The original package filename is preserved apart from the platform suffix:
-#   luci-app-xc_0.1.0-r10_all_openwrt-23.05.ipk
+#   luci-app-xc_0.1.0-r11_all_openwrt-23.05.ipk
 set -eu
 
 platform=${1:-}

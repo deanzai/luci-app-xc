@@ -98,6 +98,23 @@ local function valid_asset_dir(path)
   return path == routing.ASSET_DIR or path == routing.FALLBACK_ASSET_DIR
 end
 
+-- Keep routing's asset probe on a tiny, explicit adapter.  LuCI's nixio.fs
+-- table may carry an __index implementation which recursively looks up
+-- missing members; asking routing.asset_dir() to inspect that table directly
+-- can therefore abort platform construction with "loop in gettable".  The
+-- platform still keeps the original module for its runtime filesystem calls,
+-- but the startup probe only accepts a concrete stat function.
+local function asset_stat_adapter(nfs)
+  local stat = type(nfs) == "table" and rawget(nfs, "stat") or nil
+  if type(stat) ~= "function" then return nil end
+  return {
+    stat = function(path)
+      local called, value = pcall(stat, path)
+      return called and value or nil
+    end
+  }
+end
+
 local function set_asset_environment(nixio, environment)
   if environment == nil then return true end
   if type(environment) ~= "table" then return false end
@@ -166,7 +183,7 @@ function M.new(injected)
     local whole = math.floor(seconds)
     nixio.nanosleep(whole, math.floor((seconds - whole) * 1000000000))
   end
-  local default_asset_dir = routing.asset_dir(nfs)
+  local default_asset_dir = routing.asset_dir(asset_stat_adapter(nfs))
   if default_asset_dir and type(nixio.setenv) == "function" then
     pcall(nixio.setenv, "XRAY_LOCATION_ASSET", default_asset_dir)
   end

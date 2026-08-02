@@ -122,10 +122,10 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r10`，常见产物路径为：
+当前源码包版本为 `0.1.0-r11`，常见产物路径为：
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r10_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r11_all.ipk
 ```
 
 GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02 的旧版 `luci.mk` 可能忽略
@@ -134,16 +134,16 @@ GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02 的旧版 `l
 
 ```text
 21.02: luci-app-xc_0.1.0_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r10_all_openwrt-23.05.ipk
-24.10: luci-app-xc_0.1.0-r10_all_openwrt-24.10.ipk
+23.05: luci-app-xc_0.1.0-r11_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r11_all_openwrt-24.10.ipk
 ```
 
 中文翻译包由 LuCI 的 PO 版本单独生成，并使用相同的平台后缀：
 
 ```text
-luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-21.02.ipk
-luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-23.05.ipk
-luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-24.10.ipk
+luci-i18n-xc-zh-cn_0.1.0-r11_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r11_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r11_all_openwrt-24.10.ipk
 ```
 
 每个平台的 CI 资产还包含对应的 `SHA256SUMS-openwrt-<版本>.txt`。安装时只选择与设备
@@ -154,7 +154,7 @@ luci-i18n-xc-zh-cn_0.1.0-r10_all_openwrt-24.10.ipk
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r10_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r10_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r11_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r11_all.ipk
 ```
 
 如果使用 GitHub Release 资产，请将上面两个文件替换为同一平台后缀的 IPK；中文包不是

@@ -106,6 +106,16 @@ t.test("platform defaults the asset environment from a stat adapter", function()
   t.eq(captured[2], "/usr/share/v2ray")
 end)
 
+t.test("platform does not probe a LuCI fs module through its looping metatable", function()
+  local looping_fs = setmetatable({}, { __index = function(value, key) return value[key] end })
+  local called = pcall(platform.new, {
+    nixio = { setenv = function() return true end }, fs = looping_fs,
+    cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(called, true)
+end)
+
 t.test("curl proxy argv brackets IPv6 literals", function()
   local calls = {}
   local adapters = platform.new({
