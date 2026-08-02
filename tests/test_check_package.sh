@@ -5,6 +5,7 @@ tmp="${TMPDIR:-/tmp}/xc-check-package-test.$$"
 mkdir "$tmp"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 failures=0
+package_root=$(pwd)
 
 cat > "$tmp/po2lmo" <<'EOF'
 #!/bin/sh
@@ -169,6 +170,22 @@ else
     cat "$tmp/output"
     failures=$((failures + 1))
   fi
+fi
+
+release_work="$tmp/release-work"
+release_source="$release_work/source"
+release_dist="$release_work/dist"
+mkdir -p "$release_source/packages"
+printf 'fixture-app\n' > "$release_source/packages/luci-app-xc_0.1.0-r10_all.ipk"
+printf 'fixture-i18n\n' > "$release_source/packages/luci-i18n-xc-zh-cn_0.1.0-r10_all.ipk"
+if ! (cd "$release_work" && sh "$package_root/scripts/prepare-release-assets.sh" openwrt-21.02 source dist > "$tmp/release-output" 2>&1); then
+  echo "FAIL release asset preparation failed"
+  cat "$tmp/release-output"
+  failures=$((failures + 1))
+elif ! (cd "$release_dist" && sha256sum -c SHA256SUMS-openwrt-21.02.txt > "$tmp/release-sha-output" 2>&1); then
+  echo "FAIL release checksum file is not portable with downloaded assets"
+  cat "$tmp/release-sha-output"
+  failures=$((failures + 1))
 fi
 
 [ "$failures" -eq 0 ] || exit 1

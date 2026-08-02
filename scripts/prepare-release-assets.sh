@@ -44,5 +44,8 @@ if [ "$1" = "$destination/*_${platform}.ipk" ]; then
 	echo "no luci-app-xc packages found below $source_root" >&2
 	exit 1
 fi
-sha256sum "$destination"/*_${platform}.ipk > "$destination/SHA256SUMS-${platform}.txt"
+(
+	cd "$destination"
+	sha256sum *_${platform}.ipk > "SHA256SUMS-${platform}.txt"
+)
 echo "Prepared platform suffix assets for $platform in $destination"
