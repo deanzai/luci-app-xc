@@ -60,6 +60,7 @@ Clear only truncates the XC log. It cannot erase the shared OpenWrt system log o
 
 - `luci-compat`, `lua`, `libuci-lua`, `luci-lib-jsonc`
 - `curl`, `ca-bundle`
+- `v2ray-geoip`, `v2ray-geosite`, which provide the GeoIP/GeoSite data files
 - `xray-core`, supplied by the target OpenWrt/ImmortalWrt feeds; the plugin does not bundle the core
 
 The same plugin source can be built on 21.02, 23.05, or 24.10, but each target requires its own SDK/Buildroot and feeds:
@@ -83,6 +84,20 @@ When `Geo routing` is enabled, both files must exist on the device:
 /usr/share/xray/geoip.dat
 ```
 
+XC prefers `/usr/share/xray`. On OpenWrt/ImmortalWrt 21.02, when that directory does not
+contain both files, it falls back to the paths installed by `v2ray-geoip` and
+`v2ray-geosite`:
+
+```text
+/usr/share/v2ray/geosite.dat
+/usr/share/v2ray/geoip.dat
+```
+
+23.05/24.10 normally use `/usr/share/xray`. The selector requires both files in one directory
+and never mixes the two locations. Generated Xray configurations use
+`domainStrategy=IPIfNonMatch`, so a domain rule that does not match can still perform GeoIP
+resolution.
+
 XC checks them before rendering, switching, and startup. If either file is missing it returns
 `routing_assets_missing` and does not start an invalid configuration. The data files are not
 embedded in the LuCI IPK; copy them from the target distribution's Xray asset package or a
@@ -105,7 +120,7 @@ make package/luci-app-xc/compile V=s
 ```sh
 git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 ./scripts/feeds update base
-./scripts/feeds install luci-compat luci-lib-jsonc xray-core
+./scripts/feeds install luci-compat luci-lib-jsonc xray-core v2ray-geoip v2ray-geosite
 make package/luci-app-xc/compile V=s
 ```
 

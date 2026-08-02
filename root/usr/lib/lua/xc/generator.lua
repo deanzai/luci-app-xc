@@ -471,7 +471,7 @@ function M.build(global, node)
       { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
     },
     routing = {
-      domainStrategy = "AsIs",
+      domainStrategy = "IPIfNonMatch",
       rules = routing.build(global)
     }
   }

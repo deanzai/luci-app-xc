@@ -125,6 +125,13 @@ IPK 虽然标记为 `all` 架构，依赖的 LuCI/运行时 ABI 和 Xray 包仍�
 - 安装完成后立即恢复固定构建副本。
 - 不得使用 `opkg --force-depends` 绕过依赖检查。
 
+启用预设 Geo 分流时还必须声明并安装 `+v2ray-geoip` 与 `+v2ray-geosite`；21.02 的资源
+文件通常位于 `/usr/share/v2ray`，23.05/24.10 通常位于 `/usr/share/xray`。插件优先选择
+完整的 `/usr/share/xray`，仅在该目录缺少任一文件时回退到完整的 `/usr/share/v2ray`，
+不得混用两个目录的资源。不要在 `/usr/bin/xc` 中重新写死 `XRAY_LOCATION_ASSET`，否则
+会覆盖 21.02 的回退路径。生成器使用 `domainStrategy=IPIfNonMatch`；`AsIs` 不会在域名
+规则未命中时执行 GeoIP 二次解析。
+
 部署前至少检查：
 
 ```sh

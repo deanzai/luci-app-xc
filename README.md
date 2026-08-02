@@ -61,6 +61,7 @@ Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`
 
 - `luci-compat`、`lua`、`libuci-lua`、`luci-lib-jsonc`
 - `curl`、`ca-bundle`
+- `v2ray-geoip`、`v2ray-geosite`：提供 GeoIP/GeoSite 资源
 - `xray-core`：由目标 OpenWrt/ImmortalWrt 的 feeds 提供，插件不内置核心
 
 同一份插件源码可以在 21.02、23.05 或 24.10 的 SDK/Buildroot 中分别编译，但必须使用对应版本的构建环境和 feeds：
@@ -84,6 +85,18 @@ Xray 日志级别决定后台会产生什么内容：`error` 只产生错误，`
 /usr/share/xray/geoip.dat
 ```
 
+插件优先使用 `/usr/share/xray`。在 OpenWrt/ImmortalWrt 21.02 上，若该目录不存在完整资源，
+会回退到 `v2ray-geoip`/`v2ray-geosite` 提供的路径：
+
+```text
+/usr/share/v2ray/geosite.dat
+/usr/share/v2ray/geoip.dat
+```
+
+23.05/24.10 通常使用 `/usr/share/xray`；两套路径都会按“两个文件同时存在”选择，
+不会混用。生成的 Xray 配置使用 `domainStrategy=IPIfNonMatch`，保证域名规则未命中时
+仍可通过 GeoIP 进行后续解析。
+
 插件会在渲染、切换和启动前检查文件；任一文件缺失都会返回
 `routing_assets_missing`，不会启动错误配置。资源文件不打包进 LuCI IPK，需从目标
 发行版的 Xray 资源包或已验证设备同步。临时排查时可在设置页关闭 `Geo routing`，此时只保留私有网段直连。
@@ -105,7 +118,7 @@ make package/luci-app-xc/compile V=s
 ```sh
 git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 ./scripts/feeds update base
-./scripts/feeds install luci-compat luci-lib-jsonc xray-core
+./scripts/feeds install luci-compat luci-lib-jsonc xray-core v2ray-geoip v2ray-geosite
 make package/luci-app-xc/compile V=s
 ```
 

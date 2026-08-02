@@ -8,7 +8,7 @@ PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=deanzai <sd423498566@gmail.com>
 
 LUCI_TITLE:=LuCI support for Xray node switching
-LUCI_DEPENDS:=+luci-compat +lua +libuci-lua +luci-lib-jsonc +curl +ca-bundle +xray-core
+LUCI_DEPENDS:=+luci-compat +lua +libuci-lua +luci-lib-jsonc +curl +ca-bundle +xray-core +v2ray-geoip +v2ray-geosite
 LUCI_PKGARCH:=all
 
 define Package/$(PKG_NAME)/conffiles

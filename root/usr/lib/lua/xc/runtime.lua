@@ -183,6 +183,12 @@ function Runtime:_xray_test_argv(config_path)
   return { path, "run", "-test", "-c", config_path }
 end
 
+function Runtime:_xray_test_environment()
+  local directory = routing.asset_dir(self.fs)
+  if not directory then return nil end
+  return { XRAY_LOCATION_ASSET = directory }
+end
+
 local function active_marker(active)
   if active == nil then return UNSET_ACTIVE_MARKER end
   if not schema.safe_section_id(active) then error("invalid active node", 0) end
@@ -318,7 +324,7 @@ end
 function Runtime:_encode(section_id)
   local global, node, load_error = self:_load(section_id)
   if load_error then return nil, nil, load_error end
-  for _, path in ipairs(routing.required_assets(global)) do
+  for _, path in ipairs(routing.required_assets(global, self.fs)) do
     if not self.fs.exists(path) then return nil, nil, result(false, "routing_assets_missing") end
   end
   local config = generator.build(global, node)
@@ -492,7 +498,7 @@ function Runtime:_restore_transaction(transaction, old)
     if old.config ~= nil then
       local config_path = generation_paths(transaction.generation)
       local argv = self:_xray_test_argv(config_path)
-      if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then error("old runtime validation failed", 0) end
+      if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then error("old runtime validation failed", 0) end
       self:_atomic_write(RUNTIME_PATH, old.config)
     elseif not self:_checked_remove(RUNTIME_PATH) then error("runtime removal failed", 0) end
     if not self:_apply_active(old.active) then error("active recovery failed", 0) end
@@ -560,7 +566,7 @@ function Runtime:_validate_live(transaction)
   local marker_ok, marker = pcall(active_marker, global.active_node)
   if not marker_ok or #marker ~= transaction.new_active_size or checksum(marker) ~= transaction.new_active_hash then return false end
   local argv = self:_xray_test_argv(RUNTIME_PATH)
-  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
   return true
 end
 
@@ -748,7 +754,7 @@ function Runtime:_switch_locked(section_id)
   if encode_error then return encode_error end
   self:_atomic_write(CANDIDATE_PATH, encoded)
   local argv = self:_xray_test_argv(CANDIDATE_PATH)
-  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -809,7 +815,7 @@ function Runtime:_rollback_locked()
   if not marker_ok then return result(false, "no_rollback_state") end
   self:_atomic_write(CANDIDATE_PATH, config)
   local argv = self:_xray_test_argv(CANDIDATE_PATH)
-  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
     return result(false, "validation_failed")
   end
@@ -940,7 +946,7 @@ function Runtime:test_current()
   local ok, value = xpcall(function()
     if not self.fs.exists(RUNTIME_PATH) then return result(false, "missing_runtime") end
     local argv = self:_xray_test_argv(RUNTIME_PATH)
-    if argv and action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT)) then return result(true, "test_passed") end
+    if argv and action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then return result(true, "test_passed") end
     return result(false, "test_failed")
   end, function() return result(false, "internal_error") end)
   if not ok or not value.ok then self.last_error = value.code or "internal_error" end

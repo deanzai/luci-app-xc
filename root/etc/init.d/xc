@@ -47,9 +47,24 @@ resolve_xray() {
 	esac
 }
 
+resolve_asset_dir() {
+	local asset_dir
+	for asset_dir in /usr/share/xray /usr/share/v2ray; do
+		[ -f "$asset_dir/geosite.dat" ] && [ -f "$asset_dir/geoip.dat" ] || continue
+		echo "$asset_dir"
+		return 0
+	done
+	return 1
+}
+
 start_service() {
-	local xray_path
-	export XRAY_LOCATION_ASSET=/usr/share/xray
+	local xray_path asset_dir
+	asset_dir="$(resolve_asset_dir 2>/dev/null)" || asset_dir=""
+	if [ -n "$asset_dir" ]; then
+		export XRAY_LOCATION_ASSET="$asset_dir"
+	else
+		unset XRAY_LOCATION_ASSET
+	fi
 	mkdir -p /etc/xc/rollback /etc/xc/xray/versions /var/etc/xc /var/log || return 1
 	chmod 0700 /etc/xc /etc/xc/rollback /etc/xc/xray /etc/xc/xray/versions /var/etc/xc || return 1
 	chmod 0600 /etc/config/xc || return 1

@@ -165,7 +165,7 @@ t.test("puts the selected outbound first and keeps literal private CIDRs directl
   t.eq(cfg.outbounds[2].settings, nil)
   t.eq(cfg.outbounds[3].tag, "block")
   t.eq(cfg.outbounds[3].protocol, "blackhole")
-  t.eq(cfg.routing.domainStrategy, "AsIs")
+  t.eq(cfg.routing.domainStrategy, "IPIfNonMatch")
   t.truthy(#cfg.routing.rules > 1)
   local private_rule
   for _, rule in ipairs(cfg.routing.rules) do

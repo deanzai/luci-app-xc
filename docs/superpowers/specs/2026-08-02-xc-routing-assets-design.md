@@ -24,8 +24,13 @@
 
 ## 资源与运行时
 
-- 固定资源目录为 `/usr/share/xray`，需要 `geosite.dat` 和 `geoip.dat`。
-- `/usr/bin/xc` 与 procd 服务导出 `XRAY_LOCATION_ASSET=/usr/share/xray`。
+- 资源目录按目标系统动态选择：优先 `/usr/share/xray`，需要
+  `geosite.dat` 和 `geoip.dat`；若两份资源均不存在，则回退到 21.02
+  `v2ray-geoip`/`v2ray-geosite` 提供的 `/usr/share/v2ray`。
+- `/usr/bin/xc`、LuCI 校验进程和 procd 服务统一导出所选目录的
+  `XRAY_LOCATION_ASSET`，不会把 `/usr/share/xray` 硬编码到 CLI 或子进程。
+- 生成器使用 `domainStrategy=IPIfNonMatch`，使域名规则未命中时仍可执行 GeoIP
+  解析；`AsIs` 不满足预设分流语义。
 - 渲染、切换和当前配置测试在生成前检查资源文件；缺失时返回稳定错误码
   `routing_assets_missing`，不写入候选配置、不重启服务。
 - 关闭 `routing_enabled` 时只保留私有 CIDR 直连规则，不要求 Geo 资源，便于
@@ -36,8 +41,8 @@
 - 新增纯 Lua `xc.routing` 模块，返回独立的路由表，兼容 Lua 5.1。
 - `xc.generator` 只负责把路由表嵌入 Xray 配置，不读取文件系统。
 - `xc.runtime` 负责资源存在性检查，保持现有事务与回滚流程。
-- 23.05、21.02、24.10 共用同一 Lua 实现；Geo 数据不打包进 IPK，由部署/发布
-  流程单独提供。
+- 23.05、21.02、24.10 共用同一 Lua 实现；Geo 数据不打包进 IPK，Makefile 显式依赖
+  `v2ray-geoip` 和 `v2ray-geosite`，由目标 feeds 提供。
 
 ## 验证
 

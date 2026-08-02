@@ -77,6 +77,35 @@ t.test("exec run has a bounded default deadline", function()
   t.eq(state.reaped, true)
 end)
 
+t.test("exec run forwards the selected Xray asset directory", function()
+  local captured
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    now = function() return 0 end,
+    spawn = function(argv, deadline, environment)
+      captured = environment
+      return true
+    end
+  })
+  t.eq(adapters.exec.run(XRAY, 1, { XRAY_LOCATION_ASSET = "/usr/share/v2ray" }), true)
+  t.eq(captured.XRAY_LOCATION_ASSET, "/usr/share/v2ray")
+end)
+
+t.test("platform defaults the asset environment from a stat adapter", function()
+  local captured
+  platform.new({
+    nixio = { setenv = function(name, value) captured = { name, value }; return true end },
+    fs = { stat = function(path)
+      return path:match("^/usr/share/v2ray/") and { type = "reg" } or nil
+    end },
+    cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }
+  })
+  t.eq(captured[1], "XRAY_LOCATION_ASSET")
+  t.eq(captured[2], "/usr/share/v2ray")
+end)
+
 t.test("curl proxy argv brackets IPv6 literals", function()
   local calls = {}
   local adapters = platform.new({

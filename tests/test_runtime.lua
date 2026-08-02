@@ -18,6 +18,8 @@ local LOG_LOCK = "/var/lock/xc-log.lock"
 local EXIT_IP_CACHE = "/var/etc/xc/exit-ip-cache"
 local GEOSITE = "/usr/share/xray/geosite.dat"
 local GEOIP = "/usr/share/xray/geoip.dat"
+local V2RAY_GEOSITE = "/usr/share/v2ray/geosite.dat"
+local V2RAY_GEOIP = "/usr/share/v2ray/geoip.dat"
 
 local function checksum(value)
   local hash = 5381
@@ -135,6 +137,11 @@ local function fixture(options)
   for path, content in pairs(options.files or {}) do files[path] = content end
   files[GEOSITE] = files[GEOSITE] or "geosite"
   files[GEOIP] = files[GEOIP] or "geoip"
+  if options.asset_dir == "v2ray" then
+    files[GEOSITE], files[GEOIP] = nil, nil
+    files[V2RAY_GEOSITE] = files[V2RAY_GEOSITE] or "geosite-v2ray"
+    files[V2RAY_GEOIP] = files[V2RAY_GEOIP] or "geoip-v2ray"
+  end
   if options.missing_assets then
     if options.missing_assets.geosite then files[GEOSITE] = nil end
     if options.missing_assets.geoip then files[GEOIP] = nil end
@@ -287,8 +294,11 @@ local function fixture(options)
   local exec = {
     hash_file = function() return options.core_hash or CORE_HASH end,
     machine = function() return options.machine or "aarch64" end,
-    run = function(argv, deadline)
+    run = function(argv, deadline, environment)
       event("exec:run:" .. table.concat(argv, "|"))
+      if options.asset_dir == "v2ray" and type(environment) == "table" and environment.XRAY_LOCATION_ASSET then
+        event("exec:asset:" .. environment.XRAY_LOCATION_ASSET)
+      end
       state.validation_deadlines[#state.validation_deadlines + 1] = deadline
       return options.validation_ok ~= false
     end,
@@ -390,6 +400,13 @@ t.test("render refuses preset routing when either geo asset is missing", functio
     global = { routing_enabled = "0", active_node = "old", socks_port = 7890, http_port = 10809 }
   })
   t.eq(disabled.runtime:render("new", "/tmp/render.json").ok, true)
+end)
+
+t.test("switch accepts v2ray geodata and passes its asset directory to Xray", function()
+  local state = fixture({ asset_dir = "v2ray" })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.truthy(event_index(state.events, "exec:asset:/usr/share/v2ray"))
 end)
 
 t.test("render auto-selects only a sole enabled node and writes atomically", function()

@@ -1,8 +1,11 @@
 local M = {}
 
 M.ASSET_DIR = "/usr/share/xray"
+M.FALLBACK_ASSET_DIR = "/usr/share/v2ray"
 M.GEOSITE_PATH = M.ASSET_DIR .. "/geosite.dat"
 M.GEOIP_PATH = M.ASSET_DIR .. "/geoip.dat"
+M.FALLBACK_GEOSITE_PATH = M.FALLBACK_ASSET_DIR .. "/geosite.dat"
+M.FALLBACK_GEOIP_PATH = M.FALLBACK_ASSET_DIR .. "/geoip.dat"
 
 local PRIVATE_CIDRS = {
   "0.0.0.0/8",
@@ -64,8 +67,35 @@ local function enabled(value)
   return value ~= false and value ~= 0 and value ~= "0"
 end
 
-function M.required_assets(global)
+local function asset_exists(fs, path)
+  local probe = fs.exists
+  if type(probe) == "function" then
+    local called, value = pcall(probe, path)
+    return called and value ~= nil and value ~= false
+  end
+  probe = fs.stat
+  if type(probe) ~= "function" then return false end
+  local called, value = pcall(probe, path)
+  if not called or value == nil or value == false then return false end
+  return type(value) ~= "table" or value.type == nil or value.type == "reg"
+end
+
+function M.asset_dir(fs)
+  if type(fs) ~= "table" or (type(fs.exists) ~= "function" and type(fs.stat) ~= "function") then return nil end
+  for _, directory in ipairs({ M.ASSET_DIR, M.FALLBACK_ASSET_DIR }) do
+    if asset_exists(fs, directory .. "/geosite.dat") and asset_exists(fs, directory .. "/geoip.dat") then
+      return directory
+    end
+  end
+  return nil
+end
+
+function M.required_assets(global, fs)
   if type(global) == "table" and not enabled(global.routing_enabled) then return {} end
+  local directory = M.asset_dir(fs)
+  if directory then
+    return { directory .. "/geosite.dat", directory .. "/geoip.dat" }
+  end
   return { M.GEOSITE_PATH, M.GEOIP_PATH }
 end
 
