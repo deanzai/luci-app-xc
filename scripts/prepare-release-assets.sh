@@ -1,12 +1,18 @@
 #!/bin/sh
 # Copy SDK output to uniquely named, platform-labelled release assets.
-# The original package filename is preserved apart from the platform suffix:
-#   luci-app-xc_0.1.0-r11_all_openwrt-23.05.ipk
+# Package filenames and control metadata are normalized to the current release:
+#   luci-app-xc_0.1.0-r12_all_openwrt-23.05.ipk
 set -eu
 
 platform=${1:-}
 source_root=${2:-bin/packages}
 destination=${3:-dist}
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+pkg_version=$(sed -n 's/^PKG_VERSION:=[[:space:]]*//p' "$repo_root/Makefile")
+pkg_release=$(sed -n 's/^PKG_RELEASE:=[[:space:]]*//p' "$repo_root/Makefile")
+expected_version="${pkg_version}-r${pkg_release}"
+[ -n "$pkg_version" ] && [ -n "$pkg_release" ] || { echo "cannot determine package version from Makefile" >&2; exit 1; }
 
 if [ -z "$platform" ]; then
 	echo "usage: $0 <platform> [source-root] [destination]" >&2
@@ -35,8 +41,21 @@ while IFS= read -r package; do
 			continue
 			;;
 	esac
-	base=${name%.ipk}
-	cp "$package" "$destination/${base}_${platform}.ipk"
+	case "$name" in
+		luci-app-xc_*.ipk|luci-i18n-xc-zh-cn_*.ipk)
+			package_name=${name%%_*}
+			architecture_suffix=${name#*_}
+			architecture_suffix=${architecture_suffix#*_}
+			target_name="${package_name}_${expected_version}_${architecture_suffix}"
+			;;
+		*)
+			echo "unexpected luci-app-xc package name: $name" >&2
+			exit 1
+			;;
+	esac
+	target="$destination/${target_name%.ipk}_${platform}.ipk"
+	cp "$package" "$target"
+	sh "$script_dir/normalize-ipk-version.sh" "$target" "$expected_version"
 done < "$file_list"
 
 set -- "$destination"/*_${platform}.ipk

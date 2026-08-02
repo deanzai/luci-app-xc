@@ -44,6 +44,7 @@ check luasrc/view/xc/core.htm
 check po/templates/xc.pot
 check po/zh_Hans/xc.po
 check scripts/prepare-release-assets.sh
+check scripts/normalize-ipk-version.sh
 
 echo ""
 echo "=== Translation catalog check ==="

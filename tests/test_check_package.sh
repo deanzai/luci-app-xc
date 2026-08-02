@@ -176,8 +176,23 @@ release_work="$tmp/release-work"
 release_source="$release_work/source"
 release_dist="$release_work/dist"
 mkdir -p "$release_source/packages"
-printf 'fixture-app\n' > "$release_source/packages/luci-app-xc_0.1.0-r10_all.ipk"
-printf 'fixture-i18n\n' > "$release_source/packages/luci-i18n-xc-zh-cn_0.1.0-r10_all.ipk"
+make_fixture_ipk() {
+  local output="$1"
+  local package_name="$2"
+  local package_version="$3"
+  local fixture_root="$tmp/fixture-${package_name}-${package_version}"
+  mkdir -p "$fixture_root/control" "$fixture_root/data"
+  printf '%s\n' \
+    "Package: $package_name" \
+    "Version: $package_version" \
+    "Architecture: all" > "$fixture_root/control/control"
+  printf '%s\n' 2.0 > "$fixture_root/debian-binary"
+  tar -czf "$fixture_root/control.tar.gz" -C "$fixture_root/control" control
+  tar -czf "$fixture_root/data.tar.gz" -C "$fixture_root/data" .
+  tar -czf "$output" -C "$fixture_root" debian-binary control.tar.gz data.tar.gz
+}
+make_fixture_ipk "$release_source/packages/luci-app-xc_0.1.0_all.ipk" luci-app-xc 0.1.0
+make_fixture_ipk "$release_source/packages/luci-i18n-xc-zh-cn_0.1.0_all.ipk" luci-i18n-xc-zh-cn 0.1.0
 if ! (cd "$release_work" && sh "$package_root/scripts/prepare-release-assets.sh" openwrt-21.02 source dist > "$tmp/release-output" 2>&1); then
   echo "FAIL release asset preparation failed"
   cat "$tmp/release-output"
@@ -186,6 +201,35 @@ elif ! (cd "$release_dist" && sha256sum -c SHA256SUMS-openwrt-21.02.txt > "$tmp/
   echo "FAIL release checksum file is not portable with downloaded assets"
   cat "$tmp/release-sha-output"
   failures=$((failures + 1))
+fi
+
+makefile_version=$(sed -n 's/^PKG_VERSION:=[[:space:]]*//p' Makefile)
+makefile_release=$(sed -n 's/^PKG_RELEASE:=[[:space:]]*//p' Makefile)
+expected_package_version="${makefile_version}-r${makefile_release}"
+version_work="$tmp/version-work"
+version_source="$version_work/source"
+version_dist="$version_work/dist"
+mkdir -p "$version_source/packages"
+make_fixture_ipk "$version_source/packages/luci-app-xc_0.1.0_all.ipk" luci-app-xc 0.1.0
+make_fixture_ipk "$version_source/packages/luci-i18n-xc-zh-cn_0.1.0_all.ipk" luci-i18n-xc-zh-cn 0.1.0
+if ! (cd "$version_work" && sh "$package_root/scripts/prepare-release-assets.sh" openwrt-21.02 source dist > "$tmp/version-output" 2>&1); then
+  echo "FAIL platform asset preparation could not normalize package metadata"
+  cat "$tmp/version-output"
+  failures=$((failures + 1))
+else
+  normalized_main="$version_dist/luci-app-xc_${expected_package_version}_all_openwrt-21.02.ipk"
+  normalized_i18n="$version_dist/luci-i18n-xc-zh-cn_${expected_package_version}_all_openwrt-21.02.ipk"
+  for normalized in "$normalized_main" "$normalized_i18n"; do
+    if [ ! -f "$normalized" ]; then
+      echo "FAIL normalized package asset is missing: $normalized"
+      failures=$((failures + 1))
+      continue
+    fi
+    if ! tar -xOf "$normalized" control.tar.gz | tar -xOzf - ./control | grep -q "^Version: ${expected_package_version}$"; then
+      echo "FAIL normalized package has an unexpected control Version: $normalized"
+      failures=$((failures + 1))
+    fi
+  done
 fi
 
 [ "$failures" -eq 0 ] || exit 1
