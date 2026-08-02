@@ -130,14 +130,14 @@ The current source package version is `0.1.0-r11`; a typical artifact is:
 bin/packages/**/luci-app-xc_0.1.0-r11_all.ipk
 ```
 
-GitHub Actions builds OpenWrt 21.02, 23.05, and 24.10. The older 21.02
+GitHub Actions builds OpenWrt 21.02, 23.05, and 24.10. The older 21.02 and 23.05
 `luci.mk` may ignore `PKG_RELEASE`, so an SDK output can omit the release suffix. Before
 uploading, CI adds an explicit platform suffix to every IPK so Release assets cannot be
 mistaken for one another:
 
 ```text
 21.02: luci-app-xc_0.1.0_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r11_all_openwrt-23.05.ipk
+23.05: luci-app-xc_0.1.0_all_openwrt-23.05.ipk
 24.10: luci-app-xc_0.1.0-r11_all_openwrt-24.10.ipk
 ```
 

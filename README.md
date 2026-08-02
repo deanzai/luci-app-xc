@@ -128,13 +128,13 @@ make package/luci-app-xc/compile V=s
 bin/packages/**/luci-app-xc_0.1.0-r11_all.ipk
 ```
 
-GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02 的旧版 `luci.mk` 可能忽略
-`PKG_RELEASE`，因此 SDK 原始产物可能使用不带 release 后缀的文件名。CI 会在上传前为每个
+GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02、23.05 的旧版 `luci.mk`
+可能忽略 `PKG_RELEASE`，因此 SDK 原始产物可能使用不带 release 后缀的文件名。CI 会在上传前为每个
 原始 IPK 加上明确的平台后缀，避免 Release 中出现无法判断目标系统的同名文件：
 
 ```text
 21.02: luci-app-xc_0.1.0_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r11_all_openwrt-23.05.ipk
+23.05: luci-app-xc_0.1.0_all_openwrt-23.05.ipk
 24.10: luci-app-xc_0.1.0-r11_all_openwrt-24.10.ipk
 ```
 
