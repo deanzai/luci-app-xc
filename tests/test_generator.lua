@@ -212,10 +212,11 @@ t.test("adds split DNS servers and routes remote DNS queries through the selecte
   }))
 
   t.eq(cfg.dns.queryStrategy, "UseIPv4")
+  t.eq(cfg.dns.tag, "dns-in")
   t.eq(cfg.dns.disableCache, false)
   t.eq(cfg.dns.disableFallbackIfMatch, true)
   t.eq(#cfg.dns.servers, 4)
-  t.eq(cfg.dns.servers[1].tag, "remote-dns")
+  t.eq(cfg.dns.servers[1].tag, nil)
   t.eq(cfg.dns.servers[1].address, "https://8.8.8.8/dns-query")
   t.eq(cfg.dns.servers[1].domains[1], "geosite:geolocation-!cn")
   t.eq(cfg.dns.servers[1].skipFallback, true)
@@ -225,13 +226,13 @@ t.test("adds split DNS servers and routes remote DNS queries through the selecte
   t.eq(cfg.dns.servers[3].address, "localhost")
   t.eq(cfg.dns.servers[3].domains[1], "geosite:private")
   t.eq(cfg.dns.servers[3].skipFallback, true)
-  t.eq(cfg.dns.servers[4].tag, "remote-dns2")
+  t.eq(cfg.dns.servers[4].tag, nil)
   t.eq(cfg.dns.servers[4].address, "https://1.1.1.1/dns-query")
   t.eq(cfg.dns.servers[4].domains, nil)
   t.eq(cfg.dns.servers[4].skipFallback, false)
 
   t.eq(cfg.routing.rules[1].type, "field")
-  assert_array_equal(cfg.routing.rules[1].inboundTag, { "remote-dns", "remote-dns2" })
+  assert_array_equal(cfg.routing.rules[1].inboundTag, { "dns-in" })
   t.eq(cfg.routing.rules[1].outboundTag, "proxy-selected")
 end)
 
@@ -255,7 +256,7 @@ t.test("returns independent deterministic routing tables", function()
   first.routing.rules[2].ip[1] = "mutated-by-caller"
   first.dns.servers[1].domains[1] = "mutated-by-caller"
   local second = assert(generator.build(global(), node))
-  assert_array_equal(second.routing.rules[1].inboundTag, { "remote-dns", "remote-dns2" })
+  assert_array_equal(second.routing.rules[1].inboundTag, { "dns-in" })
   assert_array_equal(second.routing.rules[2].ip, PRIVATE_CIDRS)
   t.eq(second.dns.servers[1].domains[1], "geosite:geolocation-!cn")
 end)
@@ -477,6 +478,12 @@ t.test("emits representative configs accepted by Xray when available", function(
     xray = "xray"
   end
   local cases = {
+    { config = assert(generator.build(global({ listen_address = "127.0.0.1" }), {
+      protocol = "vless", server = "reality.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",
+      transport = "tcp", security = "reality", sni = "cover.invalid",
+      public_key = REALITY_PUBLIC_KEY, short_id = "a1b2", fingerprint = "chrome"
+    })), accepted = true },
     { config = assert(generator.build(global({ listen_address = "127.0.0.1", routing_enabled = "0" }), {
       protocol = "vless", server = "reality.invalid", port = 443,
       uuid = UUID_ONE, encryption = "none", flow = "xtls-rprx-vision",

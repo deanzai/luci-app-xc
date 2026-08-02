@@ -56,11 +56,10 @@ local PRESET_RULES = {
   }
 }
 
-local REMOTE_DNS_TAGS = { "remote-dns", "remote-dns2" }
+local DNS_INBOUND_TAG = "dns-in"
 
 local DNS_SERVERS = {
   {
-    tag = "remote-dns",
     address = "https://8.8.8.8/dns-query",
     domains = {
       "geosite:geolocation-!cn", "geosite:openai", "geosite:youtube",
@@ -80,7 +79,6 @@ local DNS_SERVERS = {
     skipFallback = true
   },
   {
-    tag = "remote-dns2",
     address = "https://1.1.1.1/dns-query",
     skipFallback = false
   }
@@ -131,7 +129,10 @@ end
 
 function M.dns(global)
   if type(global) == "table" and not enabled(global.routing_enabled) then return nil end
+  -- Use the top-level DNS tag: it is supported by the old 21.02 core line,
+  -- while per-name-server tags only appeared in newer Xray releases.
   return {
+    tag = DNS_INBOUND_TAG,
     servers = copy(DNS_SERVERS),
     queryStrategy = "UseIPv4",
     disableCache = false,
@@ -144,7 +145,7 @@ function M.build(global)
   if type(global) ~= "table" or enabled(global.routing_enabled) then
     rules[#rules + 1] = {
       type = "field",
-      inboundTag = copy(REMOTE_DNS_TAGS),
+      inboundTag = { DNS_INBOUND_TAG },
       outboundTag = "proxy-selected"
     }
   end
