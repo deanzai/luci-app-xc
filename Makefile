@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-xc
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=13
+PKG_RELEASE:=14
 PKG_PO_VERSION:=$(PKG_VERSION)-r$(PKG_RELEASE)
 PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=deanzai <sd423498566@gmail.com>
@@ -22,9 +22,40 @@ case "$$root" in ""|/*) ;; *) exit 1 ;; esac
 xc_dir="$$root/etc/xc"
 config="$$root/etc/config/xc"
 [ ! -e "$$config" ] || chmod 0600 "$$config" || exit 1
+mkdir -p "$$xc_dir" || exit 1
+legacy_uci_timestamp="$$(date +%s)" || exit 1
+case "$$legacy_uci_timestamp" in ''|*[!0-9]*) exit 1 ;; esac
+legacy_uci_index=0
+for legacy_uci in "$$root"/etc/config/xc.bak-migrate-*; do \
+	[ ! -f "$$legacy_uci" ] || { \
+		[ ! -L "$$legacy_uci" ] || exit 1; \
+		legacy_uci_index=$$((legacy_uci_index + 1)); \
+		[ "$$legacy_uci_index" -le 256 ] || exit 1; \
+		legacy_uci_backup="$$xc_dir/legacy-uci-backup-$$legacy_uci_timestamp-$$legacy_uci_index"; \
+		while [ -e "$$legacy_uci_backup" ]; do \
+			legacy_uci_index=$$((legacy_uci_index + 1)); \
+			[ "$$legacy_uci_index" -le 256 ] || exit 1; \
+			legacy_uci_backup="$$xc_dir/legacy-uci-backup-$$legacy_uci_timestamp-$$legacy_uci_index"; \
+		done; \
+	} || exit 1; \
+done
+legacy_uci_index=0
+for legacy_uci in "$$root"/etc/config/xc.bak-migrate-*; do \
+	[ ! -f "$$legacy_uci" ] || { \
+		[ ! -L "$$legacy_uci" ] || exit 1; \
+		legacy_uci_index=$$((legacy_uci_index + 1)); \
+		[ "$$legacy_uci_index" -le 256 ] || exit 1; \
+		legacy_uci_backup="$$xc_dir/legacy-uci-backup-$$legacy_uci_timestamp-$$legacy_uci_index"; \
+		while [ -e "$$legacy_uci_backup" ]; do \
+			legacy_uci_index=$$((legacy_uci_index + 1)); \
+			[ "$$legacy_uci_index" -le 256 ] || exit 1; \
+			legacy_uci_backup="$$xc_dir/legacy-uci-backup-$$legacy_uci_timestamp-$$legacy_uci_index"; \
+		done; \
+		chmod 0600 "$$legacy_uci" && mv "$$legacy_uci" "$$legacy_uci_backup"; \
+	} || exit 1; \
+done
 [ ! -f "$$xc_dir/migration-complete" ] || exit 0
 [ -f "$$xc_dir/nodes.json" ] || exit 0
-mkdir -p "$$xc_dir" || exit 1
 base="$$xc_dir/legacy-backup-$$(date +%s)"
 backup=$$base
 attempt=0

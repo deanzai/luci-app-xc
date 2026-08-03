@@ -1,7 +1,7 @@
 local t = require "testlib"
 local platform = require "xc.platform"
 
-local XRAY = { "/usr/bin/xray", "run", "-test", "-c", "/var/etc/xc/config.json" }
+local XRAY = { "/usr/bin/xray", "run", "-test", "-format", "json", "-c", "/var/etc/xc/config.json" }
 
 local function process_fixture(wait_results, options)
   options = options or {}

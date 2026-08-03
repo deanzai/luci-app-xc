@@ -700,8 +700,9 @@ function M.new(injected)
 
   local exec = {
     run = function(argv, deadline, environment)
-      if type(argv) ~= "table" or #argv ~= 5 or not valid_xray_path(argv[1]) or argv[2] ~= "run"
-        or argv[3] ~= "-test" or argv[4] ~= "-c" or not safe_path(argv[5]) then return false end
+      if type(argv) ~= "table" or #argv ~= 7 or not valid_xray_path(argv[1]) or argv[2] ~= "run"
+        or argv[3] ~= "-test" or argv[4] ~= "-format" or argv[5] ~= "json"
+        or argv[6] ~= "-c" or not safe_path(argv[7]) then return false end
       if environment ~= nil and (type(environment) ~= "table"
         or (environment.XRAY_LOCATION_ASSET ~= nil and not valid_asset_dir(environment.XRAY_LOCATION_ASSET))) then
         return false

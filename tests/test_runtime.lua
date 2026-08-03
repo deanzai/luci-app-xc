@@ -551,7 +551,7 @@ t.test("switch validates before snapshot and commits only after listeners and he
   t.eq(state.files["/etc/xc/rollback/generation-123-1.config"], "old-runtime")
   t.eq(state.files["/etc/xc/rollback/generation-123-1.active"], "old")
   local candidate = XRAY_CANDIDATE
-  local test_event = "exec:run:/usr/bin/xray|run|-test|-c|" .. candidate
+  local test_event = "exec:run:/usr/bin/xray|run|-test|-format|json|-c|" .. candidate
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "fs:write_temp:/etc/xc/rollback/generation-123-1.config.tmp.123"))
   t.truthy(event_index(state.events, "exec:health:http:192.168.6.1:10809") < event_index(state.events, "uci:set_active:new"))
@@ -884,7 +884,7 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(status.listeners.http, true)
   local tested = state.runtime:test_current()
   t.eq(tested.ok, true)
-  t.eq(state.events[#state.events], "exec:run:/usr/bin/xray|run|-test|-c|" .. RUNTIME)
+  t.eq(state.events[#state.events], "exec:run:/usr/bin/xray|run|-test|-format|json|-c|" .. RUNTIME)
   t.eq(stringify(status):find(UUID, 1, true), nil)
   t.eq(stringify(status):find("https://", 1, true), nil)
   t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
@@ -903,7 +903,7 @@ t.test("runtime tests the selected managed Xray core without replacing system pa
   } })
   local tested = state.runtime:test_current()
   t.eq(tested.ok, true)
-  t.eq(state.events[#state.events], "exec:run:" .. managed_path .. "|run|-test|-c|" .. RUNTIME)
+  t.eq(state.events[#state.events], "exec:run:" .. managed_path .. "|run|-test|-format|json|-c|" .. RUNTIME)
 end)
 
 t.test("runtime refuses a symlinked selected managed Xray core", function()
@@ -1179,7 +1179,7 @@ t.test("recover_pending restores a checksum-validated pre-UCI transaction idempo
   local first = state.runtime:recover_pending()
   t.eq(first.ok, true)
   t.eq(files[RUNTIME], "old-runtime")
-  local validation = "exec:run:/usr/bin/xray|run|-test|-c|/etc/xc/rollback/generation-123-1.config"
+  local validation = "exec:run:/usr/bin/xray|run|-test|-format|json|-c|/etc/xc/rollback/generation-123-1.config"
   t.truthy(event_index(state.events, validation) < event_index(state.events, "fs:write_temp:" .. RUNTIME .. ".tmp.123"))
   t.eq(files[TRANSACTION], nil)
   t.eq(state.runtime:recover_pending().ok, true)

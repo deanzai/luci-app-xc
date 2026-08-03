@@ -25,6 +25,7 @@ local function fixture(options)
   }
   local dirs, writes, lock_state = {}, {}, false
   local read_before_lock = false
+  local run_argv
   local fs = {
     stat = function(path)
       if files[path] then return { type = "reg", size = #files[path] } end
@@ -80,7 +81,10 @@ local function fixture(options)
     hash_file = function() return options.hash or HASH end,
     machine = function() return options.machine or "aarch64" end,
     xray_version = function() return options.version_output or "Xray 26.6.27 (Xray, Penetrates Everything.)" end,
-    run = function() return options.config_ok ~= false end,
+    run = function(argv)
+      run_argv = argv
+      return options.config_ok ~= false
+    end,
     restart = function()
       if options.throw_restart then error("restart failed") end
       if type(options.restart_sequence) == "table" and #options.restart_sequence > 0 then
@@ -114,7 +118,7 @@ local function fixture(options)
     network = function() return "192.0.2.1" end,
     now = function() return 100 end, wall_time = function() return 1700000000 end
   }
-  return manager_module.new(adapters), files, writes, adapters, function() return read_before_lock end
+  return manager_module.new(adapters), files, writes, adapters, function() return read_before_lock end, function() return run_argv end
 end
 
 t.test("core manager rejects wrong hash and architecture", function()
@@ -132,7 +136,7 @@ t.test("core manager rejects wrong hash and architecture", function()
 end)
 
 t.test("core manager accepts matching ELF and current config", function()
-  local manager, files = fixture()
+  local manager, files, _, _, _, get_run_argv = fixture()
   files["/var/etc/xc/.core-upload-1"] = HEADER .. string.rep("x", 128)
   local result = manager:validate("/var/etc/xc/.core-upload-1", HASH, "test build")
   t.eq(result.ok, true)
@@ -140,6 +144,7 @@ t.test("core manager accepts matching ELF and current config", function()
   t.eq(result.manifest.arch, "aarch64")
   t.eq(result.manifest.sha256, HASH)
   t.eq(result.manifest.validation, "full")
+  t.eq(table.concat(get_run_argv(), "|"), "/var/etc/xc/.core-upload-1|run|-test|-format|json|-c|/var/etc/xc/config.json")
 end)
 
 t.test("core manager rejects a core that cannot validate the current config", function()

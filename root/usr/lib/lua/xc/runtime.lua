@@ -180,7 +180,7 @@ end
 function Runtime:_xray_test_argv(config_path)
   local path = selected_xray(self)
   if not path then return nil end
-  return { path, "run", "-test", "-c", config_path }
+  return { path, "run", "-test", "-format", "json", "-c", config_path }
 end
 
 function Runtime:_xray_test_environment()

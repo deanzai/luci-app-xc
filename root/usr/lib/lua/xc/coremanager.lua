@@ -165,7 +165,7 @@ function Manager:validate(path, expected_sha256, note)
 
   local validation = "binary"
   if self.fs.exists(CONFIG_PATH) then
-    local tested = self.exec.run({ path, "run", "-test", "-c", CONFIG_PATH }, self.now() + 30)
+    local tested = self.exec.run({ path, "run", "-test", "-format", "json", "-c", CONFIG_PATH }, self.now() + 30)
     if tested ~= true then return result(false, "core_config_invalid") end
     validation = "full"
   end

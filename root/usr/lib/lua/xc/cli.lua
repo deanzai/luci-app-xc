@@ -224,7 +224,7 @@ local function migrate_legacy(directory, deps)
         return response(false, render_code)
       end
       local test_call, tested = pcall(deps.exec.run,
-        { "/usr/bin/xray", "run", "-test", "-c", MIGRATION_CANDIDATE }, deps.now() + 30)
+        { "/usr/bin/xray", "run", "-test", "-format", "json", "-c", MIGRATION_CANDIDATE }, deps.now() + 30)
       if not test_call or not tested then return response(false, "validation_failed") end
 
       local commit_result, commit_outcome = commit_staged(deps.uci)
