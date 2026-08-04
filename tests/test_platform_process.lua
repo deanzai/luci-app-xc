@@ -92,6 +92,21 @@ t.test("exec run forwards the selected Xray asset directory", function()
   t.eq(captured.XRAY_LOCATION_ASSET, "/usr/share/v2ray")
 end)
 
+t.test("background switch forwards only a safe fixed command and returns without waiting", function()
+  local captured
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    background = function(argv)
+      captured = argv
+      return true
+    end
+  })
+  t.eq(adapters.exec.start_switch("node_1"), true)
+  t.eq(table.concat(captured, "|"), "/usr/bin/xc|switch|node_1")
+  t.eq(adapters.exec.start_switch("bad;node"), false)
+end)
+
 t.test("platform defaults the asset environment from a stat adapter", function()
   local captured
   platform.new({

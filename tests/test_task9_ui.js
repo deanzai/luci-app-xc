@@ -21,6 +21,8 @@ assert.ok(nodeTableSource.includes('id="xc-node-controls"'), "node controls shar
 assert.ok(nodeTableSource.includes('dispatcher.build_url("admin", "services", "xc", "switch")'), "row switch uses authenticated controller endpoint");
 assert.ok(nodeTableSource.includes('translate("Switch")'), "inactive node action uses Switch");
 assert.ok(nodeTableSource.includes('translate("Current")'), "active node action uses Current");
+assert.ok(nodeTableSource.includes("switch_started"), "row switch handles asynchronous completion");
+assert.ok(nodeTableSource.includes("operation"), "row switch follows shared operation state");
 assert.strictEqual(nodeTableSource.includes("location.reload"), false, "switch does not reload the page");
 
 function xhrHarness() {
@@ -45,6 +47,7 @@ function xhrHarness() {
 function nodeHarness(concurrency, layout, rowCount) {
   layout = layout || "div"; rowCount = rowCount === undefined ? 6 : rowCount;
   const xhr = xhrHarness();
+  const timers = [];
   function hasClass(node, name) { return (" " + node.className + " ").indexOf(" " + name + " ") >= 0; }
   function descendants(node) {
     return node.children.reduce((all, child) => all.concat(child, descendants(child)), []);
@@ -147,7 +150,10 @@ function nodeHarness(concurrency, layout, rowCount) {
     querySelectorAll: selector => roots.reduce((all, root) => all.concat(matches(root, selector) ? [root] : [], root.querySelectorAll(selector)), []),
     addEventListener: (name, fn) => { listeners[name] = fn; }
   };
-  const window = {};
+  const window = {
+    setTimeout: (callback, delay) => { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeout: timer => { if (timer) timer.cleared = true; }
+  };
   vm.runInNewContext(script("luasrc/view/xc/node_table.htm").replace("TEST_CONCURRENCY", String(concurrency)),
     { window, document, XMLHttpRequest: xhr.XHR, JSON, Number, Math, String, encodeURIComponent });
   listeners.DOMContentLoaded();
@@ -184,7 +190,7 @@ function nodeHarness(concurrency, layout, rowCount) {
   });
   assert.strictEqual(nativeAdd.parentNode, controls["xc-node-controls"], "native Add button moves into the shared toolbar");
   assert.strictEqual(controls["xc-node-controls"].children[0], nativeAdd, "Add is the first toolbar action");
-  return { window, controls, rows, skippedRows, requests: xhr.requests, nativeAdd, hasClass };
+  return { window, controls, rows, skippedRows, requests: xhr.requests, nativeAdd, hasClass, timers };
 }
 
 nodeHarness(3, "native");
@@ -245,6 +251,29 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
 {
   const h = nodeHarness(3);
   h.rows[1].switchButton.onclick();
+  h.requests[0].respond({ ok: true, data: { code: "switch_started", node: "node_1" } });
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switching…",
+    "an accepted background switch remains pending");
+  assert.strictEqual(h.rows[1].switchButton.value, "Switching…");
+  h.rows.forEach(row => assert.strictEqual(row.switchButton.disabled, true,
+    "all switch buttons stay disabled while operation is active"));
+  h.timers[h.timers.length - 1].callback();
+  assert.strictEqual(h.requests.length, 2);
+  h.requests[1].respond({ ok: true, data: { operation: "switch", recovery_required: false,
+    active_section: "node_0" } });
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switching…");
+  h.timers[h.timers.length - 1].callback();
+  assert.strictEqual(h.requests.length, 3);
+  h.requests[2].respond({ ok: true, data: { operation: "idle", recovery_required: false,
+    active_section: "node_1" } });
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
+  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
+  assert.strictEqual(h.rows[1].switchButton.value, "Current");
+}
+
+{
+  const h = nodeHarness(3);
+  h.rows[1].switchButton.onclick();
   h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
   assert.strictEqual(h.requests.length, 2, "successful switch refreshes active state from the server");
   assert.strictEqual(h.requests[1].method, "GET");
@@ -287,7 +316,7 @@ for (const respond of [
 for (const fail of [request => request.fail(), request => request.expire()]) {
   const h = nodeHarness(3);
   h.rows[2].switchButton.onclick();
-  assert.strictEqual(h.requests[0].timeout, 60000, "switch requests have a bounded browser deadline");
+  assert.strictEqual(h.requests[0].timeout, 12000, "switch requests have a bounded browser deadline");
   fail(h.requests[0]);
   assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switch failed");
   assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), true, "network failure keeps the prior highlight");

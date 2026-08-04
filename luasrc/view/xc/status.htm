@@ -45,6 +45,8 @@ local util = require "luci.util"
   var activeSection = null;
   var actionBusy = false;
   var awaitingRefresh = false;
+  var pendingOperation = false;
+  var operationObserved = false;
   var statusGeneration = 0;
 
   function element(id) { return document.getElementById(id); }
@@ -76,8 +78,31 @@ local util = require "luci.util"
     text("xc-socks-listener", endpoint(data.listen_ip, data.socks_port));
     text("xc-http-listener", endpoint(data.listen_ip, data.http_port));
     text("xc-exit-ip", data.exit_ip || unavailableText);
-    if (data.last_error) text("xc-action-result", errorText);
-    setButtons(actionBusy || data.lock_state === "held");
+    var operation = data.operation || "idle";
+    var activeOperation = operation !== "idle" || data.recovery_required === true;
+    if (data.recovery_required === true) {
+      pendingOperation = false;
+      operationObserved = false;
+      actionBusy = false;
+      text("xc-action-result", errorText);
+    } else if (activeOperation) {
+      if (pendingOperation) operationObserved = true;
+      actionBusy = true;
+      text("xc-action-result", data.recovery_required ? errorText : workingText);
+    } else if (pendingOperation) {
+      if (operationObserved || data.last_error) {
+        pendingOperation = false;
+        operationObserved = false;
+        actionBusy = false;
+        text("xc-action-result", data.last_error ? operationFailedText : operationCompletedText);
+      } else {
+        actionBusy = true;
+        text("xc-action-result", workingText);
+      }
+    } else if (data.last_error) {
+      text("xc-action-result", errorText);
+    }
+    setButtons(actionBusy || activeOperation || data.lock_state === "held" || data.recovery_required === true);
   }
 
   function parseResponse(xhr) {
@@ -108,7 +133,10 @@ local util = require "luci.util"
       if (xhr.readyState !== 4) return;
       if (generation !== statusGeneration || statusRequest !== xhr) return;
       statusRequest = null;
-      if (awaitingRefresh) { awaitingRefresh = false; actionBusy = false; }
+      if (awaitingRefresh) {
+        awaitingRefresh = false;
+        if (!pendingOperation) actionBusy = false;
+      }
       renderStatus(parseResponse(xhr));
       schedulePoll();
     };
@@ -126,7 +154,12 @@ local util = require "luci.util"
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var data = parseResponse(xhr);
-      if (data.code === "not_implemented") {
+      var resultCode = data.code || (data.data && data.data.code);
+      if (resultCode === "switch_started") {
+        pendingOperation = true;
+        operationObserved = false;
+        text("xc-action-result", workingText);
+      } else if (data.code === "not_implemented" || resultCode === "not_implemented") {
         text("xc-action-result", healthUnavailableText);
       } else if (data.ok === true) {
         text("xc-action-result", operationCompletedText);

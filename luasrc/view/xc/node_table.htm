@@ -43,6 +43,7 @@ local probe_concurrency = self.probe_concurrency or 3
   var switchFailedText = <%=util.serialize_json(translate("Switch failed"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
   var allButton, stopButton, state, switchState, switching = false, switchGeneration = 0;
+  var switchPollTimer = null, switchRequest = null, switchTarget = null, switchPolls = 0;
 
   function color(milliseconds) {
     if (milliseconds < 100) return "green";
@@ -166,12 +167,80 @@ local probe_concurrency = self.probe_concurrency or 3
     xhr.send(null);
   }
 
+  function scheduleSwitchPoll(generation) {
+    if (switchPollTimer !== null) window.clearTimeout(switchPollTimer);
+    switchPollTimer = null;
+    if (generation !== switchGeneration || !switching || document.hidden) return;
+    switchPollTimer = window.setTimeout(function() { pollSwitchStatus(generation); }, 1000);
+  }
+
+  function finishSwitch(generation, succeeded, section) {
+    if (generation !== switchGeneration) return;
+    switching = false;
+    switchTarget = null;
+    switchRequest = null;
+    if (succeeded && section) {
+      setActive(section);
+      switchState.textContent = switchedText;
+    } else {
+      setActive(activeSection);
+      switchState.textContent = switchFailedText;
+    }
+  }
+
+  function pollSwitchStatus(generation) {
+    if (generation !== switchGeneration || !switching || switchRequest !== null) return;
+    if (document.hidden) return;
+    switchPolls++;
+    if (switchPolls > 120) { finishSwitch(generation, false); return; }
+    var xhr = new XMLHttpRequest();
+    var settled = false;
+    switchRequest = xhr;
+    function complete(payload) {
+      if (settled) return;
+      settled = true;
+      if (switchRequest === xhr) switchRequest = null;
+      if (generation !== switchGeneration) return;
+      if (!payload || payload.ok !== true || !payload.data) {
+        scheduleSwitchPoll(generation); return;
+      }
+      var data = payload.data;
+      if (data.recovery_required === true || data.operation === "interrupted") {
+        finishSwitch(generation, false); return;
+      }
+      if (data.operation && data.operation !== "idle") {
+        switchState.textContent = switchingText;
+        scheduleSwitchPoll(generation); return;
+      }
+      if (data.active_section === switchTarget) {
+        finishSwitch(generation, true, data.active_section);
+      } else if (data.last_error) {
+        finishSwitch(generation, false);
+      } else {
+        scheduleSwitchPoll(generation);
+      }
+    }
+    xhr.open("GET", statusEndpoint, true);
+    xhr.timeout = 12000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      complete(payload);
+    };
+    xhr.onerror = function() { complete(null); };
+    xhr.ontimeout = function() { complete(null); };
+    xhr.send(null);
+  }
+
   function switchNode(row) {
     if (switching) return;
     var section = row.getAttribute("data-xc-section");
     if (!section || section === activeSection) return;
     var generation = ++switchGeneration;
     switching = true;
+    switchTarget = section;
+    switchPolls = 0;
     switchState.textContent = switchingText;
     setActive(activeSection);
     var selected = row.querySelector(".xc-switch-one");
@@ -179,22 +248,21 @@ local probe_concurrency = self.probe_concurrency or 3
     var xhr = new XMLHttpRequest();
     xhr.open("POST", switchEndpoint, true);
     xhr.setRequestHeader("Content-Type", "application/json");
-    // A switch includes restart and health checks (up to 30 seconds each).
-    // Keep the browser deadline above that backend budget so a slow but valid
-    // switch cannot be reported as failed while it is still being committed.
-    xhr.timeout = 60000;
+    // The POST only starts the detached transaction; status polling owns the
+    // longer restart and health-check lifetime.
+    xhr.timeout = 12000;
     var settled = false;
     function complete(payload) {
       if (settled) return;
       settled = true;
-      switching = false;
-      if (payload && payload.ok === true && payload.data) {
-        setActive(section);
-        switchState.textContent = switchedText;
+      if (payload && payload.ok === true && payload.data && payload.data.code === "switched") {
+        finishSwitch(generation, true, section);
         refreshActive(generation);
+      } else if (payload && payload.ok === true && payload.data && payload.data.code === "switch_started") {
+        switchState.textContent = switchingText;
+        scheduleSwitchPoll(generation);
       } else {
-        setActive(activeSection);
-        switchState.textContent = switchFailedText;
+        finishSwitch(generation, false);
       }
     }
     xhr.onreadystatechange = function() {
@@ -273,6 +341,10 @@ local probe_concurrency = self.probe_concurrency or 3
     })(rows[index]);
     setActive(activeSection);
   }
+
+  document.addEventListener("visibilitychange", function() {
+    if (!document.hidden && switching) pollSwitchStatus(switchGeneration);
+  });
 
   window.XCProbeQueue = { start: start, stop: stop };
   if (document.addEventListener) document.addEventListener("DOMContentLoaded", initialize);

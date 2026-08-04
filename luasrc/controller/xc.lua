@@ -55,6 +55,7 @@ local messages = {
   not_implemented = "This capability is not available yet.",
   no_rollback_state = "No rollback state is available.",
   request_too_large = "The request body is too large.",
+  recovery_required = "An interrupted runtime transaction must be recovered first.",
   test_failed = "The current node health test failed.",
   unsupported_node = "The selected node cannot be probed safely.",
   validation_failed = "The request did not pass validation."
@@ -64,7 +65,7 @@ local failure_status = {
   validation_failed = 400, invalid_node = 400, invalid_request = 400,
   missing_node = 404, no_rollback_state = 404,
   method_not_allowed = 405, busy = 409, disabled_node = 409,
-  request_too_large = 413, not_implemented = 501,
+  request_too_large = 413, not_implemented = 501, recovery_required = 409,
   unsupported_node = 422, missing_runtime = 404, test_failed = 502,
   core_hash_invalid = 400, core_invalid_upload = 400, core_invalid_target = 400, core_note_invalid = 400,
   core_arch_mismatch = 422, core_invalid_elf = 422, core_config_invalid = 422, core_hash_mismatch = 422,
@@ -301,6 +302,8 @@ function action_status()
     socks_port = status.listen and status.listen.socks_port,
     http_port = status.listen and status.listen.http_port,
     lock_state = status.lock,
+    operation = status.operation,
+    recovery_required = status.recovery_required,
     exit_ip = status.exit_ip,
     last_error = status.last_error
   })
@@ -574,9 +577,16 @@ function action_switch()
   if not runtime_instance then failure("internal_error"); return end
   local selected, code = requested_node(adapters, body)
   if not selected then failure(code); return end
-  local called, result = pcall(function() return runtime_instance:switch(selected.section_id) end)
-  if not called then failure("internal_error"); return end
-  runtime_response(result)
+  local status_called, status = pcall(runtime_instance.status, runtime_instance)
+  if not status_called or type(status) ~= "table" or not status.ok then failure("internal_error"); return end
+  if status.recovery_required then failure("recovery_required"); return end
+  if status.lock == "held" or (status.operation and status.operation ~= "idle") then failure("busy"); return end
+  if type(adapters.exec) ~= "table" or type(adapters.exec.start_switch) ~= "function" then
+    failure("internal_error"); return
+  end
+  local started_called, started = pcall(adapters.exec.start_switch, selected.section_id)
+  if not started_called or started ~= true then failure("internal_error"); return end
+  success({ code = "switch_started", node = selected.section_id })
 end
 
 function action_rollback()

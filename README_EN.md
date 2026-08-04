@@ -124,30 +124,30 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-The current source package version is `0.1.0-r15`; a typical artifact is:
+The current source package version is `0.1.0-r16`; a typical artifact is:
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r15_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r16_all.ipk
 ```
 
 GitHub Actions builds OpenWrt 21.02, 23.05, and 24.10. The older 21.02 and 23.05
 `luci.mk` may ignore `PKG_RELEASE`, so an SDK output can omit the release suffix. Before
 uploading, CI adds an explicit platform suffix to every IPK so Release assets cannot be
-mistaken for one another. It also normalizes the control metadata version to `0.1.0-r15`
+mistaken for one another. It also normalizes the control metadata version to `0.1.0-r16`
 so opkg can upgrade installations reporting the older `0.1.0-10` version:
 
 ```text
-21.02: luci-app-xc_0.1.0-r15_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r15_all_openwrt-23.05.ipk
-24.10: luci-app-xc_0.1.0-r15_all_openwrt-24.10.ipk
+21.02: luci-app-xc_0.1.0-r16_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r16_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r16_all_openwrt-24.10.ipk
 ```
 
 Translation packages use the LuCI PO version independently and receive the same suffix:
 
 ```text
-luci-i18n-xc-zh-cn_0.1.0-r15_all_openwrt-21.02.ipk
-luci-i18n-xc-zh-cn_0.1.0-r15_all_openwrt-23.05.ipk
-luci-i18n-xc-zh-cn_0.1.0-r15_all_openwrt-24.10.ipk
+luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
 ```
 
 Each platform artifact also contains `SHA256SUMS-openwrt-<version>.txt`. Install only the main
@@ -159,7 +159,7 @@ from the `all` package architecture.
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r15_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r15_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r16_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r16_all.ipk
 ```
 
 When using GitHub Release assets, replace both paths with files carrying the same platform suffix.

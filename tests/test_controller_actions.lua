@@ -42,7 +42,7 @@ end
 
 local function controller_fixture(options)
   options = options or {}
-  local state = { reverts = 0, commits = 0, fs_events = {}, log_events = {}, encoded = {} }
+  local state = { reverts = 0, commits = 0, fs_events = {}, log_events = {}, encoded = {}, sync_switch_calls = 0 }
   local body = options.body or "{}"
   local http = {
     getenv = function(name)
@@ -140,6 +140,11 @@ local function controller_fixture(options)
       end
     },
     exec = {
+      start_switch = function(section)
+        state.start_switch_section = section
+        if options.start_switch_throw then error("password=start-switch-secret") end
+        return options.start_switch_ok ~= false
+      end,
       xray_logs = function(deadline)
         state.xray_deadline = deadline
         if options.xray_throw then error("stderr=raw-secret-error") end
@@ -150,7 +155,7 @@ local function controller_fixture(options)
     wall_time = function() return options.wall_time or 1785326400 end
   }
   local runtime_instance = options.runtime_instance or {
-    switch = function() return { ok = true, code = "switched", node = "safe_node" } end,
+    switch = function() state.sync_switch_calls = state.sync_switch_calls + 1; return { ok = true, code = "switched", node = "safe_node" } end,
     rollback = function() return { ok = true, code = "rolled_back" } end,
     status = function() return { ok = true, service = "running", lock = "unlocked" } end,
     test_current = options.test_current or function() return { ok = true, code = "test_passed" } end,
@@ -528,6 +533,35 @@ t.test("status exposes only a sanitized exit IP from runtime", function()
   } })
   controller.action_status()
   t.eq(state.response.data.exit_ip, "203.0.113.9")
+end)
+
+t.test("switch starts a background transaction and does not wait for runtime completion", function()
+  local controller, state = controller_fixture({
+    runtime_instance = {
+      switch = function() state.sync_switch_calls = state.sync_switch_calls + 1; return { ok = true } end,
+      status = function() return { ok = true, service = "running", operation = "idle", lock = "unlocked", recovery_required = false } end
+    }
+  })
+  controller.action_switch()
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.code, "switch_started")
+  t.eq(state.response.data.node, "safe_node")
+  t.eq(state.start_switch_section, "safe_node")
+  t.eq(state.sync_switch_calls, 0)
+end)
+
+t.test("status exposes transaction and recovery state to LuCI", function()
+  local controller, state = controller_fixture({ runtime_instance = {
+    status = function()
+      return { ok = true, service = "running", operation = "switch", lock = "held",
+        recovery_required = true, last_error = "health_failed" }
+    end
+  } })
+  controller.action_status()
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.operation, "switch")
+  t.eq(state.response.data.recovery_required, true)
+  t.eq(state.response.data.last_error, "health_failed")
 end)
 
 t.test("controller reverts only definitely uncommitted imports", function()

@@ -13,7 +13,7 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
     "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert",
     "acquire_lock", "release_lock", "lock_state", "write_temp", "fsync_dir", "allocate_generation",
     "list_generation_files", "trash_generation", "delete_trashed_generation", "listener_ready", "health_check", "observe_exit_ip",
-    "service_state", "stringify"
+    "service_state", "start_switch", "stringify"
   }) do t.contains(source, name .. " = function") end
   t.contains(source, "stat_nofollow = function")
   t.contains(source, "nixio.open")
@@ -23,6 +23,8 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.contains(source, "O_NOFOLLOW")
   t.contains(source, "MONOTONIC")
   t.contains(source, 'nixio.exec(unpack(argv))')
+  t.contains(source, "nixio.setsid")
+  t.contains(source, '"/usr/bin/xc", "switch"')
   t.contains(source, "null:close()")
   t.truthy(source:find("null:close()", 1, true) < source:find("nixio.exec(unpack(argv))", 1, true))
   t.contains(source, 'nixio.open("/proc/uptime", "r")')

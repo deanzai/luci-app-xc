@@ -118,4 +118,21 @@ for (const [address, port, expected] of [["fd00::1", 7890, "[fd00::1]:7890"], ["
   assert.strictEqual(h.elements["xc-restart"].disabled, false);
 }
 
+{
+  const h = loadStatus(); h.requests[0].respond(status({}));
+  h.elements["xc-restart"].onclick();
+  h.requests[1].respond({ ok: true, data: { code: "switch_started", node: "node_1" } });
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Working…",
+    "status page waits for the detached switch");
+  assert.strictEqual(h.elements["xc-restart"].disabled, true);
+  const refresh = h.requests[h.requests.length - 1];
+  refresh.respond(status({ operation: "switch" }));
+  assert.strictEqual(h.elements["xc-restart"].disabled, true);
+  h.timers[h.timers.length - 1].callback();
+  const completed = h.requests[h.requests.length - 1];
+  completed.respond(status({ operation: "idle" }));
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Operation completed");
+  assert.strictEqual(h.elements["xc-restart"].disabled, false);
+}
+
 console.log("PASS status DOM/XHR/clock behavior");

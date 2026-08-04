@@ -165,6 +165,24 @@ local function spawn_capture(nixio, argv, path, deadline, now, sleep)
   return wait_status(nixio, pid, deadline, now, sleep)
 end
 
+local function start_background(nixio, argv)
+  if not valid_argv(argv) then return false end
+  local pid = nixio.fork()
+  if pid == 0 then
+    local called, session = pcall(nixio.setsid)
+    if not called or session == false then os.exit(127) end
+    local null = nixio.open("/dev/null", "w")
+    if not null then os.exit(127) end
+    nixio.dup(null, nixio.stdin or 0)
+    nixio.dup(null, nixio.stdout)
+    nixio.dup(null, nixio.stderr)
+    null:close()
+    nixio.exec(unpack(argv))
+    os.exit(127)
+  end
+  return type(pid) == "number" and pid > 0
+end
+
 local function errno_missing(nixio, code)
   if code == 2 or code == "ENOENT" then return true end
   local current = nixio.errno and nixio.errno() or nil
@@ -189,6 +207,9 @@ function M.new(injected)
   end
   local spawn_process = injected.spawn or function(argv, deadline, environment)
     return spawn(nixio, argv, deadline, now_process, sleep_process, environment)
+  end
+  local background_process = injected.background or function(argv)
+    return start_background(nixio, argv)
   end
   local capture_process = injected.capture or function(argv, deadline, maximum, raw)
     if not valid_argv(argv) or type(maximum) ~= "number" or maximum < 1 or maximum > 262144 then return nil end
@@ -699,6 +720,10 @@ function M.new(injected)
   }
 
   local exec = {
+    start_switch = function(section_id)
+      if not schema.safe_section_id(section_id) then return false end
+      return background_process({ "/usr/bin/xc", "switch", section_id }) == true
+    end,
     run = function(argv, deadline, environment)
       if type(argv) ~= "table" or #argv ~= 7 or not valid_xray_path(argv[1]) or argv[2] ~= "run"
         or argv[3] ~= "-test" or argv[4] ~= "-format" or argv[5] ~= "json"
