@@ -26,6 +26,7 @@ local probe_concurrency = self.probe_concurrency or 3
   "use strict";
   var endpoint = '<%=dispatcher.build_url("admin", "services", "xc", "probe")%>?token=<%=token%>';
   var switchEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "switch")%>?token=<%=token%>';
+  var statusEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "status")%>';
   var activeSection = <%=util.serialize_json(self.active_section or "")%>;
   var configured = Number("<%=probe_concurrency%>");
   var concurrency = isFinite(configured) ? Math.min(5, Math.max(1, Math.floor(configured))) : 3;
@@ -41,7 +42,7 @@ local probe_concurrency = self.probe_concurrency or 3
   var switchedText = <%=util.serialize_json(translate("Switched"))%>;
   var switchFailedText = <%=util.serialize_json(translate("Switch failed"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
-  var allButton, stopButton, state, switchState, switching = false;
+  var allButton, stopButton, state, switchState, switching = false, switchGeneration = 0;
 
   function color(milliseconds) {
     if (milliseconds < 100) return "green";
@@ -143,10 +144,33 @@ local probe_concurrency = self.probe_concurrency or 3
     }
   }
 
+  function refreshActive(generation) {
+    var xhr = new XMLHttpRequest();
+    var settled = false;
+    function complete(payload) {
+      if (settled) return;
+      settled = true;
+      if (generation !== switchGeneration || !payload || payload.ok !== true || !payload.data) return;
+      setActive(payload.data.active_section || null);
+    }
+    xhr.open("GET", statusEndpoint, true);
+    xhr.timeout = 12000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      complete(payload);
+    };
+    xhr.onerror = function() { complete(null); };
+    xhr.ontimeout = function() { complete(null); };
+    xhr.send(null);
+  }
+
   function switchNode(row) {
     if (switching) return;
     var section = row.getAttribute("data-xc-section");
     if (!section || section === activeSection) return;
+    var generation = ++switchGeneration;
     switching = true;
     switchState.textContent = switchingText;
     setActive(activeSection);
@@ -167,6 +191,7 @@ local probe_concurrency = self.probe_concurrency or 3
       if (payload && payload.ok === true && payload.data) {
         setActive(section);
         switchState.textContent = switchedText;
+        refreshActive(generation);
       } else {
         setActive(activeSection);
         switchState.textContent = switchFailedText;

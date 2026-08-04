@@ -242,6 +242,36 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   assert.strictEqual(h.rows[1].switchButton.disabled, true);
 }
 
+{
+  const h = nodeHarness(3);
+  h.rows[1].switchButton.onclick();
+  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
+  assert.strictEqual(h.requests.length, 2, "successful switch refreshes active state from the server");
+  assert.strictEqual(h.requests[1].method, "GET");
+  assert.ok(h.requests[1].url.indexOf("/xc/status") >= 0);
+  h.requests[1].respond({ ok: true, data: { active_section: "node_2" } });
+  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), false,
+    "node table follows the committed active node");
+  assert.strictEqual(h.hasClass(h.rows[2], "xc-node-active"), true,
+    "node table highlights the server-reported active node");
+}
+
+{
+  const h = nodeHarness(3);
+  h.rows[1].switchButton.onclick();
+  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
+  const firstRefresh = h.requests[1];
+  h.rows[2].switchButton.onclick();
+  h.requests[2].respond({ ok: true, data: { code: "switched", node: "node_2" } });
+  const secondRefresh = h.requests[3];
+  secondRefresh.respond({ ok: true, data: { active_section: "node_2" } });
+  firstRefresh.respond({ ok: true, data: { active_section: "node_1" } });
+  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), false,
+    "a late refresh from an older switch cannot restore its node");
+  assert.strictEqual(h.hasClass(h.rows[2], "xc-node-active"), true,
+    "the newest switch remains highlighted after a stale response");
+}
+
 for (const respond of [
   request => request.respond({ ok: false, code: "validation_failed" }, 400),
   request => request.respondRaw("{malformed", 500)
