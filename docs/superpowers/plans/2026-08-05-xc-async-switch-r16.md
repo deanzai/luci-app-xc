@@ -55,6 +55,6 @@
 - Modify: `README.md` or release status documentation only if the existing release workflow requires it
 
 - [x] **Step 1: Bump `PKG_RELEASE` from 15 to 16 and regenerate/check translation metadata if source strings changed.
-- [x] **Step 2: Run `sh tests/run-host.sh`, `sh scripts/check-package.sh`, and the package build/check workflow available locally.
-- [ ] **Step 3: Commit the surgical change, push the current `main` branch, and record the resulting commit.
-- [ ] **Step 4: Back up the device state, install r16 on `192.168.6.1`, restart/reload LuCI as required, and verify switch completion, active node, exit IP, and no pending transaction.
+- [x] **Step 2: Run `PATH=/usr/bin:/bin:/usr/local/bin sh tests/run-host.sh`, `sh scripts/check-package.sh`, and the package build/check workflow available locally.
+- [x] **Step 3: Commit the surgical change as `72553e4` and push the current `main` branch.
+- [x] **Step 4: Back up the device state, install r16 on `192.168.6.1`, restart/reload LuCI as required, and verify switch completion, active node, exit IP, and no pending transaction.
