@@ -99,8 +99,9 @@ local function valid_api_balancer(value)
 end
 
 local function valid_api_outbound(value)
-  return type(value) == "string" and #value <= 64
-    and value:match("^xc%-node%-[0-9A-Za-z_-]+$") ~= nil
+  if type(value) ~= "string" or #value > 64 then return false end
+  local section_id = value:match("^xc%-node%-(.+)$")
+  return section_id ~= nil and schema.safe_section_id(section_id)
 end
 
 local function api_tag_from_fields(fields)

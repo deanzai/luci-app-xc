@@ -99,6 +99,8 @@ t.test("xray API calls reject unsafe paths and tags without spawning or capturin
     { "/usr/bin/xray", "xc-balancer;secret", "xc-node-node_1" },
     { "/usr/bin/xray", "xc-balancer", "xc node" },
     { "/usr/bin/xray", "xc-balancer", "xc-node-node_1;secret" },
+    { "/usr/bin/xray", "xc-balancer", "xc-node-a-b" },
+    { "/usr/bin/xray", "xc-balancer", "xc-node--" },
     { "/usr/bin/xray", "xc-balancer", "xc-node-" .. string.rep("a", 64) },
     { "/usr/bin/xray", "xc-balancer", "xc-node-node_1\nsecret" }
   }
