@@ -116,15 +116,20 @@ end
 local function parse_api_text(output, balancer_tag)
   local fields = {}
   local output_balancer
-  for field, value in output:gmatch("([A-Za-z]+)%s*:%s*([^\r\n]*)") do
-    field = field:lower()
-    value = value:match("^%s*(.-)%s*$")
-    if field == "balancer" then
-      if output_balancer ~= nil and output_balancer ~= value then return nil end
-      output_balancer = value
-    elseif field == "current" or field == "selected" then
-      if fields[field] ~= nil and fields[field] ~= value then return nil end
-      fields[field] = value
+  local lines = output .. "\n"
+  for line in lines:gmatch("(.-)\r?\n") do
+    if not line:match("^[ \t]*$") then
+      if line:find("[%z\1-\8\11\12\14-\31\127]") then return nil end
+      local field, value = line:match("^[ \t]*([A-Za-z][A-Za-z0-9_-]*)[ \t]*:[ \t]*(.-)[ \t]*$")
+      if field == nil or value == "" then return nil end
+      field = field:lower()
+      if field == "balancer" then
+        if output_balancer ~= nil and output_balancer ~= value then return nil end
+        output_balancer = value
+      elseif field == "current" or field == "selected" then
+        if fields[field] ~= nil and fields[field] ~= value then return nil end
+        fields[field] = value
+      end
     end
   end
   if output_balancer ~= balancer_tag then return nil end

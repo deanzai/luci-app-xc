@@ -192,6 +192,18 @@ t.test("xray API balancer requires the requested balancer in CLI output", functi
   end
 end)
 
+t.test("xray API balancer fails closed on mixed JSON or invalid text output", function()
+  local outputs = {
+    "Balancer: xc-balancer\nCurrent: xc-node-node_1\n{\"unexpected\":true}\n",
+    "Balancer: xc-balancer\nCurrent: xc-node-node_1\nnot a field\n",
+    "Balancer: xc-balancer\nCurrent: xc-node-node_1\n乱码\n"
+  }
+  for _, output in ipairs(outputs) do
+    local _, exec = api_fixture({ output = output })
+    t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  end
+end)
+
 t.test("xray API balancer never returns complete API output", function()
   local output = "Balancer: xc-balancer\nCurrent: xc-node-node_4\nsecret-field: UUID-or-token\n"
   local _, exec = api_fixture({ output = output })
