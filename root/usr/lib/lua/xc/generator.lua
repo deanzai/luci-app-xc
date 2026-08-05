@@ -31,6 +31,7 @@ local transports = { tcp = true, ws = true, grpc = true }
 local securities = { none = true, tls = true, reality = true }
 local xray_log_levels = { error = true, warning = true, info = true, debug = true }
 local DYNAMIC_API_PORT = 10085
+local DYNAMIC_NODE_LIMIT = 256
 local fingerprints = {
   chrome = true, firefox = true, safari = true, ios = true, android = true,
   edge = true, ["360"] = true, qq = true, random = true, randomized = true
@@ -465,7 +466,8 @@ local function dynamic_nodes(nodes)
 
   local maximum = 0
   for index in pairs(nodes) do
-    if type(index) ~= "number" or index < 1 or index ~= math.floor(index) then
+    if type(index) ~= "number" or index ~= index or index == math.huge or index == -math.huge
+      or index < 1 or index > DYNAMIC_NODE_LIMIT or index ~= math.floor(index) then
       return nil, "invalid dynamic nodes"
     end
     if index > maximum then maximum = index end
@@ -473,6 +475,7 @@ local function dynamic_nodes(nodes)
   if maximum == 0 then return nil, "no enabled dynamic nodes" end
 
   local outbounds, selector, seen = {}, {}, {}
+  local node_count = 0
   for index = 1, maximum do
     local node = nodes[index]
     if type(node) ~= "table" or not dynamic_enabled(node.enabled) then
@@ -488,10 +491,11 @@ local function dynamic_nodes(nodes)
     seen[tag] = true
     local outbound, err = M.build_outbound(normalized, tag)
     if not outbound then return nil, err end
-    outbounds[#outbounds + 1] = outbound
-    selector[#selector + 1] = tag
+    node_count = node_count + 1
+    outbounds[node_count] = outbound
+    selector[node_count] = tag
   end
-  return outbounds, selector
+  return outbounds, selector, node_count
 end
 
 function M.build(global, node)
@@ -540,8 +544,8 @@ function M.build_dynamic(global, nodes)
   if validated.socks_port == DYNAMIC_API_PORT or validated.http_port == DYNAMIC_API_PORT then
     return nil, "invalid dynamic API port"
   end
-  local node_outbounds, selector, nodes_error = dynamic_nodes(nodes)
-  if not node_outbounds then return nil, selector or nodes_error end
+  local node_outbounds, selector, node_count = dynamic_nodes(nodes)
+  if not node_outbounds then return nil, selector end
 
   local config = {
     log = { access = "none", loglevel = validated.loglevel, dnsLog = false },
@@ -575,15 +579,23 @@ function M.build_dynamic(global, nodes)
     routing = {
       domainStrategy = "IPIfNonMatch",
       rules = {
-        { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api-out" }
+        { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api" }
       }
     }
   }
-  config.outbounds[#config.outbounds + 1] = { tag = "direct", protocol = "freedom" }
-  config.outbounds[#config.outbounds + 1] = { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
-  config.outbounds[#config.outbounds + 1] = { tag = "xc-api-out", protocol = "freedom" }
+  local outbound_count = node_count
+  outbound_count = outbound_count + 1
+  config.outbounds[outbound_count] = { tag = "direct", protocol = "freedom" }
+  outbound_count = outbound_count + 1
+  config.outbounds[outbound_count] = { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
+  outbound_count = outbound_count + 1
+  config.outbounds[outbound_count] = { tag = "xc-api", protocol = "freedom" }
   local routing_rules = routing.build(global, { balancerTag = "xc-balancer" })
-  for _, rule in ipairs(routing_rules) do config.routing.rules[#config.routing.rules + 1] = rule end
+  local routing_rule_count = 1
+  for _, rule in ipairs(routing_rules) do
+    routing_rule_count = routing_rule_count + 1
+    config.routing.rules[routing_rule_count] = rule
+  end
   config.dns = routing.dns(global)
   return config
 end

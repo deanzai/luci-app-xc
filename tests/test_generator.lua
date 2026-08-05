@@ -748,14 +748,14 @@ t.test("builds a dynamic balancer configuration with loopback Xray API", functio
   t.eq(cfg.outbounds[2].tag, "xc-node-new")
   t.eq(cfg.outbounds[3].tag, "direct")
   t.eq(cfg.outbounds[4].tag, "block")
-  t.eq(cfg.outbounds[5].tag, "xc-api-out")
+  t.eq(cfg.outbounds[5].tag, "xc-api")
   t.eq(cfg.outbounds[5].protocol, "freedom")
   local api_rule
   for _, rule in ipairs(cfg.routing.rules) do
     if rule.inboundTag and rule.inboundTag[1] == "xc-api" then api_rule = rule end
   end
   t.truthy(api_rule)
-  t.eq(api_rule.outboundTag, "xc-api-out")
+  t.eq(api_rule.outboundTag, "xc-api")
   for _, rule in ipairs(cfg.routing.rules) do
     t.eq(rule.outboundTag == "proxy-selected", false)
   end
@@ -799,6 +799,22 @@ t.test("rejects dynamic API port conflicts with SOCKS and HTTP inbounds", functi
 
   local default_config = assert(generator.build_dynamic(global(), { node }))
   t.eq(default_config.inbounds[3].port, 10085)
+end)
+
+t.test("rejects non-finite and oversized dynamic node indexes", function()
+  local node = {
+    id = "bounded_node", enabled = true, protocol = "vless", server = "bounded.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  }
+  local non_finite = { [1] = node, [math.huge] = node }
+  local non_finite_config, non_finite_err = generator.build_dynamic(global(), non_finite)
+  t.eq(non_finite_config, nil)
+  t.eq(non_finite_err, "invalid dynamic nodes")
+
+  local oversized = { [1] = node, [257] = node }
+  local oversized_config, oversized_err = generator.build_dynamic(global(), oversized)
+  t.eq(oversized_config, nil)
+  t.eq(oversized_err, "invalid dynamic nodes")
 end)
 
 return true
