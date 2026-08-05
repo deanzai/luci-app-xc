@@ -91,10 +91,10 @@ API 不可用、当前配置不是动态模式、目标节点不在 balancer 中
 
 ## 平台接口边界
 
-平台 adapter 增加两个固定参数的操作，供运行时注入和宿主测试：
+平台 adapter 增加两个固定 argv 的操作，供运行时注入和宿主测试。运行时先沿用现有核心选择校验得到 `xray_path`，平台层只接受已校验的 Xray 可执行路径：
 
-- `xray_api_override(balancer_tag, outbound_tag)`：只接受插件内部生成的 tag，使用固定可执行文件和 argv 调用 Xray API `bo`。
-- `xray_api_balancer(balancer_tag)`：调用 Xray API `bi`，限制输出大小，解析并返回当前选择的受限 tag。
+- `xray_api_override(xray_path, balancer_tag, outbound_tag)`：只接受插件内部生成的 tag，使用固定 argv 调用 Xray API `bo`。
+- `xray_api_balancer(xray_path, balancer_tag)`：调用 Xray API `bi`，限制输出大小，解析并返回当前选择的受限 tag。
 
 平台层不得通过 shell 拼接命令，不得接受任意用户传入的路径、命令或原始 JSON。API 地址固定为 `127.0.0.1:10085`，超时有上限，失败统一返回可记录的稳定错误码。
 
