@@ -322,14 +322,16 @@ local function fixture(options)
       end
       return not options.listener_fail or options.listener_fail ~= kind
     end,
-    health_check = function(kind, address, port, health_url, deadline)
-      event("exec:health:" .. kind .. ":" .. address .. ":" .. tostring(port))
+    real_connection_check = function(kind, address, port, health_url, deadline)
+      event("exec:real_connection:" .. kind .. ":" .. address .. ":" .. tostring(port))
       state.health_url, state.health_deadline = health_url, deadline
+      if options.health_hook then options.health_hook(kind, deadline) end
       if options.health_failures and (options.health_failures[kind] or 0) > 0 then
         options.health_failures[kind] = options.health_failures[kind] - 1
-        return false
+        return { ok = false }
       end
-      return not options.health_fail or options.health_fail ~= kind
+      if options.health_fail and options.health_fail == kind then return { ok = false } end
+      return { ok = true, time = kind == "socks" and 12 or 34, status = 204 }
     end,
     observe_exit_ip = function(kind, address, port, health_url, deadline)
       event("exec:exit_ip:" .. kind .. ":" .. address .. ":" .. tostring(port))
@@ -554,13 +556,31 @@ t.test("switch validates before snapshot and commits only after listeners and he
   local test_event = "exec:run:/usr/bin/xray|run|-test|-format|json|-c|" .. candidate
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, test_event) < event_index(state.events, "fs:write_temp:/etc/xc/rollback/generation-123-1.config.tmp.123"))
-  t.truthy(event_index(state.events, "exec:health:http:192.168.6.1:10809") < event_index(state.events, "uci:set_active:new"))
+  t.truthy(event_index(state.events, "exec:real_connection:http:192.168.6.1:10809") < event_index(state.events, "uci:set_active:new"))
   t.truthy(event_index(state.events, "uci:set_active:new") < event_index(state.events, "uci:commit"))
   t.truthy(event_index(state.events, "uci:commit") < event_index(state.events, "fs:rename:" .. MANIFEST .. ".tmp.123:" .. MANIFEST))
   t.eq(state.health_url, "https://health.invalid/generate_204")
   t.eq(state.health_deadline, 128)
   t.truthy(event_index(state.events, MAIN_UNLOCK))
   t.eq(state.events[#state.events], LOG_UNLOCK)
+end)
+
+t.test("switch commits only after both real proxy requests and returns their measurements", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.eq(result.real_connection.socks.time, 12)
+  t.eq(result.real_connection.socks.status, 204)
+  t.eq(result.real_connection.http.time, 34)
+  t.eq(result.real_connection.http.status, 204)
+  t.truthy(event_index(state.events, "exec:real_connection:socks:192.168.6.1:7890") < event_index(state.events, "uci:set_active:new"))
+  t.truthy(event_index(state.events, "exec:real_connection:http:192.168.6.1:10809") < event_index(state.events, "uci:set_active:new"))
+
+  local failed = fixture({ health_failures = { http = 10 }, files = { [RUNTIME] = "old-runtime" } })
+  result = failed.runtime:switch("new")
+  t.eq(result.code, "health_failed")
+  t.eq(failed.global.active_node, "old")
+  t.eq(event_index(failed.events, "uci:set_active:new"), nil)
 end)
 
 t.test("runtime treats a committed hardening warning as committed state", function()
@@ -651,7 +671,7 @@ end)
 
 t.test("failed switch preserves the prior successful rollback generation", function()
   local state = fixture({
-    health_failures = { http = 1 },
+    health_failures = { http = 10 },
     files = merge({ [RUNTIME] = "runtime-B" }, journal("runtime-A", "A")),
     global = { active_node = "B", socks_port = 7890, http_port = 10809 },
     nodes = { node("A", true), node("B", true), node("C", true) }
@@ -683,10 +703,52 @@ t.test("failed Xray validation never restarts and releases the lock", function()
   t.eq(event_index(invalid_health.events, "exec:restart"), nil)
 end)
 
+t.test("real connection retries a transient proxy startup failure", function()
+  local clock = 123
+  local state = fixture({
+    health_failures = { http = 1 },
+    files = { [RUNTIME] = "old-runtime" },
+    now = function() return clock end,
+    sleep_hook = function() clock = clock + 1 end
+  })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.eq(occurrences(table.concat(state.events, "|"), "exec:real_connection:http:192.168.6.1:10809"), 2)
+end)
+
+t.test("real connection retries after one attempt consumes only its request budget", function()
+  local clock = 123
+  local state = fixture({
+    health_failures = { socks = 1 },
+    global = { active_node = "old", socks_port = 7890, http_port = 10809, health_timeout = 20 },
+    files = { [RUNTIME] = "old-runtime" },
+    now = function() return clock end,
+    health_hook = function(kind, deadline)
+      if kind == "socks" and clock == 123 then clock = deadline end
+    end
+  })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.eq(occurrences(table.concat(state.events, "|"), "exec:real_connection:socks:192.168.6.1:7890"), 2)
+end)
+
+t.test("real connection timeout starts after listener startup", function()
+  local clock = 123
+  local state = fixture({
+    global = { active_node = "old", socks_port = 7890, http_port = 10809, health_timeout = 5 },
+    files = { [RUNTIME] = "old-runtime" },
+    now = function() return clock end
+  })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.eq(state.listener_deadlines[1], clock + 30)
+  t.eq(state.health_deadline, clock + 5)
+end)
+
 t.test("listener and health failures restore the previous config and active node", function()
   for failure, code in pairs({ listener_failures = "listener_failed", health_failures = "health_failed" }) do
     local options = { files = { [RUNTIME] = "old-runtime" } }
-    options[failure] = failure == "listener_failures" and { http = 10 } or { socks = 1 }
+    options[failure] = failure == "listener_failures" and { http = 10 } or { socks = 10 }
     local state = fixture(options)
     local result = state.runtime:switch("new")
     t.eq(result.ok, false)
@@ -705,15 +767,15 @@ t.test("listener readiness waits and both health entries are always checked", fu
   t.eq(result.ok, true)
   t.truthy(event_index(state.events, "sleep"))
 
-  local failed = fixture({ health_failures = { socks = 1 }, files = { [RUNTIME] = "old-runtime" } })
+  local failed = fixture({ health_failures = { socks = 10 }, files = { [RUNTIME] = "old-runtime" } })
   result = failed.runtime:switch("new")
   t.eq(result.code, "health_failed")
-  t.truthy(event_index(failed.events, "exec:health:socks:192.168.6.1:7890"))
-  t.truthy(event_index(failed.events, "exec:health:http:192.168.6.1:10809"))
+  t.truthy(event_index(failed.events, "exec:real_connection:socks:192.168.6.1:7890"))
+  t.truthy(event_index(failed.events, "exec:real_connection:http:192.168.6.1:10809"))
 end)
 
 t.test("a failed first switch stops service when no old runtime exists", function()
-  local state = fixture({ health_failures = { http = 1 } })
+  local state = fixture({ health_failures = { http = 10 } })
   local result = state.runtime:switch("new")
   t.eq(result.ok, false)
   t.eq(result.code, "health_failed_no_previous_config")
@@ -812,8 +874,8 @@ t.test("rollback reports no snapshot and restores a one-generation snapshot", fu
   t.truthy(event_index(state.events, "fs:chmod:" .. XRAY_CANDIDATE .. ".tmp.123:0600") < event_index(state.events, "exec:restart"))
   t.truthy(event_index(state.events, "exec:restart") < event_index(state.events, "uci:commit"))
   t.truthy(event_index(state.events, "exec:listener:http:192.168.6.1:10809"))
-  t.truthy(event_index(state.events, "exec:health:socks:192.168.6.1:7890"))
-  t.truthy(event_index(state.events, "exec:health:http:192.168.6.1:10809"))
+  t.truthy(event_index(state.events, "exec:real_connection:socks:192.168.6.1:7890"))
+  t.truthy(event_index(state.events, "exec:real_connection:http:192.168.6.1:10809"))
 end)
 
 t.test("rollback rejects corrupt journal snapshots before Xray or installation", function()
@@ -831,7 +893,7 @@ t.test("rollback failures restore the pre-rollback runtime UCI and service", fun
   local cases = {
     { options = { restart_failures = 1 }, code = "restart_failed" },
     { options = { commit_failures = 1 }, code = "commit_failed" },
-    { options = { health_failures = { http = 1 } }, code = "health_failed" },
+    { options = { health_failures = { http = 10 } }, code = "health_failed" },
     { options = { fsync_failures = 1 }, code = "internal_error" }
   }
   for _, case in ipairs(cases) do
@@ -884,11 +946,28 @@ t.test("status and test_current omit credentials and use only fixed argv", funct
   t.eq(status.listeners.http, true)
   local tested = state.runtime:test_current()
   t.eq(tested.ok, true)
-  t.eq(state.events[#state.events], "exec:run:/usr/bin/xray|run|-test|-format|json|-c|" .. RUNTIME)
+  t.truthy(event_index(state.events, "exec:run:/usr/bin/xray|run|-test|-format|json|-c|" .. RUNTIME))
   t.eq(stringify(status):find(UUID, 1, true), nil)
   t.eq(stringify(status):find("https://", 1, true), nil)
   t.eq(stringify(status):find("opaque-secret-token", 1, true), nil)
   t.eq(stringify(tested):find("raw-secret-runtime", 1, true), nil)
+end)
+
+t.test("test_current performs the same real SOCKS and HTTP connection checks", function()
+  local state = fixture({ files = { [RUNTIME] = "runtime" } })
+  local tested = state.runtime:test_current()
+  t.eq(tested.ok, true)
+  t.eq(tested.code, "test_passed")
+  t.eq(tested.real_connection.socks.time, 12)
+  t.eq(tested.real_connection.http.time, 34)
+  t.truthy(event_index(state.events, "exec:real_connection:socks:192.168.6.1:7890"))
+  t.truthy(event_index(state.events, "exec:real_connection:http:192.168.6.1:10809"))
+
+  local failed = fixture({ health_failures = { socks = 10 }, files = { [RUNTIME] = "runtime" } })
+  tested = failed.runtime:test_current()
+  t.eq(tested.ok, false)
+  t.eq(tested.code, "health_failed")
+  t.eq(failed.global.active_node, "old")
 end)
 
 t.test("runtime tests the selected managed Xray core without replacing system path", function()
@@ -903,7 +982,7 @@ t.test("runtime tests the selected managed Xray core without replacing system pa
   } })
   local tested = state.runtime:test_current()
   t.eq(tested.ok, true)
-  t.eq(state.events[#state.events], "exec:run:" .. managed_path .. "|run|-test|-format|json|-c|" .. RUNTIME)
+  t.truthy(event_index(state.events, "exec:run:" .. managed_path .. "|run|-test|-format|json|-c|" .. RUNTIME))
 end)
 
 t.test("runtime refuses a symlinked selected managed Xray core", function()
@@ -1313,12 +1392,14 @@ t.test("cleanup interruption leaves a valid new manifest and retryable cleanup_p
   t.eq(files["/etc/xc/rollback/generation-100-1.config"], nil)
 end)
 
-t.test("readiness checks the deadline after sleep and after final health success", function()
+t.test("readiness checks the deadline after a failed real connection", function()
   local clock = 0
   local state = fixture({
-    files = { [RUNTIME] = "old-runtime" }, listener_failures = { socks = 1 },
+    files = { [RUNTIME] = "old-runtime" }, health_failures = { socks = 1 },
     now = function() return clock end,
-    sleep_hook = function() clock = 6 end
+    health_hook = function(kind, deadline)
+      if kind == "socks" and clock == 0 then clock = deadline end
+    end
   })
   local value = state.runtime:switch("new")
   t.eq(value.code, "health_failed")

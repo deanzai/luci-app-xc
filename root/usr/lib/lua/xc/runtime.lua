@@ -26,6 +26,7 @@ local LOG_LEVEL_DEBUG = "debug"
 local LOG_LEVEL_INFO = "info"
 local LOG_LEVEL_ERROR = "error"
 local VALIDATION_TIMEOUT = 30
+local LISTENER_TIMEOUT = 30
 local sanitize_text
 
 local function checksum(value)
@@ -115,7 +116,7 @@ local messages = {
   validation_failed = "Xray rejected the candidate configuration",
   restart_failed = "Xray service restart failed",
   listener_failed = "Xray listeners did not become ready",
-  health_failed = "proxy health checks failed",
+  health_failed = "real proxy connection checks failed",
   commit_failed = "active node could not be committed",
   commit_unknown = "active node commit result is unknown",
   no_rollback_state = "no rollback state is available",
@@ -140,6 +141,16 @@ local function action_ok(value)
   if type(value) == "number" then return value == 0 end
   if type(value) == "table" and value.ok ~= nil then return value.ok == true end
   return true
+end
+
+local function connection_detail(value)
+  if type(value) ~= "table" or value.ok ~= true then return nil end
+  local milliseconds = tonumber(value.time)
+  local status = tonumber(value.status)
+  if not milliseconds or milliseconds < 0 or milliseconds > 300000
+    or milliseconds ~= math.floor(milliseconds)
+    or not status or status < 200 or status > 399 or status ~= math.floor(status) then return nil end
+  return { time = milliseconds, status = status }
 end
 
 local function selected_xray(self)
@@ -350,7 +361,8 @@ function Runtime:_record_completion(operation, value, requested_node)
   local definitions = {
     render = { message = "configuration render completed", success_level = LOG_LEVEL_DEBUG },
     switch = { message = "node switch completed", success_level = LOG_LEVEL_INFO },
-    rollback = { message = "rollback completed", success_level = LOG_LEVEL_INFO }
+    rollback = { message = "rollback completed", success_level = LOG_LEVEL_INFO },
+    test_current = { message = "real connection test completed", success_level = LOG_LEVEL_DEBUG }
   }
   local definition = definitions[operation]
   if not definition or type(value) ~= "table" then return end
@@ -463,29 +475,47 @@ function Runtime:_readiness(global)
   local socks_port, http_port = global.socks_port, global.http_port
   local health_url, timeout = global.health_url, tonumber(global.health_timeout)
   if type(health_url) ~= "string" or #health_url > 2048 or not health_url:match("^https?://") or health_url:find("[%z\1-\31\127]") or not timeout or timeout < 1 or timeout > 30 then return "health_failed" end
-  local deadline = self.now() + timeout
+  local listener_deadline = self.now() + LISTENER_TIMEOUT
   local listeners_ready = false
   for attempt = 1, 10 do
-    if self.now() >= deadline then return "health_failed" end
-    local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port, deadline))
-    if self.now() >= deadline then return "health_failed" end
-    local http_ready = action_ok(self.exec.listener_ready("http", address, http_port, deadline))
-    if self.now() >= deadline then return "health_failed" end
+    if self.now() >= listener_deadline then return "listener_failed" end
+    local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port, listener_deadline))
+    if self.now() >= listener_deadline then return "listener_failed" end
+    local http_ready = action_ok(self.exec.listener_ready("http", address, http_port, listener_deadline))
+    if self.now() >= listener_deadline then return "listener_failed" end
     if socks_ready and http_ready then listeners_ready = true; break end
     if attempt < 10 then
-      local remaining = deadline - self.now()
-      if remaining <= 0 then return "health_failed" end
+      local remaining = listener_deadline - self.now()
+      if remaining <= 0 then return "listener_failed" end
       self.sleep(math.min(1, remaining))
-      if self.now() >= deadline then return "health_failed" end
+      if self.now() >= listener_deadline then return "listener_failed" end
     end
   end
   if not listeners_ready then return "listener_failed" end
+  local deadline = self.now() + timeout
   if self.now() >= deadline then return "health_failed" end
-  local socks_healthy = action_ok(self.exec.health_check("socks", address, socks_port, health_url, deadline))
+  local function check_connection(kind, port)
+    for attempt = 1, 10 do
+      if self.now() >= deadline then return nil end
+      local attempt_deadline = math.min(deadline, self.now() + 5)
+      local connection = connection_detail(self.exec.real_connection_check(kind, address, port, health_url, attempt_deadline))
+      if connection then return connection end
+      if attempt < 10 then
+        local remaining = deadline - self.now()
+        if remaining <= 0 then return nil end
+        self.sleep(math.min(1, remaining))
+      end
+    end
+    return nil
+  end
+  local socks_result = check_connection("socks", socks_port)
+  local socks_healthy = socks_result ~= nil
   if self.now() >= deadline then return "health_failed" end
-  local http_healthy = action_ok(self.exec.health_check("http", address, http_port, health_url, deadline))
+  local http_result = check_connection("http", http_port)
+  local http_healthy = http_result ~= nil
   if self.now() >= deadline then return "health_failed" end
   if not socks_healthy or not http_healthy then return "health_failed" end
+  return nil, { socks = socks_result, http = http_result }
 end
 
 function Runtime:_safe_stop()
@@ -775,7 +805,7 @@ function Runtime:_switch_locked(section_id)
   local ok, value = xpcall(function()
     self:_install_candidate(context)
     if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
-    local readiness_error = self:_readiness(global)
+    local readiness_error, real_connection = self:_readiness(global)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
     local committed, commit_outcome = self:_apply_active(node_id)
@@ -789,7 +819,7 @@ function Runtime:_switch_locked(section_id)
     transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
     local old = assert(self:_read_generation(transaction))
     if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
-    return result(true, "switched", { node = node_id, commit_outcome = commit_outcome })
+    return result(true, "switched", { node = node_id, commit_outcome = commit_outcome, real_connection = real_connection })
   end, function() return result(false, "internal_error") end)
   if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
     local recovered = self:_recover_pending_locked()
@@ -834,7 +864,7 @@ function Runtime:_rollback_locked()
   local ok, value = xpcall(function()
     self:_install_candidate(context)
     if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
-    local readiness_error = self:_readiness(global)
+    local readiness_error, real_connection = self:_readiness(global)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
     local committed, commit_outcome = self:_apply_active(node_id)
@@ -849,6 +879,7 @@ function Runtime:_rollback_locked()
     if not self:_complete_rollback(transaction) then return result(false, "recovery_failed") end
     local extra = {}; if node_id then extra.node = node_id else extra.active_node_unset = true end
     extra.commit_outcome = commit_outcome
+    extra.real_connection = real_connection
     return result(true, "rolled_back", extra)
   end, function() return result(false, "internal_error") end)
   if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
@@ -943,14 +974,18 @@ function Runtime:status()
 end
 
 function Runtime:test_current()
-  local ok, value = xpcall(function()
+  return self:_with_lock("test_current", function()
     if not self.fs.exists(RUNTIME_PATH) then return result(false, "missing_runtime") end
     local argv = self:_xray_test_argv(RUNTIME_PATH)
-    if argv and action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then return result(true, "test_passed") end
-    return result(false, "test_failed")
-  end, function() return result(false, "internal_error") end)
-  if not ok or not value.ok then self.last_error = value.code or "internal_error" end
-  return value
+    if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
+      return result(false, "test_failed")
+    end
+    local global = self.uci.get_global()
+    if type(global) ~= "table" then return result(false, "test_failed") end
+    local readiness_error, real_connection = self:_readiness(global)
+    if readiness_error then return result(false, readiness_error) end
+    return result(true, "test_passed", { real_connection = real_connection })
+  end)
 end
 
 local function utf8_prefix(value, maximum)
@@ -1052,7 +1087,7 @@ function M.new(adapters)
   local methods = {
     uci = { "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert" },
     fs = { "acquire_lock", "release_lock", "lock_state", "allocate_generation", "list_generation_files", "trash_generation", "delete_trashed_generation", "read", "write_temp", "chmod", "fsync", "fsync_dir", "close", "rename", "exists", "remove" },
-    exec = { "run", "restart", "stop", "listener_ready", "health_check", "service_state" },
+    exec = { "run", "restart", "stop", "listener_ready", "real_connection_check", "service_state" },
     json = { "stringify", "parse" }
   }
   for adapter, names in pairs(methods) do

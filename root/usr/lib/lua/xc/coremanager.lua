@@ -239,8 +239,10 @@ function Manager:_runtime_ready(global)
     or self.exec.listener_ready("http", address, http_port, deadline) ~= true then return false end
   if type(global.health_url) ~= "string" or global.health_url == ""
     or not global.health_url:match("^https?://") then return false end
-  if self.exec.health_check("socks", address, socks_port, global.health_url, deadline) ~= true
-    or self.exec.health_check("http", address, http_port, global.health_url, deadline) ~= true then return false end
+  local socks_result = self.exec.real_connection_check("socks", address, socks_port, global.health_url, deadline)
+  local http_result = self.exec.real_connection_check("http", address, http_port, global.health_url, deadline)
+  if type(socks_result) ~= "table" or socks_result.ok ~= true
+    or type(http_result) ~= "table" or http_result.ok ~= true then return false end
   return true
 end
 

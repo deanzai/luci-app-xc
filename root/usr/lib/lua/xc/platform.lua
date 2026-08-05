@@ -812,16 +812,26 @@ function M.new(injected)
         end
       end
     end,
-    health_check = function(kind, address, port, url, deadline)
-      if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)
-        or type(url) ~= "string" or not url:match("^https?://") then return false end
-      local remaining = math.floor(deadline - now_process())
-      if remaining < 1 then return false end
+    real_connection_check = function(kind, address, port, url, deadline)
+      if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or address == ""
+        or address:find("[%z\1-\31\127]") or not tonumber(port) or tonumber(port) < 1 or tonumber(port) > 65535
+        or type(url) ~= "string" or not url:match("^https?://") or url:find("[%z\1-\31\127]") then
+        return { ok = false }
+      end
+      local remaining = deadline - now_process()
+      if remaining <= 0 then return { ok = false } end
+      remaining = math.max(1, math.ceil(remaining))
       local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
       local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
       local proxy = kind == "socks" and (host .. ":" .. tostring(port)) or ("http://" .. host .. ":" .. tostring(port))
-      return spawn_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
-        "--connect-timeout", tostring(math.min(remaining, 5)), proxy_flag, proxy, url }, deadline)
+      local output = capture_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
+        "--connect-timeout", tostring(math.min(remaining, 5)), "--write-out", "%{time_total}\\t%{http_code}",
+        "--output", "/dev/null", proxy_flag, proxy, url }, deadline, 128, true)
+      if type(output) ~= "string" then return { ok = false } end
+      local seconds, status = output:match("^%s*(%d+%.?%d*)\t(%d%d%d)%s*$")
+      seconds, status = tonumber(seconds), tonumber(status)
+      if not seconds or seconds < 0 or seconds > 300 or not status or status < 200 or status > 399 then return { ok = false } end
+      return { ok = true, time = math.floor(seconds * 1000 + 0.5), status = status }
     end,
     observe_exit_ip = function(kind, address, port, url, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)

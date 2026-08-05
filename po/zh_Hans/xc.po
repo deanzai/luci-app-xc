@@ -90,14 +90,11 @@ msgstr "使用 GeoIP 和 GeoSite 分流规则。"
 msgid "gRPC service name"
 msgstr "gRPC 服务名称"
 
-msgid "Health check timeout"
-msgstr "健康检查超时"
+msgid "Real connection test timeout"
+msgstr "真实连接测试超时"
 
-msgid "Health check URL"
-msgstr "健康检查 URL"
-
-msgid "Health testing is not implemented yet"
-msgstr "健康检查尚未实现"
+msgid "Real connection test URL"
+msgstr "真实连接测试 URL"
 
 msgid "HTTP listener"
 msgstr "HTTP 监听器"
@@ -300,8 +297,8 @@ msgstr "测速"
 msgid "Test all"
 msgstr "全部测速"
 
-msgid "Test current node"
-msgstr "测试当前节点"
+msgid "Test current connection"
+msgstr "测试当前连接"
 
 msgid "Testing…"
 msgstr "正在测速…"

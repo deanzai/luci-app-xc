@@ -80,12 +80,12 @@ probe_url.validate = validate_http_url
 probe_url.default = "https://www.gstatic.com/generate_204"
 probe_url.rmempty = false
 
-local health_url = global:option(Value, "health_url", translate("Health check URL"))
+local health_url = global:option(Value, "health_url", translate("Real connection test URL"))
 health_url.validate = validate_http_url
 health_url.default = "https://api.ipify.org"
 health_url.rmempty = false
 
-local health_timeout = global:option(Value, "health_timeout", translate("Health check timeout"))
+local health_timeout = global:option(Value, "health_timeout", translate("Real connection test timeout"))
 health_timeout.datatype = "range(1,30)"
 health_timeout.default = "15"
 health_timeout.rmempty = false

@@ -80,8 +80,8 @@ function status(data) { return { ok: true, data: Object.assign({ service_state: 
 
 {
   const h = loadStatus(); h.requests[0].respond(status({}));
-  h.elements["xc-health"].onclick(); h.requests[1].respond({ ok: false, code: "not_implemented" });
-  assert.strictEqual(h.elements["xc-action-result"].textContent, "Health testing is not implemented yet");
+  h.elements["xc-health"].onclick(); h.requests[1].respond({ ok: false, code: "health_failed" });
+  assert.strictEqual(h.elements["xc-action-result"].textContent, "Operation failed");
 }
 
 {

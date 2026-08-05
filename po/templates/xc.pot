@@ -88,13 +88,10 @@ msgstr ""
 msgid "gRPC service name"
 msgstr ""
 
-msgid "Health check timeout"
+msgid "Real connection test timeout"
 msgstr ""
 
-msgid "Health check URL"
-msgstr ""
-
-msgid "Health testing is not implemented yet"
+msgid "Real connection test URL"
 msgstr ""
 
 msgid "HTTP listener"
@@ -298,7 +295,7 @@ msgstr ""
 msgid "Test all"
 msgstr ""
 
-msgid "Test current node"
+msgid "Test current connection"
 msgstr ""
 
 msgid "Testing…"

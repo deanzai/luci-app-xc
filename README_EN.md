@@ -9,9 +9,9 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 - **Node management**: Create, edit, delete, and enable/disable nodes
 - **Protocols**: Structured VLESS, VMess, Trojan, Shadowsocks, and SOCKS support; use a complete raw outbound JSON object for uncommon combinations
 - **Quick switching**: Switch from the node row; the successful active node is highlighted without waiting for a CBI save-and-refresh cycle
-- **Node probes**: Test one node or all nodes; concurrency is configurable from 1 to 5 and defaults to 3. This is a connectivity/latency test, not a bandwidth test
+- **Node probes**: Test one node or all nodes; concurrency is configurable from 1 to 5 and defaults to 3. This is a direct endpoint/transport connectivity test, not a real proxy request or bandwidth test
 - **Local import**: Paste share links or upload text/JSON files, preview them, then confirm the import; subscription fetching is not included
-- **Healthy switching**: Validate the Xray configuration, check SOCKS/HTTP listeners and the health URL after startup, and restore the last known-good configuration on failure
+- **Real-connection switching**: Validate the Xray configuration, wait for SOCKS/HTTP listeners, then make one real GET through each local proxy before committing the active node; restore the last known-good configuration on failure
 - **Manual rollback**: Restore the previous runtime configuration from the status area or `/usr/bin/xc rollback`
 - **Core management**: Upload one Xray-core ELF in LuCI and verify SHA-256, device architecture, version output, and the current configuration before activation
 - **Core rollback**: Automatically restore the previous core after a failed activation; managed versions never overwrite `/usr/bin/xray`
@@ -35,8 +35,8 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 | Probe concurrency | Number of simultaneous requests for “Test all” | `3` |
 | Probe timeout | Per-node connectivity timeout, 1-10 seconds | `3` seconds |
 | Probe URL | HTTP/HTTPS endpoint used by node probes | `https://www.gstatic.com/generate_204` |
-| Health check URL | Endpoint used after switching and for exit-IP observation | `https://api.ipify.org` |
-| Health check timeout | Post-switch health-check timeout, 1-30 seconds | `15` seconds |
+| Real connection test URL | Endpoint used for the real proxy checks and exit-IP observation; persisted as `health_url` for compatibility | `https://api.ipify.org` |
+| Real connection test timeout | Total timeout for listener readiness and both proxy requests; persisted as `health_timeout`, 1-30 seconds | `15` seconds |
 
 The Xray level controls log generation: `error` produces errors only, `warning` produces warnings and errors, `info` includes informational messages, and `debug` enables the most verbose runtime output. The log-page filter only filters logs that already exist; selecting Debug there cannot make an Xray configured at Error emit debug entries.
 
@@ -172,9 +172,9 @@ Do not use `opkg --force-depends`. If the device already has an Xray binary inst
 
 After installation, open LuCI: `Services -> Xray node switching`.
 
-1. **Settings**: Enable XC and review listener, probe, and health-check settings.
-2. **Nodes**: Add or edit self-hosted nodes. Each row provides probe, switch, edit, and delete actions.
-3. **Switch**: Click “Switch” on the target row. Validation, startup, health checks, and rollback run independently; “Save & Apply” is not required first.
+1. **Settings**: Enable XC and review listener, probe, and real-connection test settings.
+2. **Nodes**: Add or edit self-hosted nodes. Each row provides a direct probe, switch, edit, and delete action.
+3. **Switch**: Click “Switch” on the target row. XC validates the candidate, starts Xray, and makes real GET requests through both local proxy listeners before committing; a failure restores the previous runtime. “Save & Apply” is not required first.
 4. **Save configuration**: New/edit/enable/disable changes and port or URL changes still use LuCI “Save & Apply”. This configuration flow is separate from quick switching.
 5. **Probe**: Use “Test” for one node or “Test all” for a batch run. Results are shown in the Latency column.
 6. **Logs**: Filter All, Error, Warning, Info, or Debug and click Refresh. The filter does not change Xray’s configured runtime level.
@@ -196,7 +196,7 @@ The address is derived from `network.lan`, not hard-coded to `192.168.6.1`. Use 
 
 ### Exit IP
 
-`Exit IP` is the public IP observed by requesting the health-check URL through XC’s local SOCKS listener and the selected node. It is not the router’s WAN address. A protected runtime cache avoids repeated requests for a short period; the UI shows `Unavailable` when service or listener health is insufficient.
+`Exit IP` is the public IP observed by requesting the real-connection test URL through XC’s local SOCKS listener and the selected node. It is not the router’s WAN address. A protected runtime cache avoids repeated requests for a short period; the UI shows `Unavailable` when service, listener, or proxy-request readiness is insufficient.
 
 ## Migration and recovery
 

@@ -14,7 +14,7 @@ local util = require "luci.util"
   </div>
   <div class="cbi-page-actions">
     <button type="button" class="btn cbi-button cbi-button-apply" id="xc-restart"><%:Restart service%></button>
-    <button type="button" class="btn cbi-button cbi-button-action" id="xc-health"><%:Test current node%></button>
+    <button type="button" class="btn cbi-button cbi-button-action" id="xc-health"><%:Test current connection%></button>
     <button type="button" class="btn cbi-button cbi-button-reset" id="xc-rollback"><%:Manual rollback%></button>
   </div>
   <p id="xc-action-result" role="status"></p>
@@ -37,7 +37,6 @@ local util = require "luci.util"
   var statusFailedText = <%=util.serialize_json(translate("Status request failed"))%>;
   var invalidResponseText = <%=util.serialize_json(translate("Invalid server response"))%>;
   var workingText = <%=util.serialize_json(translate("Working…"))%>;
-  var healthUnavailableText = <%=util.serialize_json(translate("Health testing is not implemented yet"))%>;
   var operationCompletedText = <%=util.serialize_json(translate("Operation completed"))%>;
   var operationFailedText = <%=util.serialize_json(translate("Operation failed"))%>;
   var pollTimer = null;
@@ -159,8 +158,6 @@ local util = require "luci.util"
         pendingOperation = true;
         operationObserved = false;
         text("xc-action-result", workingText);
-      } else if (data.code === "not_implemented" || resultCode === "not_implemented") {
-        text("xc-action-result", healthUnavailableText);
       } else if (data.ok === true) {
         text("xc-action-result", operationCompletedText);
       } else {

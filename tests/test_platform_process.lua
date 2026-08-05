@@ -131,21 +131,40 @@ t.test("platform does not probe a LuCI fs module through its looping metatable",
   t.eq(called, true)
 end)
 
-t.test("curl proxy argv brackets IPv6 literals", function()
+t.test("real connection checks use bounded proxy GETs and return measured status", function()
   local calls = {}
   local adapters = platform.new({
-    nixio = { open = function() return nil end, sysinfo = function() return { uptime = 10 } end },
-    fs = {}, cursor = { foreach = function() end }, uci_module = {},
-    jsonc = { parse = function() end, stringify = function() return "{}" end },
-    now = function() return 10 end,
-    spawn = function(argv, deadline) calls[#calls + 1] = { argv = argv, deadline = deadline }; return true end
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }, now = function() return 10 end,
+    capture = function(argv, deadline, maximum, raw)
+      calls[#calls + 1] = { argv = argv, deadline = deadline, maximum = maximum, raw = raw }
+      return "0.123\t204\n"
+    end
   })
-  t.eq(adapters.exec.health_check("socks", "fd00::1", 7890, "https://health.invalid", 20), true)
-  t.eq(adapters.exec.health_check("http", "fd00::1", 10809, "https://health.invalid", 20), true)
-  t.eq(calls[1].argv[#calls[1].argv - 1], "[fd00::1]:7890")
-  t.eq(calls[2].argv[#calls[2].argv - 1], "http://[fd00::1]:10809")
+  local result = adapters.exec.real_connection_check("socks", "fd00::1", 7890, "https://health.invalid", 20)
+  t.eq(result.ok, true)
+  t.eq(result.time, 123)
+  t.eq(result.status, 204)
+  t.eq(calls[1].raw, true)
+  t.eq(calls[1].maximum, 128)
   t.eq(calls[1].deadline, 20)
-  t.eq(calls[2].deadline, 20)
+  t.eq(table.concat(calls[1].argv, "|"), "/usr/bin/curl|--fail|--silent|--show-error|--max-time|10|--connect-timeout|5|--write-out|%{time_total}\\t%{http_code}|--output|/dev/null|--socks5-hostname|[fd00::1]:7890|https://health.invalid")
+
+  result = adapters.exec.real_connection_check("http", "fd00::1", 10809, "https://health.invalid", 20)
+  t.eq(result.ok, true)
+  t.eq(result.time, 123)
+  t.eq(result.status, 204)
+  t.eq(calls[2].argv[#calls[2].argv - 1], "http://[fd00::1]:10809")
+end)
+
+t.test("real connection checks fail closed on malformed curl output", function()
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }, now = function() return 10 end,
+    capture = function() return "not-a-measurement" end
+  })
+  local result = adapters.exec.real_connection_check("socks", "127.0.0.1", 7890, "https://health.invalid", 20)
+  t.eq(result.ok, false)
 end)
 
 t.test("exit IP observation uses fixed curl argv, bounded output, and injected capture", function()

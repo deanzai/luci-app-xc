@@ -250,7 +250,7 @@ local probe_concurrency = self.probe_concurrency or 3
     xhr.open("POST", switchEndpoint, true);
     xhr.setRequestHeader("Content-Type", "application/json");
     // The POST only starts the detached transaction; status polling owns the
-    // longer restart and health-check lifetime.
+    // longer restart and real-connection-test lifetime.
     xhr.timeout = 12000;
     var settled = false;
     function complete(payload) {

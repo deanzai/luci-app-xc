@@ -97,7 +97,7 @@ local function fixture(options)
     end,
     service_state = function() return options.last_restart == false and "stopped" or "running" end,
     listener_ready = function() return options.ready ~= false end,
-    health_check = function() return options.healthy ~= false end
+    real_connection_check = function() return options.healthy ~= false and { ok = true, time = 1, status = 204 } or { ok = false } end
   }
   local json = {
     parse = function(text)
