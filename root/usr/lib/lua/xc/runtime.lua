@@ -30,8 +30,8 @@ local LOG_LEVEL_INFO = "info"
 local LOG_LEVEL_ERROR = "error"
 local VALIDATION_TIMEOUT = 30
 local LISTENER_TIMEOUT = 30
-local SELECTION_API_TIMEOUT = 15
-local SELECTION_API_ATTEMPTS = 75
+local SELECTION_API_TIMEOUT = 60
+local SELECTION_API_ATTEMPTS = 300
 local sanitize_text
 
 local function checksum(value)
@@ -615,38 +615,23 @@ function Runtime:_restore_selection_locked()
   end
   local context, error_value = self:_fast_context(global.active_node)
   if error_value then return error_value end
-  local current_tag
   local deadline = self.now() + SELECTION_API_TIMEOUT
   for attempt = 1, SELECTION_API_ATTEMPTS do
-    local read_called, observed_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
-    if read_called and type(observed_tag) == "string" and context.dynamic.selector[observed_tag] then
-      current_tag = observed_tag
-      break
+    if call_api(self.exec.xray_api_override, context.xray_path, DYNAMIC_BALANCER_TAG, context.target_tag) then
+      local read_called, observed_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
+      if read_called and observed_tag == context.target_tag then
+        self.selection_mode = "dynamic"
+        self.selection_state = "consistent"
+        self.runtime_active_node = global.active_node
+        return result(true, "selection_restored", { node = global.active_node, selection_state = "selected", recovery_required = false })
+      end
     end
     local remaining = deadline - self.now()
     if attempt == SELECTION_API_ATTEMPTS or remaining <= 0 then break end
     self.sleep(math.min(0.2, remaining))
   end
-  if not current_tag then
-    self.selection_state = "recovery_required"
-    return result(false, "fast_switch_api_failed", { selection_state = "unknown", recovery_required = true })
-  end
-  context.old_tag = current_tag
-  if not call_api(self.exec.xray_api_override, context.xray_path, DYNAMIC_BALANCER_TAG, context.target_tag) then
-    self.selection_state = "recovery_required"
-    return result(false, "fast_switch_api_failed", { selection_state = "unknown", recovery_required = true })
-  end
-  local applied_called, applied_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
-  if not applied_called or applied_tag ~= context.target_tag then
-    local restored = self:_restore_fast_tag(context)
-    if not restored then self.selection_state = "recovery_required"; return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true }) end
-    self.selection_state = "consistent"
-    return result(false, "fast_switch_not_applied", { selection_state = "old", recovery_required = false })
-  end
-  self.selection_mode = "dynamic"
-  self.selection_state = "consistent"
-  self.runtime_active_node = global.active_node
-  return result(true, "selection_restored", { node = global.active_node, selection_state = "selected", recovery_required = false })
+  self.selection_state = "recovery_required"
+  return result(false, "fast_switch_api_failed", { selection_state = "unknown", recovery_required = true })
 end
 
 function Runtime:restore_selection()

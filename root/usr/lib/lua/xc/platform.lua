@@ -113,7 +113,47 @@ local function api_tag_from_fields(fields)
   return current or selected
 end
 
+local function parse_api_table(output)
+  local section
+  local override_seen = false
+  local override_entry_seen = false
+  local override_tag
+  local selects_seen = false
+  local select_count = 0
+  for line in (output .. "\n"):gmatch("(.-)\r?\n") do
+    if not line:match("^[ \t]*$") then
+      if line:find("[%z\1-\8\11\12\14-\31\127]") then return nil end
+      if line:match("^[ \t]*%- Selecting Override:[ \t]*$") then
+        if override_seen or section ~= nil then return nil end
+        override_seen = true
+        section = "override"
+      elseif line:match("^[ \t]*%- Selects:[ \t]*$") then
+        if not override_seen or selects_seen then return nil end
+        selects_seen = true
+        section = "selects"
+      elseif section == "override" then
+        local index, tag = line:match("^[ \t]*(%d+)[ \t]*(.-)[ \t]*$")
+        if index == nil or override_entry_seen then return nil end
+        if tag ~= "" and not valid_api_outbound(tag) then return nil end
+        override_entry_seen = true
+        override_tag = tag ~= "" and tag or nil
+      elseif section == "selects" then
+        local index, tag = line:match("^[ \t]*(%d+)[ \t]+(.-)[ \t]*$")
+        if index == nil or not valid_api_outbound(tag) then return nil end
+        select_count = select_count + 1
+      else
+        return nil
+      end
+    end
+  end
+  if not override_seen or not override_entry_seen or not selects_seen or select_count == 0 then return nil end
+  return override_tag
+end
+
 local function parse_api_text(output, balancer_tag)
+  if output:find("Selecting Override", 1, true) or output:find("Selects", 1, true) then
+    return parse_api_table(output)
+  end
   local fields = {}
   local output_balancer
   local lines = output .. "\n"

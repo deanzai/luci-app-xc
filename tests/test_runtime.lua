@@ -543,10 +543,22 @@ t.test("restore_selection reapplies the persisted node without committing or res
   t.eq(event_index(state.events, "exec:restart"), nil)
 end)
 
+t.test("restore_selection applies the persisted node when restart cleared the override", function()
+  local state = fixture({ dynamic_config = true, api_current = nil })
+  local result = state.runtime:restore_selection()
+  t.eq(result.ok, true)
+  t.eq(result.code, "selection_restored")
+  t.eq(result.node, "old")
+  t.truthy(event_index(state.events, "exec:api_override:xc-node-old"))
+  t.truthy(event_index(state.events, "exec:api_balancer:xc-node-old"))
+  t.eq(event_index(state.events, "uci:commit"), nil)
+  t.eq(event_index(state.events, "exec:restart"), nil)
+end)
+
 t.test("restore_selection waits for the loopback API to become ready", function()
   local clock, reads = 123, 0
   local state = fixture({
-    dynamic_config = true, api_current = "xc-node-old",
+    dynamic_config = true, api_current = nil,
     now = function() return clock end,
     sleep_hook = function() clock = clock + 1 end,
     api_balancer_hook = function()
@@ -558,8 +570,26 @@ t.test("restore_selection waits for the loopback API to become ready", function(
   local result = state.runtime:restore_selection()
   t.eq(result.ok, true)
   t.eq(result.code, "selection_restored")
-  t.eq(reads, 3)
+  t.eq(reads, 2)
   t.truthy(event_index(state.events, "sleep"))
+end)
+
+t.test("restore_selection waits through a slow Xray startup", function()
+  local clock, reads = 123, 0
+  local state = fixture({
+    dynamic_config = true, api_current = nil,
+    now = function() return clock end,
+    sleep_hook = function() clock = clock + 1 end,
+    api_balancer_hook = function()
+      reads = reads + 1
+      if reads < 20 then return nil end
+      return "xc-node-old"
+    end
+  })
+  local result = state.runtime:restore_selection()
+  t.eq(result.ok, true)
+  t.eq(result.code, "selection_restored")
+  t.truthy(reads >= 20)
 end)
 
 t.test("restore_selection rejects missing active node, stopped service, and safe runtime config", function()

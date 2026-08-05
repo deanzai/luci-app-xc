@@ -54,6 +54,29 @@ t.test("xray API balancer uses fixed argv and parses CLI current tag", function(
   t.eq(calls.capture[1].raw, true)
 end)
 
+t.test("xray API balancer parses the v26 table output override tag", function()
+  local output = [[
+  - Selecting Override:
+    1   xc-node-node_2
+  - Selects:
+    1   xc-node-node_1
+    2   xc-node-node_2
+]]
+  local _, exec = api_fixture({ output = output })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), "xc-node-node_2")
+end)
+
+t.test("xray API balancer does not treat a v26 select list as the current tag", function()
+  local output = [[
+  - Selecting Override:
+    1
+  - Selects:
+    1   xc-node-node_1
+]]
+  local _, exec = api_fixture({ output = output })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+end)
+
 t.test("xray API balancer parses a JSON selected tag for the requested balancer", function()
   local json = '{"balancer":"xc-balancer","selected":"xc-node-node_3"}'
   local parsed = false

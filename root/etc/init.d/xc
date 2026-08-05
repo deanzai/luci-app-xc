@@ -84,7 +84,24 @@ start_service() {
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
-	/usr/bin/xc restore-selection >/dev/null 2>&1 || /usr/bin/xc log-event selection_restore_failed >/dev/null 2>&1 || true
+	(
+		api_attempts=0
+		api_ready=0
+		while [ "$api_attempts" -lt 60 ]; do
+			if "$xray_path" api bi --server=127.0.0.1:10085 xc-balancer >/dev/null 2>&1; then
+				api_ready=1
+				break
+			fi
+			api_attempts=$((api_attempts + 1))
+			[ "$api_attempts" -lt 60 ] || break
+			sleep 1
+		done
+		if [ "$api_ready" = "1" ]; then
+			/usr/bin/xc restore-selection >/dev/null 2>&1 || /usr/bin/xc log-event selection_restore_failed >/dev/null 2>&1 || true
+		else
+			/usr/bin/xc log-event selection_restore_failed >/dev/null 2>&1 || true
+		fi
+	) >/dev/null 2>&1 &
 	/usr/bin/xc log-event service_started >/dev/null 2>&1 || true
 }
 
