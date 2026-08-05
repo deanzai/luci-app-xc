@@ -115,6 +115,15 @@ t.test("xray API balancer fails closed on non-table or invalid JSON fields", fun
   end
 end)
 
+t.test("xray API balancer fails closed when JSON parsing errors after a balancer-only response", function()
+  local calls, exec = api_fixture({
+    output = "Balancer: xc-balancer\n",
+    json_parse = function() error("invalid JSON") end
+  })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  t.eq(#calls.capture, 1)
+end)
+
 t.test("xray API balancer fails closed on process failure", function()
   local _, exec = api_fixture({ output = nil })
   t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
