@@ -140,18 +140,29 @@ function M.dns(global)
   }
 end
 
-function M.build(global)
+local function apply_proxy_target(rule, target)
+  if rule.outboundTag ~= "proxy-selected" then return rule end
+  if type(target) == "table" and type(target.balancerTag) == "string" and target.balancerTag ~= "" then
+    rule.outboundTag = nil
+    rule.balancerTag = target.balancerTag
+  end
+  return rule
+end
+
+function M.build(global, target)
   local rules = {}
   if type(global) ~= "table" or enabled(global.routing_enabled) then
-    rules[#rules + 1] = {
+    rules[#rules + 1] = apply_proxy_target({
       type = "field",
       inboundTag = { DNS_INBOUND_TAG },
       outboundTag = "proxy-selected"
-    }
+    }, target)
   end
   rules[#rules + 1] = { type = "field", ip = copy(PRIVATE_CIDRS), outboundTag = "direct" }
   if type(global) == "table" and not enabled(global.routing_enabled) then return rules end
-  for _, rule in ipairs(PRESET_RULES) do rules[#rules + 1] = copy(rule) end
+  for _, rule in ipairs(PRESET_RULES) do
+    rules[#rules + 1] = apply_proxy_target(copy(rule), target)
+  end
   return rules
 end
 

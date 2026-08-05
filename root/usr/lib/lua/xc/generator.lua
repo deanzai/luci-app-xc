@@ -432,8 +432,8 @@ local function sniffing()
   }
 end
 
-function M.build(global, node)
-  if type(global) ~= "table" or type(node) ~= "table" then return nil, "invalid generator input" end
+local function validate_global(global)
+  if type(global) ~= "table" then return nil, "invalid generator input" end
   local xray_log_level = global.xray_log_level
   if xray_log_level == nil then xray_log_level = "warning" end
   if type(xray_log_level) ~= "string" or not xray_log_levels[xray_log_level] then
@@ -443,16 +443,70 @@ function M.build(global, node)
   local socks_port = port_number(global.socks_port)
   local http_port = port_number(global.http_port)
   if not socks_port or not http_port or socks_port == http_port then return nil, "invalid global ports" end
+  return {
+    loglevel = xray_log_level,
+    socks_port = socks_port,
+    http_port = http_port
+  }
+end
+
+function M.node_tag(section_id)
+  if not schema.safe_section_id(section_id) then return nil end
+  return "xc-node-" .. section_id
+end
+
+local function dynamic_enabled(value)
+  return value == true or value == 1 or value == "1"
+end
+
+local function dynamic_nodes(nodes)
+  if type(nodes) ~= "table" then return nil, "invalid dynamic nodes" end
+
+  local maximum = 0
+  for index in pairs(nodes) do
+    if type(index) ~= "number" or index < 1 or index ~= math.floor(index) then
+      return nil, "invalid dynamic nodes"
+    end
+    if index > maximum then maximum = index end
+  end
+  if maximum == 0 then return nil, "no enabled dynamic nodes" end
+
+  local outbounds, selector, seen = {}, {}, {}
+  for index = 1, maximum do
+    local node = nodes[index]
+    if type(node) ~= "table" or not dynamic_enabled(node.enabled) then
+      return nil, "invalid dynamic node"
+    end
+    local normalized, normalize_error = schema.normalize(node)
+    if not normalized or not dynamic_enabled(normalized.enabled) then
+      return nil, normalize_error or "invalid dynamic node"
+    end
+    local tag = M.node_tag(normalized.id)
+    if not tag then return nil, "invalid dynamic node" end
+    if seen[tag] then return nil, "duplicate dynamic node" end
+    seen[tag] = true
+    local outbound, err = M.build_outbound(normalized, tag)
+    if not outbound then return nil, err end
+    outbounds[#outbounds + 1] = outbound
+    selector[#selector + 1] = tag
+  end
+  return outbounds, selector
+end
+
+function M.build(global, node)
+  if type(global) ~= "table" or type(node) ~= "table" then return nil, "invalid generator input" end
+  local validated, validation_error = validate_global(global)
+  if not validated then return nil, validation_error end
 
   local selected, err = M.build_outbound(node, "proxy-selected")
   if not selected then return nil, err end
   local config = {
-    log = { access = "none", loglevel = xray_log_level, dnsLog = false },
+    log = { access = "none", loglevel = validated.loglevel, dnsLog = false },
     inbounds = {
       {
         tag = "socks-in",
         listen = global.listen_address,
-        port = socks_port,
+        port = validated.socks_port,
         protocol = "socks",
         settings = { auth = "noauth", udp = true },
         sniffing = sniffing()
@@ -460,7 +514,7 @@ function M.build(global, node)
       {
         tag = "http-in",
         listen = global.listen_address,
-        port = http_port,
+        port = validated.http_port,
         protocol = "http",
         sniffing = sniffing()
       }
@@ -475,6 +529,57 @@ function M.build(global, node)
       rules = routing.build(global)
     }
   }
+  config.dns = routing.dns(global)
+  return config
+end
+
+function M.build_dynamic(global, nodes)
+  local validated, validation_error = validate_global(global)
+  if not validated then return nil, validation_error end
+  local node_outbounds, selector, nodes_error = dynamic_nodes(nodes)
+  if not node_outbounds then return nil, selector or nodes_error end
+
+  local config = {
+    log = { access = "none", loglevel = validated.loglevel, dnsLog = false },
+    api = { tag = "xc-api", services = { "RoutingService" } },
+    inbounds = {
+      {
+        tag = "socks-in",
+        listen = global.listen_address,
+        port = validated.socks_port,
+        protocol = "socks",
+        settings = { auth = "noauth", udp = true },
+        sniffing = sniffing()
+      },
+      {
+        tag = "http-in",
+        listen = global.listen_address,
+        port = validated.http_port,
+        protocol = "http",
+        sniffing = sniffing()
+      },
+      {
+        tag = "xc-api",
+        listen = "127.0.0.1",
+        port = 10085,
+        protocol = "dokodemo-door",
+        settings = { address = "127.0.0.1" }
+      }
+    },
+    outbounds = node_outbounds,
+    balancers = { { tag = "xc-balancer", selector = selector } },
+    routing = {
+      domainStrategy = "IPIfNonMatch",
+      rules = {
+        { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api-out" }
+      }
+    }
+  }
+  config.outbounds[#config.outbounds + 1] = { tag = "direct", protocol = "freedom" }
+  config.outbounds[#config.outbounds + 1] = { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
+  config.outbounds[#config.outbounds + 1] = { tag = "xc-api-out", protocol = "freedom" }
+  local routing_rules = routing.build(global, { balancerTag = "xc-balancer" })
+  for _, rule in ipairs(routing_rules) do config.routing.rules[#config.routing.rules + 1] = rule end
   config.dns = routing.dns(global)
   return config
 end

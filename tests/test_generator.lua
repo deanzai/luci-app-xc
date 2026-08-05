@@ -1,5 +1,6 @@
 local t = require "testlib"
 local generator = require "xc.generator"
+local routing = require "xc.routing"
 
 local UUID_ONE = "11111111-1111-1111-1111-111111111111"
 local REALITY_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -688,6 +689,99 @@ t.test("requires raw for unsupported structured combinations and protocols", fun
   }, "proxy-selected")
   t.eq(invalid_vmess, nil)
   t.truthy(vmess_err)
+end)
+
+t.test("routes only proxy targets through an explicit balancer", function()
+  local legacy = routing.build(global())
+  local dynamic = routing.build(global(), { balancerTag = "xc-balancer" })
+  t.eq(legacy[1].outboundTag, "proxy-selected")
+  t.eq(dynamic[1].balancerTag, "xc-balancer")
+  t.eq(dynamic[1].outboundTag, nil)
+
+  local expected = {
+    [2] = "direct", [3] = "block", [4] = "direct", [5] = "direct",
+    [6] = "direct", [9] = "direct", [10] = "direct"
+  }
+  for index, rule in ipairs(dynamic) do
+    if index == 1 or index == 7 or index == 8 or index == 11 then
+      t.eq(rule.balancerTag, "xc-balancer")
+      t.eq(rule.outboundTag, nil)
+    else
+      t.eq(rule.outboundTag, expected[index])
+      t.eq(rule.balancerTag, nil)
+    end
+  end
+end)
+
+t.test("derives node tags only from safe section IDs", function()
+  t.eq(generator.node_tag("node_1"), "xc-node-node_1")
+  for _, section_id in ipairs({ "", "bad-id", "bad/id", "bad id", "bad..id" }) do
+    t.eq(generator.node_tag(section_id), nil)
+  end
+  t.eq(generator.node_tag(nil), nil)
+end)
+
+t.test("builds a dynamic balancer configuration with loopback Xray API", function()
+  local function dynamic_node(id)
+    return {
+      id = id, enabled = true, protocol = "vless", server = id .. ".invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+    }
+  end
+
+  local cfg = assert(generator.build_dynamic(global(), { dynamic_node("old"), dynamic_node("new") }))
+  t.eq(cfg.api.tag, "xc-api")
+  t.eq(#cfg.api.services, 1)
+  t.eq(cfg.api.services[1], "RoutingService")
+  t.eq(#cfg.balancers, 1)
+  t.eq(cfg.balancers[1].tag, "xc-balancer")
+  assert_array_equal(cfg.balancers[1].selector, { "xc-node-old", "xc-node-new" })
+
+  t.eq(#cfg.inbounds, 3)
+  t.eq(cfg.inbounds[3].tag, "xc-api")
+  t.eq(cfg.inbounds[3].listen, "127.0.0.1")
+  t.eq(cfg.inbounds[3].port, 10085)
+  t.eq(cfg.inbounds[3].protocol, "dokodemo-door")
+  t.eq(cfg.inbounds[3].settings.address, "127.0.0.1")
+
+  t.eq(cfg.outbounds[1].tag, "xc-node-old")
+  t.eq(cfg.outbounds[2].tag, "xc-node-new")
+  t.eq(cfg.outbounds[3].tag, "direct")
+  t.eq(cfg.outbounds[4].tag, "block")
+  t.eq(cfg.outbounds[5].tag, "xc-api-out")
+  t.eq(cfg.outbounds[5].protocol, "freedom")
+  local api_rule
+  for _, rule in ipairs(cfg.routing.rules) do
+    if rule.inboundTag and rule.inboundTag[1] == "xc-api" then api_rule = rule end
+  end
+  t.truthy(api_rule)
+  t.eq(api_rule.outboundTag, "xc-api-out")
+  for _, rule in ipairs(cfg.routing.rules) do
+    t.eq(rule.outboundTag == "proxy-selected", false)
+  end
+end)
+
+t.test("rejects empty, invalid, disabled, and duplicate dynamic nodes", function()
+  local function dynamic_node(id, enabled)
+    return {
+      id = id, enabled = enabled, protocol = "vless", server = id .. ".invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+    }
+  end
+  local cases = {
+    {},
+    { dynamic_node("disabled", false) },
+    { dynamic_node("bad-id", true) },
+    { dynamic_node("duplicate", true), dynamic_node("duplicate", true) }
+  }
+  for _, nodes in ipairs(cases) do
+    local cfg, err = generator.build_dynamic(global(), nodes)
+    t.eq(cfg, nil)
+    t.truthy(err)
+  end
+  local cfg, err = generator.build_dynamic(global(), nil)
+  t.eq(cfg, nil)
+  t.truthy(err)
 end)
 
 return true
