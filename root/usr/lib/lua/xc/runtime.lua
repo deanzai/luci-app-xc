@@ -30,6 +30,8 @@ local LOG_LEVEL_INFO = "info"
 local LOG_LEVEL_ERROR = "error"
 local VALIDATION_TIMEOUT = 30
 local LISTENER_TIMEOUT = 30
+local SELECTION_API_TIMEOUT = 15
+local SELECTION_API_ATTEMPTS = 75
 local sanitize_text
 
 local function checksum(value)
@@ -613,8 +615,19 @@ function Runtime:_restore_selection_locked()
   end
   local context, error_value = self:_fast_context(global.active_node)
   if error_value then return error_value end
-  local read_called, current_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
-  if not read_called or type(current_tag) ~= "string" or not context.dynamic.selector[current_tag] then
+  local current_tag
+  local deadline = self.now() + SELECTION_API_TIMEOUT
+  for attempt = 1, SELECTION_API_ATTEMPTS do
+    local read_called, observed_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
+    if read_called and type(observed_tag) == "string" and context.dynamic.selector[observed_tag] then
+      current_tag = observed_tag
+      break
+    end
+    local remaining = deadline - self.now()
+    if attempt == SELECTION_API_ATTEMPTS or remaining <= 0 then break end
+    self.sleep(math.min(0.2, remaining))
+  end
+  if not current_tag then
     self.selection_state = "recovery_required"
     return result(false, "fast_switch_api_failed", { selection_state = "unknown", recovery_required = true })
   end

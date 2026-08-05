@@ -41,6 +41,12 @@ local messages = {
   core_upload_too_large = "The uploaded Xray core is too large.",
   core_delete_failed = "The Xray core could not be deleted.",
   core_version_invalid = "The Xray core version could not be verified.",
+  fast_switch_unavailable = "Fast node switching is unavailable.",
+  fast_switch_api_failed = "The fast node switching API failed.",
+  fast_switch_not_applied = "The fast node switch was not applied.",
+  fast_switch_commit_failed = "The fast node selection could not be saved.",
+  fast_switch_recovery_required = "Fast node selection recovery is required.",
+  fast_switch_target_invalid = "The fast node selection target is invalid.",
   commit_unknown = "The save result could not be confirmed.",
   committed_hardening_failed = "The configuration was saved but its file mode could not be confirmed.",
   commit_failed = "The configuration could not be saved.",
@@ -67,6 +73,9 @@ local failure_status = {
   method_not_allowed = 405, busy = 409, disabled_node = 409,
   request_too_large = 413, not_implemented = 501, recovery_required = 409,
   unsupported_node = 422, missing_runtime = 404, test_failed = 502,
+  fast_switch_target_invalid = 400, fast_switch_api_failed = 502,
+  fast_switch_not_applied = 502, fast_switch_commit_failed = 500,
+  fast_switch_unavailable = 503, fast_switch_recovery_required = 503,
   core_hash_invalid = 400, core_invalid_upload = 400, core_invalid_target = 400, core_note_invalid = 400,
   core_arch_mismatch = 422, core_invalid_elf = 422, core_config_invalid = 422, core_hash_mismatch = 422,
   core_disk_space_low = 507,
@@ -79,7 +88,8 @@ local failure_status = {
 local status_text = {
   [400] = "Bad Request", [404] = "Not Found", [405] = "Method Not Allowed",
   [409] = "Conflict", [413] = "Content Too Large", [422] = "Unprocessable Content", [500] = "Internal Server Error",
-  [501] = "Not Implemented", [502] = "Bad Gateway", [507] = "Insufficient Storage"
+  [501] = "Not Implemented", [502] = "Bad Gateway", [503] = "Service Unavailable",
+  [507] = "Insufficient Storage"
 }
 
 local INTERNAL_ERROR_JSON = '{"ok":false,"code":"internal_error","message":"The request could not be completed."}'
@@ -144,6 +154,7 @@ function index()
   post_entry({ "admin", "services", "xc", "probe" }, "action_probe")
   post_entry({ "admin", "services", "xc", "test-current" }, "action_test_current")
   post_entry({ "admin", "services", "xc", "switch" }, "action_switch")
+  post_entry({ "admin", "services", "xc", "fast-switch" }, "action_fast_switch")
   post_entry({ "admin", "services", "xc", "rollback" }, "action_rollback")
   post_entry({ "admin", "services", "xc", "import-preview" }, "action_import_preview")
   post_entry({ "admin", "services", "xc", "import-commit" }, "action_import_commit")
@@ -304,6 +315,9 @@ function action_status()
     lock_state = status.lock,
     operation = status.operation,
     recovery_required = status.recovery_required,
+    selection_mode = status.selection_mode,
+    runtime_active_node = status.runtime_active_node,
+    selection_state = status.selection_state,
     exit_ip = status.exit_ip,
     last_error = status.last_error
   })
@@ -587,6 +601,25 @@ function action_switch()
   local started_called, started = pcall(adapters.exec.start_switch, selected.section_id)
   if not started_called or started ~= true then failure("internal_error"); return end
   success({ code = "switch_started", node = selected.section_id })
+end
+
+function action_fast_switch()
+  local body = request_body(true)
+  if not body then return end
+  local adapters, runtime_instance = new_backend()
+  if not runtime_instance then failure("internal_error"); return end
+  local selected, code = requested_node(adapters, body)
+  if not selected then failure(code); return end
+  if selected.node.enabled ~= true and selected.node.enabled ~= 1 and selected.node.enabled ~= "1" then
+    failure("disabled_node"); return
+  end
+  local called, result = pcall(function()
+    return runtime_instance:fast_switch(selected.section_id)
+  end)
+  if not called or type(result) ~= "table" then failure("internal_error"); return end
+  if not result.ok then failure(result.code or "internal_error"); return end
+  if result.code ~= "fast_switched" then failure("internal_error"); return end
+  success({ code = result.code, node = selected.section_id })
 end
 
 function action_rollback()

@@ -73,6 +73,18 @@ msgstr ""
 msgid "Failed"
 msgstr ""
 
+msgid "Fast switch"
+msgstr ""
+
+msgid "Fast switch failed"
+msgstr ""
+
+msgid "Fast switched"
+msgstr ""
+
+msgid "Fast switching…"
+msgstr ""
+
 msgid "File read failed"
 msgstr ""
 

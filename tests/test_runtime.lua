@@ -544,6 +544,25 @@ t.test("restore_selection reapplies the persisted node without committing or res
   t.eq(event_index(state.events, "exec:restart"), nil)
 end)
 
+t.test("restore_selection waits for the loopback API to become ready", function()
+  local clock, reads = 123, 0
+  local state = fixture({
+    dynamic_config = true, api_current = "xc-node-old",
+    now = function() return clock end,
+    sleep_hook = function() clock = clock + 1 end,
+    api_balancer_hook = function()
+      reads = reads + 1
+      if reads == 1 then return nil end
+      return "xc-node-old"
+    end
+  })
+  local result = state.runtime:restore_selection()
+  t.eq(result.ok, true)
+  t.eq(result.code, "selection_restored")
+  t.eq(reads, 3)
+  t.truthy(event_index(state.events, "sleep"))
+end)
+
 t.test("restore_selection rejects missing active node, stopped service, and safe runtime config", function()
   local missing = fixture({ dynamic_config = true, global = { socks_port = 7890, http_port = 10809 } })
   t.eq(missing.runtime:restore_selection().code, "fast_switch_target_invalid")

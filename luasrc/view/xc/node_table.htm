@@ -14,7 +14,7 @@ local probe_concurrency = self.probe_concurrency or 3
   #xc-node-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4em; }
   .xc-probe-row .cbi-section-actions > div { display: flex; align-items: center; flex-wrap: nowrap; gap: 0.3em; }
   .xc-probe-row .xc-socket { display: inline-block; margin-right: 0.3em; }
-  .xc-probe-row .xc-probe-one, .xc-probe-row .xc-switch-one { font-size: smaller; padding: 0.15em 0.5em; }
+  .xc-probe-row .xc-probe-one, .xc-probe-row .xc-fast-switch-one, .xc-probe-row .xc-switch-one { font-size: smaller; padding: 0.15em 0.5em; }
   .xc-node-active { box-shadow: inset 0.3em 0 0 #37a169; }
   .xc-node-active > .td { background-color: rgba(55, 161, 105, 0.12); }
   @media (max-width: 768px) {
@@ -26,6 +26,7 @@ local probe_concurrency = self.probe_concurrency or 3
   "use strict";
   var endpoint = '<%=dispatcher.build_url("admin", "services", "xc", "probe")%>?token=<%=token%>';
   var switchEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "switch")%>?token=<%=token%>';
+  var fastSwitchEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "fast-switch")%>?token=<%=token%>';
   var statusEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "status")%>';
   var activeSection = <%=util.serialize_json(self.active_section or "")%>;
   var configured = Number("<%=probe_concurrency%>");
@@ -37,12 +38,17 @@ local probe_concurrency = self.probe_concurrency or 3
   var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
   var probeText = <%=util.serialize_json(translate("Test"))%>;
   var switchText = <%=util.serialize_json(translate("Switch"))%>;
+  var fastSwitchText = <%=util.serialize_json(translate("Fast switch"))%>;
   var currentText = <%=util.serialize_json(translate("Current"))%>;
   var switchingText = <%=util.serialize_json(translate("Switching…"))%>;
+  var fastSwitchingText = <%=util.serialize_json(translate("Fast switching…"))%>;
   var switchedText = <%=util.serialize_json(translate("Switched"))%>;
+  var fastSwitchedText = <%=util.serialize_json(translate("Fast switched"))%>;
   var switchFailedText = <%=util.serialize_json(translate("Switch failed"))%>;
+  var fastSwitchFailedText = <%=util.serialize_json(translate("Fast switch failed"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
   var allButton, stopButton, state, switchState, switching = false, switchGeneration = 0;
+  var fastSwitching = false, fastSwitchGeneration = 0, fastSwitchRequest = null;
   var switchPollTimer = null, switchRequest = null, switchTarget = null, switchPolls = 0;
 
   function color(milliseconds) {
@@ -140,7 +146,12 @@ local probe_concurrency = self.probe_concurrency or 3
       var button = row.querySelector(".xc-switch-one");
       if (button) {
         button.value = active ? currentText : switchText;
-        button.disabled = switching || active;
+        button.disabled = switching || fastSwitching || active;
+      }
+      var fastButton = row.querySelector(".xc-fast-switch-one");
+      if (fastButton) {
+        fastButton.value = active ? currentText : fastSwitchText;
+        fastButton.disabled = switching || fastSwitching || active;
       }
     }
   }
@@ -188,6 +199,57 @@ local probe_concurrency = self.probe_concurrency or 3
       setActive(activeSection);
       switchState.textContent = switchFailedText;
     }
+  }
+
+  function finishFastSwitch(generation, succeeded, section) {
+    if (generation !== fastSwitchGeneration) return;
+    fastSwitching = false;
+    fastSwitchRequest = null;
+    if (succeeded && section) {
+      setActive(section);
+      switchState.textContent = fastSwitchedText;
+      refreshActive(switchGeneration);
+    } else {
+      setActive(activeSection);
+      switchState.textContent = fastSwitchFailedText;
+    }
+  }
+
+  function fastSwitchNode(row) {
+    if (switching || fastSwitching) return;
+    var section = row.getAttribute("data-xc-section");
+    if (!section || section === activeSection) return;
+    var generation = ++fastSwitchGeneration;
+    fastSwitching = true;
+    fastSwitchRequest = null;
+    switchState.textContent = fastSwitchingText;
+    setActive(activeSection);
+    var selected = row.querySelector(".xc-fast-switch-one");
+    if (selected) selected.value = fastSwitchingText;
+    var xhr = new XMLHttpRequest();
+    fastSwitchRequest = xhr;
+    xhr.open("POST", fastSwitchEndpoint, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.timeout = 12000;
+    var settled = false;
+    function complete(payload) {
+      if (settled) return;
+      settled = true;
+      if (fastSwitchRequest === xhr) fastSwitchRequest = null;
+      if (generation !== fastSwitchGeneration) return;
+      if (payload && payload.ok === true && payload.data && payload.data.code === "fast_switched")
+        finishFastSwitch(generation, true, section);
+      else finishFastSwitch(generation, false);
+    }
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
+      complete(payload);
+    };
+    xhr.onerror = function() { complete(null); };
+    xhr.ontimeout = function() { complete(null); };
+    xhr.send(JSON.stringify({ section: section }));
   }
 
   function pollSwitchStatus(generation) {
@@ -290,13 +352,17 @@ local probe_concurrency = self.probe_concurrency or 3
         row.className += (row.className ? " " : "") + "xc-probe-row";
       row.setAttribute("data-xc-section", match[1]);
       var buttons = actions.querySelectorAll(".xc-probe-one");
+      var fastSwitchButtons = actions.querySelectorAll(".xc-fast-switch-one");
       var switchButtons = actions.querySelectorAll(".xc-switch-one");
       var sockets = actions.querySelectorAll(".xc-socket");
       var button = buttons[0] || null;
+      var fastSwitchButton = fastSwitchButtons[0] || null;
       var switchButton = switchButtons[0] || null;
       var socket = sockets[0] || null;
       for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++)
         if (buttons[buttonIndex].parentNode === actions) actions.removeChild(buttons[buttonIndex]);
+      for (var fastSwitchIndex = 0; fastSwitchIndex < fastSwitchButtons.length; fastSwitchIndex++)
+        if (fastSwitchButtons[fastSwitchIndex].parentNode === actions) actions.removeChild(fastSwitchButtons[fastSwitchIndex]);
       for (var socketIndex = 0; socketIndex < sockets.length; socketIndex++)
         if (sockets[socketIndex].parentNode === actions) actions.removeChild(sockets[socketIndex]);
       for (var switchIndex = 0; switchIndex < switchButtons.length; switchIndex++)
@@ -315,6 +381,12 @@ local probe_concurrency = self.probe_concurrency or 3
         button.className = "cbi-button cbi-button-action xc-probe-one";
         button.value = probeText;
       }
+      if (!fastSwitchButton) {
+        fastSwitchButton = document.createElement("input");
+        fastSwitchButton.type = "button";
+        fastSwitchButton.className = "cbi-button cbi-button-action xc-fast-switch-one";
+        fastSwitchButton.value = fastSwitchText;
+      }
       if (!switchButton) {
         switchButton = document.createElement("input");
         switchButton.type = "button";
@@ -323,6 +395,7 @@ local probe_concurrency = self.probe_concurrency or 3
       var firstAction = actions.children[0] || null;
       actions.insertBefore(socket, firstAction);
       actions.insertBefore(button, firstAction);
+      actions.insertBefore(fastSwitchButton, firstAction);
       actions.insertBefore(switchButton, firstAction);
       rows.push(row);
     }
@@ -338,6 +411,7 @@ local probe_concurrency = self.probe_concurrency or 3
     stopButton.onclick = stop;
     for (var index = 0; index < rows.length; index++) (function(row) {
       row.querySelector(".xc-probe-one").onclick = function() { start([row]); };
+      row.querySelector(".xc-fast-switch-one").onclick = function() { fastSwitchNode(row); };
       row.querySelector(".xc-switch-one").onclick = function() { switchNode(row); };
     })(rows[index]);
     setActive(activeSection);

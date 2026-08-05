@@ -6,6 +6,8 @@ local MAX_IMPORT = 524288
 local MAX_CURRENT = 256
 local MIGRATION_CANDIDATE = "/var/etc/xc/migration-candidate.json"
 local MIGRATION_MARKER = "/etc/xc/migration-complete"
+local DYNAMIC_RUNTIME = "/var/etc/xc/config.json"
+local DYNAMIC_CANDIDATE = "/var/etc/xc/candidate.json"
 
 local messages = {
   invalid_arguments = "invalid command arguments",
@@ -35,10 +37,14 @@ local function safe_path(path)
     and not path:find("[%z\1-\31\127]") and not path:find("/%.%./") and not path:match("/%.%.$")
 end
 
+local function dynamic_output_path(path)
+  return path == DYNAMIC_RUNTIME or path == DYNAMIC_CANDIDATE
+end
+
 local function safe_result(value)
   if type(value) ~= "table" then return response(false, "internal_error") end
   local output = { ok = value.ok == true, code = tostring(value.code or "internal_error"), message = tostring(value.message or "runtime operation failed") }
-  for _, key in ipairs({ "active_node", "active_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count", "commit_outcome", "current", "current_info", "previous", "versions", "failed_target", "version" }) do
+  for _, key in ipairs({ "active_node", "active_state", "selection_mode", "runtime_active_node", "selection_state", "service", "operation", "lock", "recovery_required", "exit_ip", "node", "nodes", "path", "listen", "listeners", "count", "commit_outcome", "current", "current_info", "previous", "versions", "failed_target", "version" }) do
     if value[key] ~= nil then output[key] = value[key] end
   end
   if type(output.node) == "table" then output.node = safe_summary(output.node) end
@@ -252,7 +258,8 @@ function M.main(argv, deps)
   if command == "log-event" and #argv == 2 then
     local lifecycle = {
       service_started = "service started",
-      service_stopped = "service stopped"
+      service_stopped = "service stopped",
+      selection_restore_failed = "selection restore failed"
     }
     local message = lifecycle[argv[2]]
     if message then
@@ -278,6 +285,13 @@ function M.main(argv, deps)
   if command == "core-activate" and #argv == 2 and deps.core
     and (argv[2] == "system" or core.safe_id(argv[2])) then return finish(deps, deps.core:activate(argv[2])) end
   if command == "render" and #argv == 3 and argv[2] == "--output" and safe_path(argv[3]) then return finish(deps, deps.runtime:render(nil, argv[3])) end
+  if command == "render-dynamic" and #argv == 3 and argv[2] == "--output" and dynamic_output_path(argv[3]) then
+    return finish(deps, deps.runtime:render_dynamic(argv[3]))
+  end
+  if command == "fast-switch" and #argv == 2 and schema.safe_section_id(argv[2]) then
+    return finish(deps, deps.runtime:fast_switch(argv[2]))
+  end
+  if command == "restore-selection" and #argv == 1 then return finish(deps, deps.runtime:restore_selection()) end
   if command == "import-preview" and #argv == 2 and safe_path(argv[2]) then return finish(deps, preview(argv[2], deps)) end
   if command == "import" and #argv == 2 and safe_path(argv[2]) then return finish(deps, import_commit(argv[2], deps)) end
   if command == "migrate-legacy" and #argv == 2 then return finish(deps, migrate_legacy(argv[2], deps)) end

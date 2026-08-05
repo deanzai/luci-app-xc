@@ -481,7 +481,7 @@ t.test("lifecycle files contain guarded recovery, takeover, and bounded backup c
   t.contains(init, "chmod 0700 /etc/xc /etc/xc/rollback /etc/xc/xray /etc/xc/xray/versions /var/etc/xc")
   t.contains(init, "chmod 0600 /etc/config/xc")
   t.contains(init, "/usr/bin/xc recover-pending")
-  t.truthy(init:find("recover%-pending") < init:find("render %-%-output"))
+  t.truthy(init:find("recover%-pending") < init:find("render%-dynamic %-%-output"))
   t.contains(init, 'procd_set_param command "$xray_path" run -c /var/etc/xc/config.json')
   t.contains(init, 'xray_path="$(resolve_xray)"')
   t.contains(init, "procd_set_param respawn 3600 5 5")

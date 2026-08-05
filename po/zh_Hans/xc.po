@@ -75,6 +75,18 @@ msgstr "出口 IP"
 msgid "Failed"
 msgstr "失败"
 
+msgid "Fast switch"
+msgstr "快速切换"
+
+msgid "Fast switch failed"
+msgstr "快速切换失败"
+
+msgid "Fast switched"
+msgstr "已快速切换"
+
+msgid "Fast switching…"
+msgstr "快速切换中…"
+
 msgid "File read failed"
 msgstr "文件读取失败"
 

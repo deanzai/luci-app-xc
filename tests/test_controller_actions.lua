@@ -156,6 +156,11 @@ local function controller_fixture(options)
   }
   local runtime_instance = options.runtime_instance or {
     switch = function() state.sync_switch_calls = state.sync_switch_calls + 1; return { ok = true, code = "switched", node = "safe_node" } end,
+    fast_switch = function(_, section)
+      state.fast_switch_section = section
+      if options.fast_switch_throw then error("password=fast-switch-secret") end
+      return options.fast_switch_result or { ok = true, code = "fast_switched", node = section }
+    end,
     rollback = function() return { ok = true, code = "rolled_back" } end,
     status = function() return { ok = true, service = "running", lock = "unlocked" } end,
     test_current = options.test_current or function() return { ok = true, code = "test_passed" } end,
@@ -523,6 +528,56 @@ t.test("authenticated current-node health action reports stable success and fail
   controller, state = controller_fixture({ method = "GET" })
   controller.action_test_current()
   t.eq(state.response.code, "method_not_allowed"); t.eq(state.status, 405)
+end)
+
+t.test("fast switch action validates targets and returns stable runtime envelopes", function()
+  local controller, state = controller_fixture({ method = "GET" })
+  controller.action_fast_switch()
+  t.eq(state.response.code, "method_not_allowed")
+  t.eq(state.status, 405)
+
+  controller, state = controller_fixture({ request = { section = "bad;node" } })
+  controller.action_fast_switch()
+  t.eq(state.response.code, "invalid_node")
+  t.eq(state.status, 400)
+
+  controller, state = controller_fixture({ get_node = function() return nil, "missing" end })
+  controller.action_fast_switch()
+  t.eq(state.response.code, "missing_node")
+  t.eq(state.status, 404)
+
+  controller, state = controller_fixture({ get_node = function()
+    return { id = "safe_node", enabled = false, protocol = "socks", server = "127.0.0.1", port = 1080 }, "ok"
+  end })
+  controller.action_fast_switch()
+  t.eq(state.response.code, "disabled_node")
+  t.eq(state.status, 409)
+
+  for _, case in ipairs({
+    { result = { ok = false, code = "busy" }, status = 409 },
+    { result = { ok = false, code = "fast_switch_unavailable" }, status = 503 },
+    { result = { ok = false, code = "fast_switch_api_failed" }, status = 502 }
+  }) do
+    controller, state = controller_fixture({ fast_switch_result = case.result })
+    controller.action_fast_switch()
+    t.eq(state.response.code, case.result.code)
+    t.eq(state.status, case.status)
+  end
+
+  controller, state = controller_fixture({ request = { section = "safe_node" } })
+  controller.action_fast_switch()
+  t.eq(state.response.ok, true)
+  t.eq(state.response.data.code, "fast_switched")
+  t.eq(state.response.data.node, "safe_node")
+  t.eq(state.fast_switch_section, "safe_node")
+  t.eq(state.status, nil)
+
+  controller, state = controller_fixture({ fast_switch_throw = true })
+  local called = pcall(controller.action_fast_switch)
+  t.eq(called, true)
+  t.eq(state.response.code, "internal_error")
+  t.eq(state.status, 500)
+  t.eq(tostring(state.response.message):find("fast%-switch%-secret"), nil)
 end)
 
 t.test("status exposes only a sanitized exit IP from runtime", function()

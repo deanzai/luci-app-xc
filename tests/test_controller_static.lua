@@ -47,6 +47,7 @@ t.test("controller registers the authenticated XC page and action routes", funct
     { "admin", "services", "xc", "probe" },
     { "admin", "services", "xc", "test-current" },
     { "admin", "services", "xc", "switch" },
+    { "admin", "services", "xc", "fast-switch" },
     { "admin", "services", "xc", "rollback" },
     { "admin", "services", "xc", "import-preview" },
     { "admin", "services", "xc", "import-commit" },
@@ -63,7 +64,7 @@ t.test("controller registers the authenticated XC page and action routes", funct
 end)
 
 t.test("controller marks every mutating or body-consuming action POST only", function()
-  for _, action in ipairs({ "probe", "test-current", "switch", "rollback", "import-preview", "import-commit", "clear-log", "core-upload", "core-activate", "core-rollback", "core-delete" }) do
+  for _, action in ipairs({ "probe", "test-current", "switch", "fast-switch", "rollback", "import-preview", "import-commit", "clear-log", "core-upload", "core-activate", "core-rollback", "core-delete" }) do
     local declaration = 'post_entry({ "admin", "services", "xc", "' .. action .. '" }, "action_'
     t.contains(source, declaration, action .. " must use the POST-only route helper")
   end
@@ -71,6 +72,17 @@ t.test("controller marks every mutating or body-consuming action POST only", fun
   t.eq(source:find('dispatcher.call', 1, true), nil)
   t.contains(source, 'http.getenv("REQUEST_METHOD")')
   t.contains(source, 'method_not_allowed')
+end)
+
+t.test("controller exposes a separate fast switch action and stable HTTP mappings", function()
+  t.contains(source, 'function action_fast_switch()')
+  t.contains(source, 'runtime_instance:fast_switch(')
+  t.contains(source, 'fast_switch_unavailable = 503')
+  t.contains(source, 'fast_switch_api_failed = 502')
+  t.contains(source, 'fast_switch_not_applied = 502')
+  t.contains(source, 'fast_switch_commit_failed = 500')
+  t.contains(source, 'fast_switch_recovery_required = 503')
+  t.contains(source, 'fast_switch_target_invalid = 400')
 end)
 
 t.test("controller validates UCI section IDs and bounds request bodies before parsing", function()
