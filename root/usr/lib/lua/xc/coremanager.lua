@@ -239,10 +239,9 @@ function Manager:_runtime_ready(global)
     or self.exec.listener_ready("http", address, http_port, deadline) ~= true then return false end
   if type(global.health_url) ~= "string" or global.health_url == ""
     or not global.health_url:match("^https?://") then return false end
-  local socks_result = self.exec.real_connection_check("socks", address, socks_port, global.health_url, deadline)
-  local http_result = self.exec.real_connection_check("http", address, http_port, global.health_url, deadline)
-  if type(socks_result) ~= "table" or socks_result.ok ~= true
-    or type(http_result) ~= "table" or http_result.ok ~= true then return false end
+  local results = self.exec.real_connection_checks(address, socks_port, http_port, global.health_url, deadline)
+  if type(results) ~= "table" or type(results.socks) ~= "table" or results.socks.ok ~= true
+    or type(results.http) ~= "table" or results.http.ok ~= true then return false end
   return true
 end
 
@@ -466,7 +465,7 @@ function M.new(adapters)
   for _, name in ipairs({ "stat", "stat_nofollow", "read", "read_prefix", "exists", "mkdir", "copy_file", "write_file", "remove", "list_dir" }) do
     if type(adapters.fs[name]) ~= "function" then return nil end
   end
-  for _, name in ipairs({ "hash_file", "machine", "xray_version", "run" }) do
+  for _, name in ipairs({ "hash_file", "machine", "xray_version", "run", "real_connection_checks" }) do
     if type(adapters.exec[name]) ~= "function" then return nil end
   end
   if type(adapters.json.stringify) ~= "function" or type(adapters.json.parse) ~= "function" then return nil end

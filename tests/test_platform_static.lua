@@ -12,7 +12,7 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   for _, name in ipairs({
     "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert",
     "acquire_lock", "release_lock", "lock_state", "write_temp", "fsync_dir", "allocate_generation",
-    "list_generation_files", "trash_generation", "delete_trashed_generation", "listener_ready", "real_connection_check", "observe_exit_ip",
+    "list_generation_files", "trash_generation", "delete_trashed_generation", "listener_ready", "real_connection_check", "real_connection_checks", "observe_exit_ip",
     "service_state", "start_switch", "stringify"
   }) do t.contains(source, name .. " = function") end
   t.contains(source, "stat_nofollow = function")

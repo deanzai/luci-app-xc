@@ -32,7 +32,7 @@ local function runtime_fixture()
     },
     exec = {
       run = yes, restart = yes, stop = yes, listener_ready = yes,
-      real_connection_check = yes, service_state = function() return "stopped" end
+      real_connection_check = yes, real_connection_checks = yes, service_state = function() return "stopped" end
     },
     fs = {
       acquire_lock = function() return {} end, release_lock = yes,

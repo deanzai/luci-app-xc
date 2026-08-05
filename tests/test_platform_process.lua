@@ -167,6 +167,31 @@ t.test("real connection checks fail closed on malformed curl output", function()
   t.eq(result.ok, false)
 end)
 
+t.test("parallel real connection checks build both bounded proxy requests", function()
+  local calls = {}
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end }, now = function() return 10 end,
+    capture_parallel = function(requests, deadline, maximum, raw)
+      calls[#calls + 1] = { requests = requests, deadline = deadline, maximum = maximum, raw = raw }
+      return { socks = "0.123\t204\n", http = "0.234\t204\n" }
+    end
+  })
+  local result = adapters.exec.real_connection_checks("fd00::1", 7890, 10809, "https://health.invalid", 20)
+  t.eq(result.socks.ok, true)
+  t.eq(result.socks.time, 123)
+  t.eq(result.socks.status, 204)
+  t.eq(result.http.ok, true)
+  t.eq(result.http.time, 234)
+  t.eq(result.http.status, 204)
+  t.eq(calls[1].deadline, 20)
+  t.eq(calls[1].maximum, 128)
+  t.eq(calls[1].raw, true)
+  t.eq(#calls[1].requests, 2)
+  t.eq(calls[1].requests[1].kind, "socks")
+  t.eq(calls[1].requests[2].kind, "http")
+end)
+
 t.test("exit IP observation uses fixed curl argv, bounded output, and injected capture", function()
   local calls = {}
   local adapters = platform.new({

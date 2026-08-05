@@ -153,6 +153,30 @@ local function connection_detail(value)
   return { time = milliseconds, status = status }
 end
 
+local TIMING_FIELDS = { "validate_ms", "restart_ms", "listener_ms", "connection_ms", "commit_ms", "total_ms" }
+local TIMING_PHASES = { validate = true, restart = true, listener = true, connection = true, commit = true }
+
+local function elapsed_ms(now, started)
+  local current = now()
+  local elapsed = type(current) == "number" and type(started) == "number" and (current - started) * 1000 or 0
+  if elapsed ~= elapsed or elapsed < 0 then return 0 end
+  return math.floor(elapsed + 0.5)
+end
+
+local function finish_with_timings(now, value, timings, started, failure_phase)
+  if type(value) ~= "table" then value = result(false, "internal_error") end
+  if TIMING_PHASES[failure_phase] then timings.failure_phase = failure_phase end
+  timings.total_ms = elapsed_ms(now, started)
+  local safe = {}
+  for _, key in ipairs(TIMING_FIELDS) do
+    local item = tonumber(timings[key])
+    if item and item >= 0 and item == math.floor(item) then safe[key] = item end
+  end
+  if TIMING_PHASES[timings.failure_phase] then safe.failure_phase = timings.failure_phase end
+  value.timings = safe
+  return value
+end
+
 local function selected_xray(self)
   local fs = self.fs
   local marker_path = core.marker_path("current")
@@ -370,6 +394,13 @@ function Runtime:_record_completion(operation, value, requested_node)
   local fields = { code = code, outcome = value.ok and "success" or "failure" }
   local node = value.node or requested_node
   if schema.safe_section_id(node) then fields.node = node end
+  if type(value.timings) == "table" then
+    for _, key in ipairs(TIMING_FIELDS) do
+      local item = tonumber(value.timings[key])
+      if item and item >= 0 and item == math.floor(item) then fields[key] = item end
+    end
+    if TIMING_PHASES[value.timings.failure_phase] then fields.failure_phase = value.timings.failure_phase end
+  end
   self:record_event(definition.message, fields, value.ok and definition.success_level or LOG_LEVEL_ERROR)
 end
 
@@ -470,32 +501,60 @@ function Runtime:_apply_active(active)
   return false, "commit_unknown"
 end
 
-function Runtime:_readiness(global)
+function Runtime:_readiness(global, timings)
   local address = self.network()
   local socks_port, http_port = global.socks_port, global.http_port
   local health_url, timeout = global.health_url, tonumber(global.health_timeout)
-  if type(health_url) ~= "string" or #health_url > 2048 or not health_url:match("^https?://") or health_url:find("[%z\1-\31\127]") or not timeout or timeout < 1 or timeout > 30 then return "health_failed" end
+  if type(health_url) ~= "string" or #health_url > 2048 or not health_url:match("^https?://") or health_url:find("[%z\1-\31\127]") or not timeout or timeout < 1 or timeout > 30 then
+    if timings then timings.failure_phase = "connection" end
+    return "health_failed"
+  end
+  local listener_started = self.now()
   local listener_deadline = self.now() + LISTENER_TIMEOUT
   local listeners_ready = false
   for attempt = 1, 10 do
-    if self.now() >= listener_deadline then return "listener_failed" end
+    if self.now() >= listener_deadline then
+      if timings then timings.listener_ms, timings.failure_phase = elapsed_ms(self.now, listener_started), "listener" end
+      return "listener_failed"
+    end
     local socks_ready = action_ok(self.exec.listener_ready("socks", address, socks_port, listener_deadline))
-    if self.now() >= listener_deadline then return "listener_failed" end
+    if self.now() >= listener_deadline then
+      if timings then timings.listener_ms, timings.failure_phase = elapsed_ms(self.now, listener_started), "listener" end
+      return "listener_failed"
+    end
     local http_ready = action_ok(self.exec.listener_ready("http", address, http_port, listener_deadline))
-    if self.now() >= listener_deadline then return "listener_failed" end
+    if self.now() >= listener_deadline then
+      if timings then timings.listener_ms, timings.failure_phase = elapsed_ms(self.now, listener_started), "listener" end
+      return "listener_failed"
+    end
     if socks_ready and http_ready then listeners_ready = true; break end
     if attempt < 10 then
       local remaining = listener_deadline - self.now()
-      if remaining <= 0 then return "listener_failed" end
+      if remaining <= 0 then
+        if timings then timings.listener_ms, timings.failure_phase = elapsed_ms(self.now, listener_started), "listener" end
+        return "listener_failed"
+      end
       self.sleep(math.min(1, remaining))
-      if self.now() >= listener_deadline then return "listener_failed" end
+      if self.now() >= listener_deadline then
+        if timings then timings.listener_ms, timings.failure_phase = elapsed_ms(self.now, listener_started), "listener" end
+        return "listener_failed"
+      end
     end
   end
-  if not listeners_ready then return "listener_failed" end
+  if timings then timings.listener_ms = elapsed_ms(self.now, listener_started) end
+  if not listeners_ready then
+    if timings then timings.failure_phase = "listener" end
+    return "listener_failed"
+  end
   local deadline = self.now() + timeout
-  if self.now() >= deadline then return "health_failed" end
+  local connection_started = self.now()
+  local function connection_failure()
+    if timings then timings.connection_ms, timings.failure_phase = elapsed_ms(self.now, connection_started), "connection" end
+    return "health_failed"
+  end
+  if self.now() >= deadline then return connection_failure() end
   local function check_connection(kind, port)
-    for attempt = 1, 10 do
+    for attempt = 1, 9 do
       if self.now() >= deadline then return nil end
       local attempt_deadline = math.min(deadline, self.now() + 5)
       local connection = connection_detail(self.exec.real_connection_check(kind, address, port, health_url, attempt_deadline))
@@ -508,13 +567,14 @@ function Runtime:_readiness(global)
     end
     return nil
   end
-  local socks_result = check_connection("socks", socks_port)
-  local socks_healthy = socks_result ~= nil
-  if self.now() >= deadline then return "health_failed" end
-  local http_result = check_connection("http", http_port)
-  local http_healthy = http_result ~= nil
-  if self.now() >= deadline then return "health_failed" end
-  if not socks_healthy or not http_healthy then return "health_failed" end
+  local first_deadline = math.min(deadline, self.now() + 5)
+  local called, first = pcall(self.exec.real_connection_checks, address, socks_port, http_port, health_url, first_deadline)
+  local socks_result = called and type(first) == "table" and connection_detail(first.socks) or nil
+  local http_result = called and type(first) == "table" and connection_detail(first.http) or nil
+  if not socks_result then socks_result = check_connection("socks", socks_port) end
+  if not http_result then http_result = check_connection("http", http_port) end
+  if self.now() >= deadline or not socks_result or not http_result then return connection_failure() end
+  if timings then timings.connection_ms = elapsed_ms(self.now, connection_started) end
   return nil, { socks = socks_result, http = http_result }
 end
 
@@ -780,14 +840,25 @@ function Runtime:_install_candidate(context)
 end
 
 function Runtime:_switch_locked(section_id)
+  local started = self.now()
+  local timings = {}
+  local function finish(value, failure_phase)
+    return finish_with_timings(self.now, value, timings, started, failure_phase or timings.failure_phase)
+  end
+  local validate_started = self.now()
   local encoded, node_id, encode_error = self:_encode(section_id)
-  if encode_error then return encode_error end
+  if encode_error then
+    timings.validate_ms = elapsed_ms(self.now, validate_started)
+    return finish(encode_error, "validate")
+  end
   self:_atomic_write(CANDIDATE_PATH, encoded)
   local argv = self:_xray_test_argv(CANDIDATE_PATH)
   if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
-    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
-    return result(false, "validation_failed")
+    if not self:_checked_remove(CANDIDATE_PATH) then return finish(result(false, "internal_error"), "validate") end
+    timings.validate_ms = elapsed_ms(self.now, validate_started)
+    return finish(result(false, "validation_failed"), "validate")
   end
+  timings.validate_ms = elapsed_ms(self.now, validate_started)
   local global, old_config, context
   local prepared = xpcall(function()
     global = self.uci.get_global()
@@ -799,16 +870,21 @@ function Runtime:_switch_locked(section_id)
   end, function() return false end)
   if not prepared then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
-    return result(false, "internal_error")
+    return finish(result(false, "internal_error"))
   end
   self:_write_transaction(context, "install_intent")
   local ok, value = xpcall(function()
     self:_install_candidate(context)
-    if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
-    local readiness_error, real_connection = self:_readiness(global)
+    local restart_started = self.now()
+    local restarted = action_ok(self.exec.restart())
+    timings.restart_ms = elapsed_ms(self.now, restart_started)
+    if not restarted then return self:_abort_transaction(context, "restart_failed") end
+    local readiness_error, real_connection = self:_readiness(global, timings)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
+    local commit_started = self.now()
     local committed, commit_outcome = self:_apply_active(node_id)
+    timings.commit_ms = elapsed_ms(self.now, commit_started)
     if not committed then
       if commit_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
       self:_safe_stop()
@@ -825,7 +901,7 @@ function Runtime:_switch_locked(section_id)
     local recovered = self:_recover_pending_locked()
     if not recovered.ok then return result(false, "recovery_failed") end
   end
-  return value
+  return finish(value)
 end
 
 function Runtime:switch(section_id)
@@ -975,16 +1051,27 @@ end
 
 function Runtime:test_current()
   return self:_with_lock("test_current", function()
-    if not self.fs.exists(RUNTIME_PATH) then return result(false, "missing_runtime") end
+    local started = self.now()
+    local timings = {}
+    local function finish(value, failure_phase)
+      return finish_with_timings(self.now, value, timings, started, failure_phase or timings.failure_phase)
+    end
+    local validate_started = self.now()
+    if not self.fs.exists(RUNTIME_PATH) then
+      timings.validate_ms = elapsed_ms(self.now, validate_started)
+      return finish(result(false, "missing_runtime"), "validate")
+    end
     local argv = self:_xray_test_argv(RUNTIME_PATH)
     if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
-      return result(false, "test_failed")
+      timings.validate_ms = elapsed_ms(self.now, validate_started)
+      return finish(result(false, "test_failed"), "validate")
     end
+    timings.validate_ms = elapsed_ms(self.now, validate_started)
     local global = self.uci.get_global()
-    if type(global) ~= "table" then return result(false, "test_failed") end
-    local readiness_error, real_connection = self:_readiness(global)
-    if readiness_error then return result(false, readiness_error) end
-    return result(true, "test_passed", { real_connection = real_connection })
+    if type(global) ~= "table" then return finish(result(false, "test_failed"), "validate") end
+    local readiness_error, real_connection = self:_readiness(global, timings)
+    if readiness_error then return finish(result(false, readiness_error)) end
+    return finish(result(true, "test_passed", { real_connection = real_connection }))
   end)
 end
 
@@ -1087,7 +1174,7 @@ function M.new(adapters)
   local methods = {
     uci = { "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert" },
     fs = { "acquire_lock", "release_lock", "lock_state", "allocate_generation", "list_generation_files", "trash_generation", "delete_trashed_generation", "read", "write_temp", "chmod", "fsync", "fsync_dir", "close", "rename", "exists", "remove" },
-    exec = { "run", "restart", "stop", "listener_ready", "real_connection_check", "service_state" },
+    exec = { "run", "restart", "stop", "listener_ready", "real_connection_check", "real_connection_checks", "service_state" },
     json = { "stringify", "parse" }
   }
   for adapter, names in pairs(methods) do

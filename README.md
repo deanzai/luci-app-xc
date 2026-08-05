@@ -122,30 +122,30 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r16`，常见产物路径为：
+当前源码包版本为 `0.1.0-r19`，常见产物路径为：
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r16_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r19_all.ipk
 ```
 
 GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02、23.05 的旧版 `luci.mk`
 可能忽略 `PKG_RELEASE`，因此 SDK 原始产物可能使用不带 release 后缀的文件名。CI 会在上传前为每个
 原始 IPK 加上明确的平台后缀，避免 Release 中出现无法判断目标系统的同名文件：
-同时将主包和翻译包的 control 元数据版本规范化为 `0.1.0-r16`，确保可以从旧版
+同时将主包和翻译包的 control 元数据版本规范化为 `0.1.0-r19`，确保可以从旧版
 `0.1.0-10` 正常升级：
 
 ```text
-21.02: luci-app-xc_0.1.0-r16_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r16_all_openwrt-23.05.ipk
-24.10: luci-app-xc_0.1.0-r16_all_openwrt-24.10.ipk
+21.02: luci-app-xc_0.1.0-r19_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r19_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r19_all_openwrt-24.10.ipk
 ```
 
 中文翻译包由 LuCI 的 PO 版本单独生成，并使用相同的平台后缀：
 
 ```text
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-21.02.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-23.05.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
+luci-i18n-xc-zh-cn_0.1.0-r19_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r19_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r19_all_openwrt-24.10.ipk
 ```
 
 每个平台的 CI 资产还包含对应的 `SHA256SUMS-openwrt-<版本>.txt`。安装时只选择与设备
@@ -156,7 +156,7 @@ luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r16_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r16_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r19_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r19_all.ipk
 ```
 
 如果使用 GitHub Release 资产，请将上面两个文件替换为同一平台后缀的 IPK；中文包不是

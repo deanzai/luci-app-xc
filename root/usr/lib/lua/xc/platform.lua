@@ -143,7 +143,7 @@ local function spawn(nixio, argv, deadline, now, sleep, environment)
   return wait_status(nixio, pid, deadline, now, sleep)
 end
 
-local function spawn_capture(nixio, argv, path, deadline, now, sleep)
+local function start_capture_child(nixio, argv, path)
   if not valid_argv(argv) or not safe_path(path) then return false end
   local pid = nixio.fork()
   if pid == 0 then
@@ -162,7 +162,86 @@ local function spawn_capture(nixio, argv, path, deadline, now, sleep)
     os.exit(127)
   end
   if type(pid) ~= "number" or pid < 1 then return false end
+  return pid
+end
+
+local function spawn_capture(nixio, argv, path, deadline, now, sleep)
+  local pid = start_capture_child(nixio, argv, path)
+  if not pid then return false end
   return wait_status(nixio, pid, deadline, now, sleep)
+end
+
+local function capture_parallel(nixio, nfs, requests, deadline, maximum, raw, now, sleep)
+  if type(requests) ~= "table" or #requests < 1 or #requests > 16
+    or type(deadline) ~= "number" or deadline ~= deadline
+    or type(maximum) ~= "number" or maximum < 1 or maximum > 262144
+    or type(nfs.stat) ~= "function" or type(nfs.unlink) ~= "function" then return nil end
+
+  local children, pending = {}, 0
+  local function cleanup()
+    for _, child in ipairs(children) do
+      if not child.done then terminate_and_reap(nixio, child.pid, now, sleep) end
+      pcall(nfs.unlink, child.path)
+    end
+  end
+
+  generation_sequence = generation_sequence + 1
+  for index, request in ipairs(requests) do
+    if type(request) ~= "table" or not valid_argv(request.argv) then cleanup(); return nil end
+    local path = "/var/etc/xc/.observe-" .. tostring(nixio.getpid()) .. "-" .. tostring(generation_sequence) .. "-" .. tostring(index)
+    if nfs.stat(path) then cleanup(); return nil end
+    local reservation = nixio.open(path, nixio.open_flags("wronly", "creat", "excl") + O_NOFOLLOW, 600)
+    if not reservation or reservation:close() ~= true then
+      if reservation then pcall(reservation.close, reservation) end
+      cleanup(); return nil
+    end
+    local pid = start_capture_child(nixio, request.argv, path)
+    if not pid then pcall(nfs.unlink, path); cleanup(); return nil end
+    children[#children + 1] = { pid = pid, path = path, done = false, success = false }
+    pending = pending + 1
+  end
+
+  while pending > 0 and now() < deadline do
+    local progress = false
+    for _, child in ipairs(children) do
+      if not child.done then
+        local finished, success = poll_child(nixio, child.pid)
+        if finished == true then
+          child.done, child.success, pending = true, success == true, pending - 1
+          progress = true
+        elseif finished == nil then
+          terminate_and_reap(nixio, child.pid, now, sleep)
+          child.done, child.success, pending = true, false, pending - 1
+          progress = true
+        end
+      end
+    end
+    if pending > 0 and not progress then
+      local remaining = deadline - now()
+      if remaining > 0 then sleep(math.min(0.05, remaining)) end
+    end
+  end
+
+  for _, child in ipairs(children) do
+    if not child.done then
+      terminate_and_reap(nixio, child.pid, now, sleep)
+      child.done, child.success = true, false
+    end
+  end
+
+  local outputs = {}
+  for index, child in ipairs(children) do
+    if child.success then
+      local handle = nixio.open(child.path, nixio.open_flags("rdonly") + O_NOFOLLOW)
+      if handle then
+        local value = handle:read(maximum + 1)
+        local closed = handle:close()
+        if closed == true and type(value) == "string" and #value <= maximum then outputs[index] = value end
+      end
+    end
+    pcall(nfs.unlink, child.path)
+  end
+  return outputs
 end
 
 local function start_background(nixio, argv)
@@ -235,6 +314,9 @@ function M.new(injected)
     nfs.unlink(temporary)
     if closed ~= true or type(value) ~= "string" or #value > maximum then return nil end
     return value
+  end
+  local capture_parallel_process = injected.capture_parallel or function(requests, deadline, maximum, raw)
+    return capture_parallel(nixio, nfs, requests, deadline, maximum, raw, now_process, sleep_process)
   end
 
   local function foreach(section_type, callback)
@@ -813,17 +895,18 @@ function M.new(injected)
       end
     end,
     real_connection_check = function(kind, address, port, url, deadline)
+      local numeric_port = tonumber(port)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or address == ""
-        or address:find("[%z\1-\31\127]") or not tonumber(port) or tonumber(port) < 1 or tonumber(port) > 65535
+        or address:find("[%z\1-\31\127]") or not numeric_port or numeric_port < 1 or numeric_port > 65535
         or type(url) ~= "string" or not url:match("^https?://") or url:find("[%z\1-\31\127]") then
         return { ok = false }
       end
-      local remaining = deadline - now_process()
+      local remaining = type(deadline) == "number" and deadline - now_process() or 0
       if remaining <= 0 then return { ok = false } end
       remaining = math.max(1, math.ceil(remaining))
       local proxy_flag = kind == "socks" and "--socks5-hostname" or "--proxy"
       local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
-      local proxy = kind == "socks" and (host .. ":" .. tostring(port)) or ("http://" .. host .. ":" .. tostring(port))
+      local proxy = kind == "socks" and (host .. ":" .. tostring(numeric_port)) or ("http://" .. host .. ":" .. tostring(numeric_port))
       local output = capture_process({ "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
         "--connect-timeout", tostring(math.min(remaining, 5)), "--write-out", "%{time_total}\\t%{http_code}",
         "--output", "/dev/null", proxy_flag, proxy, url }, deadline, 128, true)
@@ -832,6 +915,40 @@ function M.new(injected)
       seconds, status = tonumber(seconds), tonumber(status)
       if not seconds or seconds < 0 or seconds > 300 or not status or status < 200 or status > 399 then return { ok = false } end
       return { ok = true, time = math.floor(seconds * 1000 + 0.5), status = status }
+    end,
+    real_connection_checks = function(address, socks_port, http_port, url, deadline)
+      if type(address) ~= "string" or address == "" or address:find("[%z\1-\31\127]")
+        or type(url) ~= "string" or not url:match("^https?://") or url:find("[%z\1-\31\127]") then
+        return { socks = { ok = false }, http = { ok = false } }
+      end
+      local numeric_socks, numeric_http = tonumber(socks_port), tonumber(http_port)
+      if not numeric_socks or numeric_socks < 1 or numeric_socks > 65535
+        or not numeric_http or numeric_http < 1 or numeric_http > 65535 then
+        return { socks = { ok = false }, http = { ok = false } }
+      end
+      local remaining = type(deadline) == "number" and deadline - now_process() or 0
+      if remaining <= 0 then return { socks = { ok = false }, http = { ok = false } } end
+      remaining = math.max(1, math.ceil(remaining))
+      local host = address:find(":", 1, true) and ("[" .. address .. "]") or address
+      local requests = {
+        { kind = "socks", argv = { "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
+          "--connect-timeout", tostring(math.min(remaining, 5)), "--write-out", "%{time_total}\\t%{http_code}",
+          "--output", "/dev/null", "--socks5-hostname", host .. ":" .. tostring(numeric_socks), url } },
+        { kind = "http", argv = { "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", tostring(remaining),
+          "--connect-timeout", tostring(math.min(remaining, 5)), "--write-out", "%{time_total}\\t%{http_code}",
+          "--output", "/dev/null", "--proxy", "http://" .. host .. ":" .. tostring(numeric_http), url } }
+      }
+      local captured = capture_parallel_process(requests, deadline, 128, true)
+      local function parse(value)
+        if type(value) ~= "string" then return { ok = false } end
+        local seconds, status = value:match("^%s*(%d+%.?%d*)\t(%d%d%d)%s*$")
+        seconds, status = tonumber(seconds), tonumber(status)
+        if not seconds or seconds < 0 or seconds > 300 or not status or status < 200 or status > 399 then return { ok = false } end
+        return { ok = true, time = math.floor(seconds * 1000 + 0.5), status = status }
+      end
+      local socks_output = type(captured) == "table" and (captured.socks or captured[1]) or nil
+      local http_output = type(captured) == "table" and (captured.http or captured[2]) or nil
+      return { socks = parse(socks_output), http = parse(http_output) }
     end,
     observe_exit_ip = function(kind, address, port, url, deadline)
       if (kind ~= "socks" and kind ~= "http") or type(address) ~= "string" or not tonumber(port)

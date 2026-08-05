@@ -333,6 +333,24 @@ local function fixture(options)
       if options.health_fail and options.health_fail == kind then return { ok = false } end
       return { ok = true, time = kind == "socks" and 12 or 34, status = 204 }
     end,
+    real_connection_checks = function(address, socks_port, http_port, health_url, deadline)
+      event("exec:real_connections:" .. address .. ":" .. tostring(socks_port) .. ":" .. tostring(http_port))
+      state.health_url, state.health_deadline = health_url, deadline
+      local results = {}
+      for _, value in ipairs({ { kind = "socks", port = socks_port }, { kind = "http", port = http_port } }) do
+        event("exec:real_connection:" .. value.kind .. ":" .. address .. ":" .. tostring(value.port))
+        if options.health_hook then options.health_hook(value.kind, deadline) end
+        if options.health_failures and (options.health_failures[value.kind] or 0) > 0 then
+          options.health_failures[value.kind] = options.health_failures[value.kind] - 1
+          results[value.kind] = { ok = false }
+        elseif options.health_fail and options.health_fail == value.kind then
+          results[value.kind] = { ok = false }
+        else
+          results[value.kind] = { ok = true, time = value.kind == "socks" and 12 or 34, status = 204 }
+        end
+      end
+      return results
+    end,
     observe_exit_ip = function(kind, address, port, health_url, deadline)
       event("exec:exit_ip:" .. kind .. ":" .. address .. ":" .. tostring(port))
       state.exit_ip_url, state.exit_ip_deadline = health_url, deadline
@@ -581,6 +599,23 @@ t.test("switch commits only after both real proxy requests and returns their mea
   t.eq(result.code, "health_failed")
   t.eq(failed.global.active_node, "old")
   t.eq(event_index(failed.events, "uci:set_active:new"), nil)
+end)
+
+t.test("switch records phase timings for the real connection path", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local result = state.runtime:switch("new")
+  t.eq(result.ok, true)
+  t.truthy(result.timings)
+  for _, key in ipairs({ "validate_ms", "restart_ms", "listener_ms", "connection_ms", "commit_ms", "total_ms" }) do
+    t.eq(type(result.timings[key]), "number")
+    t.truthy(result.timings[key] >= 0)
+  end
+  local log_text
+  for _, write in ipairs(state.writes) do
+    if write.path == "/var/log/xc.log" then log_text = write.content end
+  end
+  t.truthy(type(log_text) == "string" and log_text:find("validate_ms", 1, true))
+  t.truthy(type(log_text) == "string" and log_text:find("total_ms", 1, true))
 end)
 
 t.test("runtime treats a committed hardening warning as committed state", function()
