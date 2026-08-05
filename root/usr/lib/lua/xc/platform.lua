@@ -127,7 +127,7 @@ local function parse_api_text(output, balancer_tag)
       fields[field] = value
     end
   end
-  if output_balancer ~= nil and output_balancer ~= balancer_tag then return nil end
+  if output_balancer ~= balancer_tag then return nil end
   return api_tag_from_fields(fields)
 end
 

@@ -69,6 +69,52 @@ t.test("xray API balancer parses a JSON selected tag for the requested balancer"
   t.eq(#calls.capture, 1)
 end)
 
+t.test("xray API balancer parses a JSON current tag for the requested balancer", function()
+  local calls, exec = api_fixture({
+    output = '{"balancer":"xc-balancer","current":"xc-node-node_4"}',
+    json_parse = function()
+      return { balancer = "xc-balancer", current = "xc-node-node_4" }
+    end
+  })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), "xc-node-node_4")
+  t.eq(#calls.capture, 1)
+end)
+
+t.test("xray API balancer fails closed on inconsistent JSON current and selected tags", function()
+  local _, exec = api_fixture({
+    output = '{"balancer":"xc-balancer","current":"xc-node-node_1","selected":"xc-node-node_2"}',
+    json_parse = function()
+      return { balancer = "xc-balancer", current = "xc-node-node_1", selected = "xc-node-node_2" }
+    end
+  })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+end)
+
+t.test("xray API balancer fails closed on an incorrect JSON balancer", function()
+  local _, exec = api_fixture({
+    output = '{"balancer":"other-balancer","current":"xc-node-node_1"}',
+    json_parse = function()
+      return { balancer = "other-balancer", current = "xc-node-node_1" }
+    end
+  })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+end)
+
+t.test("xray API balancer fails closed on non-table or invalid JSON fields", function()
+  local cases = {
+    "xc-node-node_1",
+    { balancer = "xc-balancer", current = 42 },
+    { balancer = "xc-balancer", selected = true }
+  }
+  for _, parsed in ipairs(cases) do
+    local _, exec = api_fixture({
+      output = "{}",
+      json_parse = function() return parsed end
+    })
+    t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  end
+end)
+
 t.test("xray API balancer fails closed on process failure", function()
   local _, exec = api_fixture({ output = nil })
   t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
@@ -126,8 +172,19 @@ t.test("xray API calls reject unsafe paths and tags without spawning or capturin
   end
 end)
 
+t.test("xray API balancer requires the requested balancer in CLI output", function()
+  local outputs = {
+    "Current: xc-node-node_1\n",
+    "Balancer: other-balancer\nCurrent: xc-node-node_1\n"
+  }
+  for _, output in ipairs(outputs) do
+    local _, exec = api_fixture({ output = output })
+    t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  end
+end)
+
 t.test("xray API balancer never returns complete API output", function()
-  local output = "Current: xc-node-node_4\nsecret-field: UUID-or-token\n"
+  local output = "Balancer: xc-balancer\nCurrent: xc-node-node_4\nsecret-field: UUID-or-token\n"
   local _, exec = api_fixture({ output = output })
   local selected = exec.xray_api_balancer("/usr/bin/xray", "xc-balancer")
   t.eq(selected, "xc-node-node_4")
