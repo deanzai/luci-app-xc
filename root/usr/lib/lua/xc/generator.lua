@@ -575,9 +575,9 @@ function M.build_dynamic(global, nodes)
       }
     },
     outbounds = node_outbounds,
-    balancers = { { tag = "xc-balancer", selector = selector } },
     routing = {
       domainStrategy = "IPIfNonMatch",
+      balancers = { { tag = "xc-balancer", selector = selector } },
       rules = {
         { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api" }
       }

@@ -463,7 +463,7 @@ function Runtime:_dynamic_runtime()
   end
   if not api_route or not balancer_route then return nil end
 
-  local balancers = array_values(config.balancers)
+  local balancers = array_values(type(config.routing) == "table" and config.routing.balancers or nil)
   if not balancers then return nil end
   local balancer
   for _, value in ipairs(balancers) do

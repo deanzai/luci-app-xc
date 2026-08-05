@@ -370,11 +370,10 @@ local function fixture(options)
           { tag = "block", protocol = "blackhole" },
           { tag = "xc-api", protocol = "freedom" }
         },
-        balancers = { { tag = "xc-balancer", selector = { "xc-node-old", "xc-node-new" } } },
         routing = { rules = {
           { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api" },
           { type = "field", balancerTag = "xc-balancer" }
-        } }
+        }, balancers = { { tag = "xc-balancer", selector = { "xc-node-old", "xc-node-new" } } } }
       }
     end
     local id, version, arch, size, sha256, uploaded_at = text:match('"id":"([^"]+)".-"version":"([^"]+)".-"arch":"([^"]+)".-"size":(%d+).-"sha256":"([^"]+)".-"uploaded_at":(%d+)')

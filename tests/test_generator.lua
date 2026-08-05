@@ -733,9 +733,10 @@ t.test("builds a dynamic balancer configuration with loopback Xray API", functio
   t.eq(cfg.api.tag, "xc-api")
   t.eq(#cfg.api.services, 1)
   t.eq(cfg.api.services[1], "RoutingService")
-  t.eq(#cfg.balancers, 1)
-  t.eq(cfg.balancers[1].tag, "xc-balancer")
-  assert_array_equal(cfg.balancers[1].selector, { "xc-node-old", "xc-node-new" })
+  t.eq(cfg.balancers, nil)
+  t.eq(#cfg.routing.balancers, 1)
+  t.eq(cfg.routing.balancers[1].tag, "xc-balancer")
+  assert_array_equal(cfg.routing.balancers[1].selector, { "xc-node-old", "xc-node-new" })
 
   t.eq(#cfg.inbounds, 3)
   t.eq(cfg.inbounds[3].tag, "xc-api")
@@ -849,7 +850,7 @@ t.test("keeps dynamic node credentials out of serialized control-plane fields", 
   local control_plane = {
     api = cfg.api,
     tags = tags,
-    balancers = cfg.balancers,
+    balancers = cfg.routing.balancers,
     api_inbound = api_inbound,
     routing = cfg.routing
   }
