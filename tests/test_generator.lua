@@ -784,4 +784,21 @@ t.test("rejects empty, invalid, disabled, and duplicate dynamic nodes", function
   t.truthy(err)
 end)
 
+t.test("rejects dynamic API port conflicts with SOCKS and HTTP inbounds", function()
+  local node = {
+    id = "api_port_node", enabled = true, protocol = "vless", server = "api-port.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  }
+  local socks_config, socks_err = generator.build_dynamic(global({ socks_port = 10085 }), { node })
+  t.eq(socks_config, nil)
+  t.truthy(socks_err)
+
+  local http_config, http_err = generator.build_dynamic(global({ http_port = 10085 }), { node })
+  t.eq(http_config, nil)
+  t.truthy(http_err)
+
+  local default_config = assert(generator.build_dynamic(global(), { node }))
+  t.eq(default_config.inbounds[3].port, 10085)
+end)
+
 return true

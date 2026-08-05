@@ -30,6 +30,7 @@ local structured_protocols = {
 local transports = { tcp = true, ws = true, grpc = true }
 local securities = { none = true, tls = true, reality = true }
 local xray_log_levels = { error = true, warning = true, info = true, debug = true }
+local DYNAMIC_API_PORT = 10085
 local fingerprints = {
   chrome = true, firefox = true, safari = true, ios = true, android = true,
   edge = true, ["360"] = true, qq = true, random = true, randomized = true
@@ -536,6 +537,9 @@ end
 function M.build_dynamic(global, nodes)
   local validated, validation_error = validate_global(global)
   if not validated then return nil, validation_error end
+  if validated.socks_port == DYNAMIC_API_PORT or validated.http_port == DYNAMIC_API_PORT then
+    return nil, "invalid dynamic API port"
+  end
   local node_outbounds, selector, nodes_error = dynamic_nodes(nodes)
   if not node_outbounds then return nil, selector or nodes_error end
 
@@ -561,7 +565,7 @@ function M.build_dynamic(global, nodes)
       {
         tag = "xc-api",
         listen = "127.0.0.1",
-        port = 10085,
+        port = DYNAMIC_API_PORT,
         protocol = "dokodemo-door",
         settings = { address = "127.0.0.1" }
       }
