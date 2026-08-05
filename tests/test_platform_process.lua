@@ -3,6 +3,136 @@ local platform = require "xc.platform"
 
 local XRAY = { "/usr/bin/xray", "run", "-test", "-format", "json", "-c", "/var/etc/xc/config.json" }
 
+local function api_fixture(options)
+  options = options or {}
+  local calls = { spawn = {}, capture = {} }
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = {
+      parse = options.json_parse or function() return nil end,
+      stringify = function() return "{}" end
+    },
+    now = function() return options.now or 100 end,
+    spawn = function(argv, deadline)
+      calls.spawn[#calls.spawn + 1] = { argv = argv, deadline = deadline }
+      return options.spawn_result ~= false
+    end,
+    capture = function(argv, deadline, maximum, raw)
+      calls.capture[#calls.capture + 1] = { argv = argv, deadline = deadline, maximum = maximum, raw = raw }
+      return options.output
+    end
+  })
+  return calls, adapters.exec
+end
+
+t.test("xray API override uses the selected path and fixed argv on success", function()
+  local calls, exec = api_fixture()
+  t.eq(exec.xray_api_override("/etc/xc/xray/versions/v26_6_27/xray", "xc-balancer", "xc-node-node_1"), true)
+  t.eq(table.concat(calls.spawn[1].argv, "|"), "/etc/xc/xray/versions/v26_6_27/xray|api|bo|--server=127.0.0.1:10085|-b|xc-balancer|xc-node-node_1")
+  t.eq(calls.spawn[1].deadline, 110)
+end)
+
+t.test("xray API override reports process failure", function()
+  local calls, exec = api_fixture({ spawn_result = false })
+  t.eq(exec.xray_api_override("/usr/bin/xray", "xc-balancer", "xc-node-node_1"), false)
+  t.eq(#calls.spawn, 1)
+end)
+
+t.test("xray API override uses a bounded timeout for a timed out process", function()
+  local calls, exec = api_fixture({ now = 50, spawn_result = false })
+  t.eq(exec.xray_api_override("/usr/bin/xray", "xc-balancer", "xc-node-node_1"), false)
+  t.eq(calls.spawn[1].deadline, 60)
+  t.truthy(calls.spawn[1].deadline < 1000000)
+end)
+
+t.test("xray API balancer uses fixed argv and parses CLI current tag", function()
+  local calls, exec = api_fixture({ output = "Balancer: xc-balancer\nCurrent: xc-node-node_2\n" })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), "xc-node-node_2")
+  t.eq(table.concat(calls.capture[1].argv, "|"), "/usr/bin/xray|api|bi|--server=127.0.0.1:10085|xc-balancer")
+  t.eq(calls.capture[1].deadline, 110)
+  t.eq(calls.capture[1].maximum, 4096)
+  t.eq(calls.capture[1].raw, true)
+end)
+
+t.test("xray API balancer parses a JSON selected tag for the requested balancer", function()
+  local json = '{"balancer":"xc-balancer","selected":"xc-node-node_3"}'
+  local parsed = false
+  local calls, exec = api_fixture({
+    output = json,
+    json_parse = function(value)
+      parsed = value == json
+      if parsed then return { balancer = "xc-balancer", selected = "xc-node-node_3" } end
+    end
+  })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), "xc-node-node_3")
+  t.eq(parsed, true)
+  t.eq(#calls.capture, 1)
+end)
+
+t.test("xray API balancer fails closed on process failure", function()
+  local _, exec = api_fixture({ output = nil })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+end)
+
+t.test("xray API balancer fails closed on oversized output", function()
+  local calls, exec = api_fixture({ output = string.rep("x", 4097) })
+  t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  t.eq(calls.capture[1].maximum, 4096)
+end)
+
+t.test("xray API balancer fails closed on malformed or unsafe output", function()
+  local malformed = {
+    "Current: xc-node-node_1;secret\n",
+    "Current: not-a-node-tag\n",
+    "Current: xc-node-node_1\nSelected: xc-node-node_2;secret\n"
+  }
+  for _, output in ipairs(malformed) do
+    local _, exec = api_fixture({ output = output })
+    t.eq(exec.xray_api_balancer("/usr/bin/xray", "xc-balancer"), nil)
+  end
+end)
+
+t.test("xray API calls reject unsafe paths and tags without spawning or capturing", function()
+  local invalid_override = {
+    { "/tmp/xray", "xc-balancer", "xc-node-node_1" },
+    { "/usr/bin/xray", "xc balancer", "xc-node-node_1" },
+    { "/usr/bin/xray", "xc-balancer;secret", "xc-node-node_1" },
+    { "/usr/bin/xray", "xc-balancer", "xc node" },
+    { "/usr/bin/xray", "xc-balancer", "xc-node-node_1;secret" },
+    { "/usr/bin/xray", "xc-balancer", "xc-node-" .. string.rep("a", 64) },
+    { "/usr/bin/xray", "xc-balancer", "xc-node-node_1\nsecret" }
+  }
+  for _, value in ipairs(invalid_override) do
+    local calls, exec = api_fixture({ output = "Current: xc-node-node_1\n" })
+    t.eq(exec.xray_api_override(value[1], value[2], value[3]), false)
+    t.eq(#calls.spawn, 0)
+    t.eq(#calls.capture, 0)
+  end
+
+  local invalid_balancer = {
+    { "/tmp/xray", "xc-balancer" },
+    { "/usr/bin/xray", "xc balancer" },
+    { "/usr/bin/xray", "xc-balancer;secret" },
+    { "/usr/bin/xray", "xc-balancer\nsecret" },
+    { "/usr/bin/xray", string.rep("x", 65) }
+  }
+  for _, value in ipairs(invalid_balancer) do
+    local calls, exec = api_fixture({ output = "Current: xc-node-node_1\n" })
+    t.eq(exec.xray_api_balancer(value[1], value[2]), nil)
+    t.eq(#calls.spawn, 0)
+    t.eq(#calls.capture, 0)
+  end
+end)
+
+t.test("xray API balancer never returns complete API output", function()
+  local output = "Current: xc-node-node_4\nsecret-field: UUID-or-token\n"
+  local _, exec = api_fixture({ output = output })
+  local selected = exec.xray_api_balancer("/usr/bin/xray", "xc-balancer")
+  t.eq(selected, "xc-node-node_4")
+  t.eq(selected ~= output, true, "API output must not be returned verbatim")
+  t.eq(selected:find("UUID-or-token", 1, true), nil)
+end)
+
 local function process_fixture(wait_results, options)
   options = options or {}
   local state = { now = 0, events = {}, wait_index = 0, reaped = false, killed = false }

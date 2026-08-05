@@ -94,6 +94,47 @@ local function valid_argv(argv)
   return argv[1]:sub(1, 1) == "/"
 end
 
+local function valid_api_balancer(value)
+  return value == "xc-balancer"
+end
+
+local function valid_api_outbound(value)
+  return type(value) == "string" and #value <= 64
+    and value:match("^xc%-node%-[0-9A-Za-z_-]+$") ~= nil
+end
+
+local function api_tag_from_fields(fields)
+  local current = fields.current
+  local selected = fields.selected
+  if current ~= nil and not valid_api_outbound(current) then return nil end
+  if selected ~= nil and not valid_api_outbound(selected) then return nil end
+  if current ~= nil and selected ~= nil and current ~= selected then return nil end
+  return current or selected
+end
+
+local function parse_api_text(output, balancer_tag)
+  local fields = {}
+  local output_balancer
+  for field, value in output:gmatch("([A-Za-z]+)%s*:%s*([^\r\n]*)") do
+    field = field:lower()
+    value = value:match("^%s*(.-)%s*$")
+    if field == "balancer" then
+      if output_balancer ~= nil and output_balancer ~= value then return nil end
+      output_balancer = value
+    elseif field == "current" or field == "selected" then
+      if fields[field] ~= nil and fields[field] ~= value then return nil end
+      fields[field] = value
+    end
+  end
+  if output_balancer ~= nil and output_balancer ~= balancer_tag then return nil end
+  return api_tag_from_fields(fields)
+end
+
+local function parse_api_json(value, balancer_tag)
+  if type(value) ~= "table" or value.balancer ~= balancer_tag then return nil end
+  return api_tag_from_fields({ current = value.current, selected = value.selected })
+end
+
 local function valid_asset_dir(path)
   return path == routing.ASSET_DIR or path == routing.FALLBACK_ASSET_DIR
 end
@@ -759,6 +800,30 @@ function M.new(injected)
       deadline = deadline or (current + 5)
       if type(deadline) ~= "number" or deadline <= current or deadline > current + 30 then return nil end
       return capture_process({ path, "version" }, deadline, 2048, true)
+    end,
+    xray_api_override = function(path, balancer_tag, outbound_tag)
+      if not valid_xray_path(path) or not valid_api_balancer(balancer_tag) or not valid_api_outbound(outbound_tag) then
+        return false
+      end
+      local argv = { path, "api", "bo", "--server=127.0.0.1:10085", "-b", balancer_tag, outbound_tag }
+      if not valid_argv(argv) then return false end
+      local current = now_process()
+      if type(current) ~= "number" or current ~= current or current == math.huge or current == -math.huge then return false end
+      return spawn_process(argv, current + 10) == true
+    end,
+    xray_api_balancer = function(path, balancer_tag)
+      if not valid_xray_path(path) or not valid_api_balancer(balancer_tag) then return nil end
+      local argv = { path, "api", "bi", "--server=127.0.0.1:10085", balancer_tag }
+      if not valid_argv(argv) then return nil end
+      local current = now_process()
+      if type(current) ~= "number" or current ~= current or current == math.huge or current == -math.huge then return nil end
+      local output = capture_process(argv, current + 10, 4096, true)
+      if type(output) ~= "string" or #output > 4096 then return nil end
+      local selected = parse_api_text(output, balancer_tag)
+      if selected ~= nil then return selected end
+      if type(jsonc.parse) ~= "function" then return nil end
+      local called, parsed = pcall(jsonc.parse, output)
+      return called and parse_api_json(parsed, balancer_tag) or nil
     end,
     restart = function()
       return spawn_process({ "/etc/init.d/xc", "restart_prepared" }, now_process() + 30)
