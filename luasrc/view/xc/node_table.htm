@@ -170,7 +170,9 @@ local probe_concurrency = self.probe_concurrency or 3
   function scheduleSwitchPoll(generation) {
     if (switchPollTimer !== null) window.clearTimeout(switchPollTimer);
     switchPollTimer = null;
-    if (generation !== switchGeneration || !switching || document.hidden) return;
+    // A detached switch continues while this tab is hidden; keep observing it
+    // so returning to the page does not leave the target stuck on "Switching".
+    if (generation !== switchGeneration || !switching) return;
     switchPollTimer = window.setTimeout(function() { pollSwitchStatus(generation); }, 1000);
   }
 
@@ -190,7 +192,6 @@ local probe_concurrency = self.probe_concurrency or 3
 
   function pollSwitchStatus(generation) {
     if (generation !== switchGeneration || !switching || switchRequest !== null) return;
-    if (document.hidden) return;
     switchPolls++;
     if (switchPolls > 120) { finishSwitch(generation, false); return; }
     var xhr = new XMLHttpRequest();

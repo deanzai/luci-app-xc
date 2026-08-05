@@ -44,7 +44,7 @@ function xhrHarness() {
   return { XHR, requests };
 }
 
-function nodeHarness(concurrency, layout, rowCount) {
+function nodeHarness(concurrency, layout, rowCount, initiallyHidden) {
   layout = layout || "div"; rowCount = rowCount === undefined ? 6 : rowCount;
   const xhr = xhrHarness();
   const timers = [];
@@ -145,6 +145,7 @@ function nodeHarness(concurrency, layout, rowCount) {
   const roots = [sectionRoot, controls["xc-node-controls"]];
   const listeners = {};
   const document = {
+    hidden: !!initiallyHidden,
     getElementById: id => controls[id],
     createElement: element,
     querySelectorAll: selector => roots.reduce((all, root) => all.concat(matches(root, selector) ? [root] : [], root.querySelectorAll(selector)), []),
@@ -190,7 +191,7 @@ function nodeHarness(concurrency, layout, rowCount) {
   });
   assert.strictEqual(nativeAdd.parentNode, controls["xc-node-controls"], "native Add button moves into the shared toolbar");
   assert.strictEqual(controls["xc-node-controls"].children[0], nativeAdd, "Add is the first toolbar action");
-  return { window, controls, rows, skippedRows, requests: xhr.requests, nativeAdd, hasClass, timers };
+  return { window, document, controls, rows, skippedRows, requests: xhr.requests, nativeAdd, hasClass, timers };
 }
 
 nodeHarness(3, "native");
@@ -268,6 +269,20 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
     active_section: "node_1" } });
   assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
   assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
+  assert.strictEqual(h.rows[1].switchButton.value, "Current");
+}
+
+{
+  const h = nodeHarness(3, "div", 3, true);
+  h.rows[1].switchButton.onclick();
+  h.requests[0].respond({ ok: true, data: { code: "switch_started", node: "node_1" } });
+  assert.ok(h.timers.some(timer => !timer.cleared),
+    "a background switch keeps polling while the page is hidden");
+  h.timers[h.timers.length - 1].callback();
+  assert.strictEqual(h.requests.length, 2);
+  h.requests[1].respond({ ok: true, data: { operation: "idle", recovery_required: false,
+    active_section: "node_1" } });
+  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
   assert.strictEqual(h.rows[1].switchButton.value, "Current");
 }
 
