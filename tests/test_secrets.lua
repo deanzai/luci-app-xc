@@ -32,7 +32,8 @@ local function runtime_fixture()
     },
     exec = {
       run = yes, restart = yes, stop = yes, listener_ready = yes,
-      real_connection_check = yes, service_state = function() return "stopped" end
+      real_connection_check = yes, service_state = function() return "stopped" end,
+      xray_api_override = yes, xray_api_balancer = function() return "xc-node-safe" end
     },
     fs = {
       acquire_lock = function() return {} end, release_lock = yes,

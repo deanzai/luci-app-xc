@@ -3,6 +3,7 @@ local runtime = require "xc.runtime"
 
 local UUID = "11111111-1111-1111-1111-111111111111"
 local RUNTIME = "/var/etc/xc/config.json"
+local DYNAMIC_RUNTIME = "dynamic-runtime"
 local XRAY_CANDIDATE = "/var/etc/xc/candidate.json"
 local ROLLBACK = "/etc/xc/rollback/config.json"
 local ROLLBACK_NODE = "/etc/xc/rollback/active_node"
@@ -135,6 +136,7 @@ local function fixture(options)
   options = options or {}
   local events, files = options.events or {}, options.shared_files or {}
   for path, content in pairs(options.files or {}) do files[path] = content end
+  if options.dynamic_config and files[RUNTIME] == nil then files[RUNTIME] = DYNAMIC_RUNTIME end
   files[GEOSITE] = files[GEOSITE] or "geosite"
   files[GEOIP] = files[GEOIP] or "geoip"
   if options.asset_dir == "v2ray" then
@@ -340,9 +342,41 @@ local function fixture(options)
       if options.exit_ip_throw then error("password=exit-secret") end
       return options.exit_ip
     end,
+    xray_api_override = function(_, _, tag)
+      event("exec:api_override:" .. tostring(tag))
+      local overridden
+      if options.api_override_hook then overridden = options.api_override_hook(tag, state) else overridden = options.api_override_ok ~= false end
+      if overridden and not options.api_sticky then options.api_current = tag end
+      return overridden
+    end,
+    xray_api_balancer = function()
+      local current = options.api_current
+      if options.api_balancer_hook then current = options.api_balancer_hook(state) end
+      if options.api_balancer_ok == false then current = nil end
+      event("exec:api_balancer:" .. tostring(current))
+      return current
+    end,
     service_state = function() return options.service_state or "running" end
   }
   local function parse_json(text)
+    if options.dynamic_config and text == DYNAMIC_RUNTIME then
+      return options.dynamic_config_value or {
+        api = { tag = "xc-api", services = { "RoutingService" } },
+        inbounds = { { tag = "xc-api", listen = "127.0.0.1", port = 10085, protocol = "dokodemo-door" } },
+        outbounds = {
+          { tag = "xc-node-old", protocol = "vless" },
+          { tag = "xc-node-new", protocol = "vless" },
+          { tag = "direct", protocol = "freedom" },
+          { tag = "block", protocol = "blackhole" },
+          { tag = "xc-api", protocol = "freedom" }
+        },
+        balancers = { { tag = "xc-balancer", selector = { "xc-node-old", "xc-node-new" } } },
+        routing = { rules = {
+          { type = "field", inboundTag = { "xc-api" }, outboundTag = "xc-api" },
+          { type = "field", balancerTag = "xc-balancer" }
+        } }
+      }
+    end
     local id, version, arch, size, sha256, uploaded_at = text:match('"id":"([^"]+)".-"version":"([^"]+)".-"arch":"([^"]+)".-"size":(%d+).-"sha256":"([^"]+)".-"uploaded_at":(%d+)')
     if not id then return nil end
     return { id = id, version = version, arch = arch, size = tonumber(size), sha256 = sha256, uploaded_at = tonumber(uploaded_at) }
@@ -430,6 +464,95 @@ t.test("render auto-selects only a sole enabled node and writes atomically", fun
   local empty_result = empty.runtime:render(nil, "/tmp/render.json")
   t.eq(empty_result.ok, true)
   t.eq(empty_result.node, "only")
+end)
+
+t.test("fast switch changes the live balancer without restarting or probing", function()
+  local state = fixture({ dynamic_config = true, api_current = "xc-node-old" })
+  local value = state.runtime:fast_switch("new")
+  t.eq(value.ok, true)
+  t.eq(value.code, "fast_switched")
+  t.eq(value.node, "new")
+  t.eq(state.global.active_node, "new")
+  local joined = table.concat(state.events, "|")
+  t.truthy(event_index(state.events, "exec:api_override:xc-node-new"))
+  t.truthy(event_index(state.events, "exec:api_balancer:xc-node-new"))
+  t.truthy(event_index(state.events, "uci:set_active:new"))
+  t.truthy(event_index(state.events, "uci:commit"))
+  t.truthy(joined:find("exec:restart", 1, true) == nil)
+  t.truthy(joined:find("exec:listener:", 1, true) == nil)
+  t.truthy(joined:find("exec:real_connection:", 1, true) == nil)
+end)
+
+t.test("render_dynamic writes a loopback API and all enabled node outbounds", function()
+  local state = fixture()
+  local value = state.runtime:render_dynamic(RUNTIME)
+  t.eq(value.ok, true)
+  t.eq(value.code, "dynamic_rendered")
+  t.contains(state.files[RUNTIME], '"tag":"xc-balancer"')
+  t.contains(state.files[RUNTIME], '"listen":"127.0.0.1"')
+  t.contains(state.files[RUNTIME], '"port":10085')
+  t.contains(state.files[RUNTIME], '"tag":"xc-node-old"')
+  t.contains(state.files[RUNTIME], '"tag":"xc-node-new"')
+end)
+
+t.test("fast switch fails closed when the API is unavailable or not applied", function()
+  local unavailable = fixture({ dynamic_config = true, api_override_ok = false })
+  local result = unavailable.runtime:fast_switch("new")
+  t.eq(result.code, "fast_switch_api_failed")
+  t.eq(unavailable.global.active_node, "old")
+  t.eq(event_index(unavailable.events, "uci:commit"), nil)
+
+  local not_applied = fixture({ dynamic_config = true, api_current = "xc-node-old", api_sticky = true })
+  result = not_applied.runtime:fast_switch("new")
+  t.eq(result.code, "fast_switch_not_applied")
+  t.eq(not_applied.global.active_node, "old")
+  t.eq(event_index(not_applied.events, "uci:commit"), nil)
+end)
+
+t.test("fast switch restores the old live tag after active-node commit failure", function()
+  local state = fixture({
+    dynamic_config = true, api_current = "xc-node-old", commit_ok = false, commit_outcome = "pre_commit_failed"
+  })
+  local result = state.runtime:fast_switch("new")
+  t.eq(result.code, "fast_switch_commit_failed")
+  t.eq(state.global.active_node, "old")
+  t.truthy(event_index(state.events, "exec:api_override:xc-node-new"))
+  t.truthy(event_index(state.events, "exec:api_override:xc-node-old"))
+end)
+
+t.test("fast switch reports recovery required when old live tag cannot be restored", function()
+  local state = fixture({
+    dynamic_config = true, api_current = "xc-node-old",
+    commit_ok = false, commit_outcome = "pre_commit_failed",
+    api_override_hook = function(tag) return tag ~= "xc-node-old" end
+  })
+  local result = state.runtime:fast_switch("new")
+  t.eq(result.code, "fast_switch_recovery_required")
+  t.eq(state.global.active_node, "old")
+  t.truthy(event_index(state.events, "exec:api_override:xc-node-old"))
+end)
+
+t.test("restore_selection reapplies the persisted node without committing or restarting", function()
+  local state = fixture({ dynamic_config = true, api_current = "xc-node-old" })
+  local result = state.runtime:restore_selection()
+  t.eq(result.ok, true)
+  t.eq(result.code, "selection_restored")
+  t.eq(result.node, "old")
+  t.eq(event_index(state.events, "exec:api_override:xc-node-old") ~= nil, true)
+  t.eq(event_index(state.events, "exec:api_balancer:xc-node-old") ~= nil, true)
+  t.eq(event_index(state.events, "uci:commit"), nil)
+  t.eq(event_index(state.events, "exec:restart"), nil)
+end)
+
+t.test("restore_selection rejects missing active node, stopped service, and safe runtime config", function()
+  local missing = fixture({ dynamic_config = true, global = { socks_port = 7890, http_port = 10809 } })
+  t.eq(missing.runtime:restore_selection().code, "fast_switch_target_invalid")
+
+  local stopped = fixture({ dynamic_config = true, service_state = "stopped" })
+  t.eq(stopped.runtime:restore_selection().code, "fast_switch_unavailable")
+
+  local safe = fixture({ files = { [RUNTIME] = "safe-runtime" } })
+  t.eq(safe.runtime:restore_selection().code, "fast_switch_unavailable")
 end)
 
 t.test("render validates section IDs and uses lossless raw encoding", function()
