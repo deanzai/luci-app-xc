@@ -817,4 +817,45 @@ t.test("rejects non-finite and oversized dynamic node indexes", function()
   t.eq(oversized_err, "invalid dynamic nodes")
 end)
 
+t.test("keeps dynamic node credentials out of serialized control-plane fields", function()
+  local synthetic_password = "synthetic-dynamic-password"
+  local cfg = assert(generator.build_dynamic(global(), {
+    {
+      id = "credential_uuid", enabled = true, protocol = "vless", server = "uuid.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+    },
+    {
+      id = "credential_password", enabled = true, protocol = "trojan", server = "password.invalid", port = 443,
+      password = synthetic_password, transport = "tcp", security = "tls", sni = "password.invalid"
+    }
+  }))
+
+  local tags, tag_count = {}, 0
+  for _, outbound in ipairs(cfg.outbounds) do
+    tag_count = tag_count + 1
+    tags[tag_count] = outbound.tag
+  end
+
+  local api_inbound
+  for _, inbound in ipairs(cfg.inbounds) do
+    if inbound.tag == "xc-api" then
+      api_inbound = {
+        tag = inbound.tag, listen = inbound.listen, port = inbound.port,
+        protocol = inbound.protocol, settings = inbound.settings
+      }
+    end
+  end
+  t.truthy(api_inbound)
+  local control_plane = {
+    api = cfg.api,
+    tags = tags,
+    balancers = cfg.balancers,
+    api_inbound = api_inbound,
+    routing = cfg.routing
+  }
+  local serialized = luci_compatible_stringify(control_plane)
+  t.eq(serialized:find(UUID_ONE, 1, true), nil)
+  t.eq(serialized:find(synthetic_password, 1, true), nil)
+end)
+
 return true
