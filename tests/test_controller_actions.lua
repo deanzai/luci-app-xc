@@ -53,6 +53,10 @@ local function controller_fixture(options)
       if options.content_throw then error("raw-body=content-secret") end
       return body
     end,
+    header = function(name, value)
+      state.headers = state.headers or {}
+      state.headers[name] = value
+    end,
     prepare_content = function(value) state.content_type = value end,
     status = function(code) state.status = code end,
     formvalue = function(name)
@@ -220,6 +224,13 @@ t.test("controller fails closed before runtime status when protected layout is u
     t.eq(state.response.code, "internal_error")
     t.eq(state.layout_calls, 1)
   end
+end)
+
+t.test("status disables browser and proxy caching", function()
+  local controller, state = controller_fixture()
+  controller.action_status()
+  t.eq(state.headers["Cache-Control"], "no-store, no-cache, must-revalidate")
+  t.eq(state.headers.Pragma, "no-cache")
 end)
 
 t.test("get-log returns merged structured entries and an XC-only clear scope", function()

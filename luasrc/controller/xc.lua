@@ -299,6 +299,10 @@ local function append_warnings(first, second)
 end
 
 function action_status()
+  if type(http.header) == "function" then
+    http.header("Cache-Control", "no-store, no-cache, must-revalidate")
+    http.header("Pragma", "no-cache")
+  end
   local _, runtime_instance = new_backend()
   if not runtime_instance then failure("internal_error"); return end
   local called, status = pcall(runtime_instance.status, runtime_instance)

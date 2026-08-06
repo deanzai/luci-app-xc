@@ -288,6 +288,7 @@ local function fixture(options)
     rename = function(source, destination)
       event("fs:rename:" .. source .. ":" .. destination)
       files[destination], files[source] = files[source], nil
+      if destination == EXIT_IP_CACHE and options.cache_rename_hook then options.cache_rename_hook(global, files) end
       return true
     end,
     remove = function(path) event("fs:remove:" .. path); if options.remove_ok == false then return false end; files[path] = nil; return true end,
@@ -1244,6 +1245,39 @@ t.test("successful exit observation writes an atomic private node cache", functi
   t.truthy(event_index(state.events, "fs:chmod:" .. temporary .. ":0600"))
   t.truthy(event_index(state.events, "fs:fsync:" .. temporary))
   t.truthy(event_index(state.events, "fs:rename:" .. temporary .. ":" .. EXIT_IP_CACHE))
+end)
+
+t.test("status drops an exit IP when the active node changes during cache commit", function()
+  local state = fixture({
+    exit_ip = "203.0.113.40",
+    cache_rename_hook = function(global) global.active_node = "new" end
+  })
+  local status = state.runtime:status()
+  t.eq(status.exit_ip, nil)
+end)
+
+t.test("fast switch logs target and verification stages", function()
+  local state = fixture({ dynamic_config = true, api_current = "xc-node-old" })
+  local value = state.runtime:fast_switch("new")
+  t.eq(value.ok, true)
+  t.contains(state.files[LOG], '"message":"fast node switch started"')
+  t.contains(state.files[LOG], '"message":"fast node switch API applied"')
+  t.contains(state.files[LOG], '"message":"fast node switch active node committed"')
+end)
+
+t.test("fast switch logs the failed stage and stable reason", function()
+  local state = fixture({
+    dynamic_config = true, api_current = "xc-node-old",
+    api_override_hook = function(tag) return tag == "xc-node-old" end
+  })
+  local value = state.runtime:fast_switch("new")
+  t.eq(value.ok, false)
+  t.eq(value.code, "fast_switch_api_failed")
+  t.contains(state.files[LOG], '"message":"fast node switch API apply failed"')
+  t.contains(state.files[LOG], '"stage":"api_apply"')
+  t.contains(state.files[LOG], '"code":"fast_switch_api_failed"')
+  t.contains(state.files[LOG], '"node":"new"')
+  t.eq(state.files[LOG]:find("password", 1, true), nil)
 end)
 
 t.test("failed exit observation without a fresh cache stays secret-safe", function()

@@ -155,7 +155,8 @@ local probe_concurrency = self.probe_concurrency or 3
       if (generation !== fastSwitchGeneration || !payload || payload.ok !== true || !payload.data) return;
       setActive(payload.data.active_section || null);
     }
-    xhr.open("GET", statusEndpoint, true);
+    var separator = statusEndpoint.indexOf("?") === -1 ? "?" : "&";
+    xhr.open("GET", statusEndpoint + separator + "_=" + String(Date.now()), true);
     xhr.timeout = 12000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;

@@ -550,57 +550,95 @@ function Runtime:_restore_fast_tag(context)
 end
 
 function Runtime:_fast_switch_locked(section_id)
+  local function stage_event(message, stage, code, reason, level)
+    local fields = { stage = stage }
+    if schema.safe_section_id(section_id) then fields.node = section_id end
+    if type(code) == "string" and code:match("^[a-z][a-z_]*$") then fields.code = code end
+    if type(reason) == "string" and reason:match("^[a-z][a-z_]*$") then fields.reason = reason end
+    self:record_event(message, fields, level or LOG_LEVEL_INFO)
+  end
+
+  stage_event("fast node switch started", "start")
   local context, error_value = self:_fast_context(section_id)
-  if error_value then return error_value end
+  if error_value then
+    stage_event("fast node switch preflight failed", "preflight", error_value.code, "target_or_runtime_unavailable", LOG_LEVEL_ERROR)
+    return error_value
+  end
 
   local read_called, current_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
   if not read_called or type(current_tag) ~= "string" or not context.dynamic.selector[current_tag] then
     self.selection_state = "recovery_required"
+    stage_event("fast node switch API read failed", "api_read", "fast_switch_api_failed", "current_balancer_unavailable", LOG_LEVEL_ERROR)
     return result(false, "fast_switch_api_failed")
   end
   if current_tag ~= context.old_tag then
     self.selection_state = "recovery_required"
     self.runtime_active_node = current_tag:sub(9)
+    stage_event("fast node switch API precondition failed", "api_precondition", "fast_switch_unavailable", "active_tag_changed", LOG_LEVEL_ERROR)
     return result(false, "fast_switch_unavailable", { selection_state = "unknown", recovery_required = true })
   end
   if not call_api(self.exec.xray_api_override, context.xray_path, DYNAMIC_BALANCER_TAG, context.target_tag) then
+    stage_event("fast node switch API apply failed", "api_apply", "fast_switch_api_failed", "override_rejected", LOG_LEVEL_ERROR)
     local restored = self:_restore_fast_tag(context)
-    if not restored then self.selection_state = "recovery_required"; return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true }) end
+    if not restored then
+      self.selection_state = "recovery_required"
+      stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
     self.selection_state = "consistent"
     return result(false, "fast_switch_api_failed")
   end
   local applied_called, applied_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
   if not applied_called or type(applied_tag) ~= "string" or not context.dynamic.selector[applied_tag] then
+    stage_event("fast node switch API verification failed", "api_verify", "fast_switch_api_failed", "balancer_read_failed", LOG_LEVEL_ERROR)
     local restored = self:_restore_fast_tag(context)
-    if not restored then self.selection_state = "recovery_required"; return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true }) end
+    if not restored then
+      self.selection_state = "recovery_required"
+      stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
     self.selection_state = "consistent"
     return result(false, "fast_switch_api_failed", { selection_state = "old", recovery_required = false })
   end
   if applied_tag ~= context.target_tag then
+    stage_event("fast node switch API verification failed", "api_verify", "fast_switch_not_applied", "target_tag_not_active", LOG_LEVEL_ERROR)
     local restored = self:_restore_fast_tag(context)
-    if not restored then self.selection_state = "recovery_required"; return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true }) end
+    if not restored then
+      self.selection_state = "recovery_required"
+      stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
     self.selection_state = "consistent"
     return result(false, "fast_switch_not_applied", { selection_state = "old", recovery_required = false })
   end
+  stage_event("fast node switch API applied", "api_apply", nil, "target_tag_active")
 
   local committed, commit_outcome = self:_apply_active(context.target_node)
   if not committed then
+    stage_event("fast node switch active node commit failed", "active_commit", "fast_switch_commit_failed", commit_outcome or "commit_failed", LOG_LEVEL_ERROR)
     local restored = self:_restore_fast_tag(context)
     if commit_outcome == "commit_unknown" then
       self.selection_state = "recovery_required"
+      stage_event("fast node switch recovery required", "recovery", "fast_switch_recovery_required", "commit_result_unknown", LOG_LEVEL_ERROR)
       return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
     end
-    if not restored then self.selection_state = "recovery_required"; return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true }) end
+    if not restored then
+      self.selection_state = "recovery_required"
+      stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
     if commit_outcome == "pre_commit_failed" then
       self.selection_state = "consistent"
       return result(false, "fast_switch_commit_failed", { selection_state = "old", recovery_required = false })
     end
     self.selection_state = "recovery_required"
+    stage_event("fast node switch recovery required", "recovery", "fast_switch_recovery_required", "commit_state_unknown", LOG_LEVEL_ERROR)
     return result(false, "fast_switch_commit_failed", { selection_state = "unknown", recovery_required = true })
   end
   self.selection_mode = "dynamic"
   self.selection_state = "consistent"
   self.runtime_active_node = context.target_node
+  stage_event("fast node switch active node committed", "active_commit", nil, "selection_committed")
   return result(true, "fast_switched", { node = context.target_node, selection_state = "selected", recovery_required = false })
 end
 
@@ -1042,14 +1080,17 @@ function Runtime:_with_exit_context(section_id, fn)
   local acquired, lock = pcall(self.fs.acquire_lock, LOCK_PATH)
   if not acquired or not lock then return false end
   local called, context_ok = xpcall(function()
-    local global = self.uci.get_global()
-    if type(global) ~= "table" or global.active_node ~= section_id then return false end
-    if self:_read_optional(TRANSACTION_PATH, 1024) ~= nil then return false end
-    local shared_status = self:_read_optional(STATUS_PATH, 1024) or ""
-    local operation = shared_status:match("operation=([A-Za-z_]+)") or "idle"
-    if operation ~= "idle" then return false end
+    local function context_is_current()
+      local global = self.uci.get_global()
+      if type(global) ~= "table" or global.active_node ~= section_id then return false end
+      if self:_read_optional(TRANSACTION_PATH, 1024) ~= nil then return false end
+      local shared_status = self:_read_optional(STATUS_PATH, 1024) or ""
+      local operation = shared_status:match("operation=([A-Za-z_]+)") or "idle"
+      return operation == "idle"
+    end
+    if not context_is_current() then return false end
     fn()
-    return true
+    return context_is_current()
   end, function() return false end)
   local released, release_value = pcall(self.fs.release_lock, lock)
   return called and context_ok and released and action_ok(release_value)

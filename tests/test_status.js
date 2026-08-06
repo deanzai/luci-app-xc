@@ -43,6 +43,7 @@ function status(data) { return { ok: true, data: Object.assign({ service_state: 
 
 {
   const h = loadStatus();
+  assert.ok(h.requests[0].url.indexOf("_=") >= 0, "status GET must bypass browser cache");
   h.requests[0].respond(status({ listen_ip: "192.0.2.1", socks_port: 7890, http_port: 10809, exit_ip: "203.0.113.1" }));
   assert.strictEqual(h.elements["xc-service-state"].textContent, "Running");
   assert.strictEqual(h.elements["xc-socks-listener"].textContent, "192.0.2.1:7890");

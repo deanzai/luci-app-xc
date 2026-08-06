@@ -145,7 +145,8 @@ local version = require "xc.version"
       renderStatus(parseResponse(xhr));
       schedulePoll();
     };
-    xhr.open("GET", statusUrl, true);
+    var separator = statusUrl.indexOf("?") === -1 ? "?" : "&";
+    xhr.open("GET", statusUrl + separator + "_=" + String(Date.now()), true);
     xhr.send(null);
   }
 

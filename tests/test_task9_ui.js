@@ -258,6 +258,7 @@ for (const [configured, expected] of [[1, 1], [3, 3], [5, 5], [0, 1], [9, 5], ["
   assert.strictEqual(h.requests.length, 2, "successful fast switch refreshes status once");
   assert.strictEqual(h.requests[1].method, "GET");
   assert.ok(h.requests[1].url.indexOf("/xc/status") >= 0);
+  assert.ok(h.requests[1].url.indexOf("_=") >= 0, "fast switch status refresh must bypass browser cache");
   assert.strictEqual(h.timers.length, 0, "status refresh does not start safe-switch polling");
   h.requests[1].respond({ ok: true, data: { active_section: "node_1" } });
   assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
