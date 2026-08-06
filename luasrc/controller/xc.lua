@@ -9,6 +9,8 @@ local coremanager_module = require "xc.coremanager"
 local importer = require "xc.importer"
 local probe_module = require "xc.probe"
 local logview = require "xc.logview"
+local access = require "xc.access"
+local routing = require "xc.routing"
 
 local REQUEST_BODY_MAX = 512 * 1024
 local CORE_UPLOAD_MAX = 64 * 1024 * 1024
@@ -41,6 +43,7 @@ local messages = {
   core_upload_too_large = "The uploaded Xray core is too large.",
   core_delete_failed = "The Xray core could not be deleted.",
   core_version_invalid = "The Xray core version could not be verified.",
+  core_version_too_new = "This Xray core is newer than the supported 26.6.27 release; replace it manually if needed. The current core was kept.",
   fast_switch_unavailable = "Fast node switching is unavailable.",
   fast_switch_api_failed = "The fast node switching API failed.",
   fast_switch_not_applied = "The fast node switch was not applied.",
@@ -58,18 +61,26 @@ local messages = {
   method_not_allowed = "This action requires POST.",
   missing_runtime = "No active runtime configuration is available.",
   missing_node = "The selected node does not exist.",
+  active_node_required = "Select an active node before applying access control.",
   not_implemented = "This capability is not available yet.",
   no_rollback_state = "No rollback state is available.",
   request_too_large = "The request body is too large.",
   recovery_required = "An interrupted runtime transaction must be recovered first.",
   test_failed = "The current node health test failed.",
   unsupported_node = "The selected node cannot be probed safely.",
-  validation_failed = "The request did not pass validation."
+  validation_failed = "The request did not pass validation.",
+  access_validation_failed = "Access control validation failed; the current configuration was kept.",
+  access_rule_invalid = "An access control rule is invalid.",
+  access_rule_conflict = "Direct and proxy access control rules conflict.",
+  access_rule_too_long = "An access control rule is too long.",
+  access_rule_too_many = "Too many access control rules were supplied.",
+  access_dns_invalid = "The access control DNS address is invalid.",
+  access_applied = "Access control was applied."
 }
 
 local failure_status = {
   validation_failed = 400, invalid_node = 400, invalid_request = 400,
-  missing_node = 404, no_rollback_state = 404,
+  missing_node = 404, active_node_required = 409, no_rollback_state = 404,
   method_not_allowed = 405, busy = 409, disabled_node = 409,
   request_too_large = 413, not_implemented = 501, recovery_required = 409,
   unsupported_node = 422, missing_runtime = 404, test_failed = 502,
@@ -82,7 +93,10 @@ local failure_status = {
   core_upload_too_large = 413, core_busy = 409, core_no_rollback = 404, core_not_installed = 404,
   core_already_active = 409, core_recovery_required = 409, core_recovered = 502, core_recovery_failed = 503,
   core_activate_failed = 502, core_install_failed = 500, core_manifest_invalid = 422, core_version_invalid = 422,
-  core_hash_failed = 502, core_runtime_unavailable = 501, core_in_use = 409, core_delete_failed = 500
+  core_hash_failed = 502, core_runtime_unavailable = 501, core_in_use = 409, core_delete_failed = 500,
+  core_version_too_new = 422,
+  access_validation_failed = 400, access_rule_invalid = 400, access_rule_conflict = 409,
+  access_rule_too_long = 400, access_rule_too_many = 400, access_dns_invalid = 400
 }
 
 local status_text = {
@@ -147,10 +161,12 @@ function index()
   entry({ "admin", "services", "xc", "nodes" }, cbi("xc/nodes"), _("Nodes"), 20).leaf = true
   entry({ "admin", "services", "xc", "node" }, cbi("xc/node"), nil).leaf = true
   entry({ "admin", "services", "xc", "core" }, form("xc/core"), _("Xray core"), 25).leaf = true
+  entry({ "admin", "services", "xc", "access" }, form("xc/access"), _("Access control"), 27).leaf = true
   entry({ "admin", "services", "xc", "log" }, form("xc/log"), _("Log"), 30).leaf = true
 
   entry({ "admin", "services", "xc", "status" }, action_target("action_status")).leaf = true
   entry({ "admin", "services", "xc", "core-status" }, action_target("action_core_status")).leaf = true
+  entry({ "admin", "services", "xc", "access-status" }, action_target("action_access_status")).leaf = true
   post_entry({ "admin", "services", "xc", "probe" }, "action_probe")
   post_entry({ "admin", "services", "xc", "test-current" }, "action_test_current")
   post_entry({ "admin", "services", "xc", "switch" }, "action_switch")
@@ -164,6 +180,7 @@ function index()
   post_entry({ "admin", "services", "xc", "core-activate" }, "action_core_activate")
   post_entry({ "admin", "services", "xc", "core-rollback" }, "action_core_rollback")
   post_entry({ "admin", "services", "xc", "core-delete" }, "action_core_delete")
+  post_entry({ "admin", "services", "xc", "access-apply" }, "action_access_apply")
 end
 
 local function require_post(maximum)
@@ -327,6 +344,33 @@ function action_status()
   })
 end
 
+function action_access_status()
+  if type(http.header) == "function" then
+    http.header("Cache-Control", "no-store, no-cache, must-revalidate")
+    http.header("Pragma", "no-cache")
+  end
+  local adapters = new_backend()
+  if not adapters then failure("internal_error"); return end
+  local global_called, global = pcall(adapters.uci.get_global)
+  if not global_called or type(global) ~= "table" then failure("internal_error"); return end
+  local normalized, code = access.normalize(global)
+  if not normalized then failure(code or "access_validation_failed"); return end
+  success({ config = normalized })
+end
+
+function action_access_apply()
+  local body = request_body(true)
+  if not body then return end
+  local adapters, runtime_instance = new_backend()
+  if not adapters or not runtime_instance then failure("internal_error"); return end
+  local parsed_called, values = pcall(adapters.json.parse, body)
+  if not parsed_called or type(values) ~= "table" then failure("access_validation_failed"); return end
+  local called, result = pcall(runtime_instance.apply_access, runtime_instance, values)
+  if not called or type(result) ~= "table" then failure("access_validation_failed"); return end
+  if not result.ok then failure(result.code or "access_validation_failed"); return end
+  success({ code = result.code, node = result.node })
+end
+
 local function core_event(runtime_instance, message, value)
   if type(runtime_instance) ~= "table" or type(value) ~= "table" then return end
   local code = type(value.code) == "string" and value.code or "internal_error"
@@ -403,7 +447,7 @@ local function core_result(runtime_instance, value, message)
 end
 
 function action_core_status()
-  local _, runtime_instance, core_instance = new_backend()
+  local adapters, runtime_instance, core_instance = new_backend()
   if not core_instance then failure("core_runtime_unavailable"); return end
   local recovered_ok, recovered = pcall(core_instance.recover_pending, core_instance)
   if recovered_ok and type(recovered) == "table" then core_event(runtime_instance, "core recovery", recovered) end
@@ -422,6 +466,7 @@ function action_core_status()
     return
   end
   if not status.ok then core_failure_response(status.code or "core_recovery_required", status); return end
+  status.resources = routing.asset_status(adapters.fs)
   success(status)
 end
 

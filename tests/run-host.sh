@@ -16,6 +16,7 @@ node tests/test_task9_ui.js
 node tests/test_log_ui.js
 node tests/test_status.js
 node tests/test_core_ui.js
+node tests/test_access_ui.js
 sh tests/test_check_package.sh
 
 po2lmo="${XC_PO2LMO:-}"

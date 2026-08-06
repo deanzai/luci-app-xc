@@ -8,6 +8,7 @@ local UPLOAD_PATTERN = "^/var/etc/xc/%.core%-upload%-[0-9A-Za-z_-]+$"
 local CONFIG_PATH = "/var/etc/xc/config.json"
 local LOCK_PATH = "/var/lock/xc.lock"
 local MAX_HEADER = 64
+local MAX_SUPPORTED_VERSION = "26.6.27"
 
 local ELF_MACHINES = {
   [3] = { arch = "i386", class = 1 },
@@ -71,6 +72,17 @@ end
 local function parse_version(output)
   if type(output) ~= "string" or #output > 2048 then return nil end
   return output:match("[Xx]ray%s+([0-9][0-9a-zA-Z%.%-]*)")
+end
+
+local function supported_version(version)
+  local current, maximum = {}, {}
+  for value in version:gmatch("%d+") do current[#current + 1] = tonumber(value) end
+  for value in MAX_SUPPORTED_VERSION:gmatch("%d+") do maximum[#maximum + 1] = tonumber(value) end
+  for index = 1, math.max(#current, #maximum) do
+    local left, right = current[index] or 0, maximum[index] or 0
+    if left ~= right then return left < right end
+  end
+  return true
 end
 
 local function read_marker(fs, name)
@@ -151,6 +163,9 @@ function Manager:validate(path)
   if type(self.fs.chmod) == "function" and self.fs.chmod(path, 700) ~= true then return result(false, "core_invalid_upload") end
   local version = parse_version(self.exec.xray_version(path, self.now() + 5))
   if not version or not version:match("^[0-9][0-9a-zA-Z%.%-]*$") then return result(false, "core_version_invalid") end
+  if not supported_version(version) then
+    return result(false, "core_version_too_new", { version = version:lower(), supported = MAX_SUPPORTED_VERSION })
+  end
   local id = core.version_id(version:lower(), binary_arch, actual_hash)
   if not id then return result(false, "core_version_invalid") end
 
@@ -445,9 +460,11 @@ function Manager:status()
     end
   end
   local healthy = current_state ~= "invalid_marker" and previous_state ~= "invalid_marker" and current_valid and previous_valid
+  local manual_upgrade = type(current_info.version) == "string" and not supported_version(current_info.version)
   return result(healthy, healthy and "core_status" or "core_recovery_required", {
     current = current, current_info = current_info, previous = previous, versions = versions,
-    status = service, recovery_required = not healthy
+    status = service, recovery_required = not healthy, manual_upgrade = manual_upgrade,
+    supported_version = MAX_SUPPORTED_VERSION
   })
 end
 
@@ -468,5 +485,7 @@ end
 M.elf_arch = elf_arch
 M.normalize_machine = normalize_machine
 M.parse_version = parse_version
+M.MAX_SUPPORTED_VERSION = MAX_SUPPORTED_VERSION
+M.supported_version = supported_version
 
 return M

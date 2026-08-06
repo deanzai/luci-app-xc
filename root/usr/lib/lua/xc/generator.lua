@@ -1,5 +1,6 @@
 local schema = require "xc.schema"
 local routing = require "xc.routing"
+local access = require "xc.access"
 
 local M = {}
 local RAW_FRAGMENT = {}
@@ -445,10 +446,13 @@ local function validate_global(global)
   local socks_port = port_number(global.socks_port)
   local http_port = port_number(global.http_port)
   if not socks_port or not http_port or socks_port == http_port then return nil, "invalid global ports" end
+  local access_value, access_error = access.normalize(global)
+  if not access_value then return nil, access_error end
   return {
     loglevel = xray_log_level,
     socks_port = socks_port,
-    http_port = http_port
+    http_port = http_port,
+    access = access_value
   }
 end
 
@@ -531,10 +535,10 @@ function M.build(global, node)
     },
     routing = {
       domainStrategy = "IPIfNonMatch",
-      rules = routing.build(global)
+      rules = routing.build(global, nil, validated.access)
     }
   }
-  config.dns = routing.dns(global)
+  config.dns = routing.dns(global, validated.access)
   return config
 end
 
@@ -590,13 +594,13 @@ function M.build_dynamic(global, nodes)
   config.outbounds[outbound_count] = { tag = "block", protocol = "blackhole", settings = { response = { type = "none" } } }
   outbound_count = outbound_count + 1
   config.outbounds[outbound_count] = { tag = "xc-api", protocol = "freedom" }
-  local routing_rules = routing.build(global, { balancerTag = "xc-balancer" })
+  local routing_rules = routing.build(global, { balancerTag = "xc-balancer" }, validated.access)
   local routing_rule_count = 1
   for _, rule in ipairs(routing_rules) do
     routing_rule_count = routing_rule_count + 1
     config.routing.rules[routing_rule_count] = rule
   end
-  config.dns = routing.dns(global)
+  config.dns = routing.dns(global, validated.access)
   return config
 end
 

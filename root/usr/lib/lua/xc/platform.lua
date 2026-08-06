@@ -383,6 +383,10 @@ function M.new(injected)
       if not mutation(cursor.delete, "xc", "global", "active_node") then return revert_failure() end
       return true
     end,
+    stage_global = function(values)
+      if type(values) ~= "table" then return false end
+      return set_values("global", values)
+    end,
     commit = function()
       local pre_called, pre_secured = pcall(nfs.chmod, "/etc/config/xc", 600)
       if not pre_called or pre_secured ~= true then return false, "pre_commit_failed" end

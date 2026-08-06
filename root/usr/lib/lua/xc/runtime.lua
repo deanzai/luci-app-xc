@@ -2,6 +2,7 @@ local generator = require "xc.generator"
 local schema = require "xc.schema"
 local core = require "xc.core"
 local routing = require "xc.routing"
+local access = require "xc.access"
 
 local M = {}
 local Runtime = {}
@@ -21,7 +22,9 @@ local UNSET_ACTIVE_MARKER = "!xc-active-unset!"
 local LOG_PATH = "/var/log/xc.log"
 local LOG_LOCK_PATH = "/var/lock/xc-log.lock"
 local EXIT_IP_CACHE_PATH = "/var/etc/xc/exit-ip-cache"
+local FAST_SELECTION_PATH = "/etc/xc/rollback/fast-selection"
 local EXIT_IP_CACHE_TTL = 60
+local ACCESS_MARKER_MAX = 262144
 local DYNAMIC_API_PORT = 10085
 local DYNAMIC_API_TAG = "xc-api"
 local DYNAMIC_BALANCER_TAG = "xc-balancer"
@@ -81,7 +84,7 @@ local function parse_transaction(value)
   local numbers = {}
   for _, index in ipairs({ 8, 10, 12, 14 }) do
     numbers[index] = tonumber(fields[index])
-    local maximum = (index == 8 or index == 12) and 1048576 or 256
+    local maximum = (index == 8 or index == 12) and 1048576 or ACCESS_MARKER_MAX
     if not numbers[index] or numbers[index] < 0 or numbers[index] > maximum then return nil end
   end
   return {
@@ -103,6 +106,13 @@ local function transaction_text(context, phase)
     context.prior_generation or "-", ""
   }, "\n")
 end
+
+local ACCESS_KEYS = {
+  "access_dns_remote", "access_dns_cn", "access_dns_fallback",
+  "access_direct_domains", "access_proxy_domains", "access_direct_ips", "access_proxy_ips"
+}
+local ACCESS_KEY_SET = {}
+for _, key in ipairs(ACCESS_KEYS) do ACCESS_KEY_SET[key] = true end
 
 local messages = {
   rendered = "configuration rendered",
@@ -140,7 +150,13 @@ local messages = {
   internal_error = "runtime operation failed",
   recovery_failed = "runtime recovery failed",
   recovered = "pending runtime transaction recovered",
-  logged = "log entry appended"
+  logged = "log entry appended",
+  access_applied = "access control applied",
+  access_rule_invalid = "access control rule is invalid",
+  access_rule_conflict = "access control rules conflict",
+  access_rule_too_long = "access control rule is too long",
+  access_rule_too_many = "too many access control rules",
+  access_dns_invalid = "access control DNS is invalid"
 }
 messages.status = "runtime status"
 
@@ -214,14 +230,28 @@ function Runtime:_xray_test_environment()
   return { XRAY_LOCATION_ASSET = directory }
 end
 
-local function active_marker(active)
+local function active_marker(active, access_text)
+  local marker
   if active == nil then return UNSET_ACTIVE_MARKER end
   if not schema.safe_section_id(active) then error("invalid active node", 0) end
-  return active
+  marker = active
+  if access_text ~= nil then marker = marker .. "\nxc-access-v1\n" .. access_text end
+  return marker
 end
 
-local function decode_active_marker(marker)
+local function decode_active_marker(marker, parse_json)
   if marker == UNSET_ACTIVE_MARKER then return nil, true end
+  local active, access_text
+  if type(marker) == "string" then active, access_text = marker:match("^([^\n]+)\nxc%-access%-v1\n(.+)$") end
+  if active then
+    if not schema.safe_section_id(active) or type(parse_json) ~= "function" then return nil, false end
+    local called, access_value = pcall(parse_json, access_text)
+    if not called or type(access_value) ~= "table" or #access_text > ACCESS_MARKER_MAX then return nil, false end
+    for key, value in pairs(access_value) do
+      if not ACCESS_KEY_SET[key] or type(value) ~= "string" or #value > 65536 then return nil, false end
+    end
+    return active, true, access_value
+  end
   if type(marker) == "string" and schema.safe_section_id(marker) then return marker, true end
   return nil, false
 end
@@ -230,6 +260,34 @@ local function shallow_copy(value)
   local output = {}
   for key, item in pairs(value or {}) do output[key] = item end
   return output
+end
+
+local function marker_for_global(runtime, global, active, force_access)
+  local has_access = force_access == true
+  if not has_access then
+    for _, key in ipairs(ACCESS_KEYS) do
+      if global[key] ~= nil then has_access = true; break end
+    end
+  end
+  if not has_access then return active_marker(active) end
+  local normalized = access.normalize(global)
+  if not normalized then error("invalid access configuration", 0) end
+  local snapshot = access.uci(normalized)
+  local called, encoded = pcall(runtime.json.stringify, snapshot)
+  if not called or type(encoded) ~= "string" or #encoded > ACCESS_MARKER_MAX then error("access marker encoding failed", 0) end
+  return active_marker(active, encoded)
+end
+
+local function fast_selection_text(context)
+  return table.concat({ "xc-fast-selection-v1", context.old_node, context.target_node, context.old_tag, context.target_tag, "" }, "\n")
+end
+
+local function parse_fast_selection(value)
+  if type(value) ~= "string" or #value > 512 then return nil end
+  local version, old_node, target_node, old_tag, target_tag = value:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)\n$")
+  if version ~= "xc-fast-selection-v1" or not schema.safe_section_id(old_node) or not schema.safe_section_id(target_node)
+    or not old_tag:match("^xc%-node%-[0-9A-Za-z_-]+$") or not target_tag:match("^xc%-node%-[0-9A-Za-z_-]+$") then return nil end
+  return { old_node = old_node, target_node = target_node, old_tag = old_tag, target_tag = target_tag }
 end
 
 local function valid_output_path(path)
@@ -292,14 +350,14 @@ end
 function Runtime:_read_generation(transaction)
   local config_path, active_path = generation_paths(transaction.generation)
   local config = self:_read_optional(config_path, 1048576)
-  local marker = self:_read_optional(active_path, 256)
+  local marker = self:_read_optional(active_path, ACCESS_MARKER_MAX)
   if type(config) ~= "string" or type(marker) ~= "string"
     or #config ~= transaction.old_size or checksum(config) ~= transaction.old_hash
     or #marker ~= transaction.old_active_size or checksum(marker) ~= transaction.old_active_hash then return nil end
   if transaction.old_present == false and config ~= "" then return nil end
-  local active, valid = decode_active_marker(marker)
+  local active, valid, access_value = decode_active_marker(marker, self.json.parse)
   if not valid then return nil end
-  return { config = transaction.old_present and config or nil, marker = marker, active = active }
+  return { config = transaction.old_present and config or nil, marker = marker, active = active, access = access_value }
 end
 
 function Runtime:_read_optional(path, maximum)
@@ -431,28 +489,31 @@ end
 
 function Runtime:_dynamic_runtime()
   local read_called, text = pcall(self._read_optional, self, RUNTIME_PATH, 1048576)
-  if not read_called or type(text) ~= "string" then return nil end
+  if not read_called then return nil, "invalid" end
+  if text == nil then return nil end
   local parse_called, config = pcall(self.json.parse, text)
-  if not parse_called or type(config) ~= "table" then return nil end
+  if not parse_called or type(config) ~= "table" then return nil, "invalid" end
+  if type(config.api) ~= "table" then return nil end
+  local function invalid() return nil, "invalid" end
 
-  if type(config.api) ~= "table" or config.api.tag ~= DYNAMIC_API_TAG then return nil end
+  if config.api.tag ~= DYNAMIC_API_TAG then return invalid() end
   local services = array_values(config.api.services)
-  if not services or #services ~= 1 or services[1] ~= "RoutingService" then return nil end
+  if not services or #services ~= 1 or services[1] ~= "RoutingService" then return invalid() end
 
   local inbounds = array_values(config.inbounds)
-  if not inbounds then return nil end
+  if not inbounds then return invalid() end
   local api_inbound
   for _, inbound in ipairs(inbounds) do
     if type(inbound) == "table" and inbound.tag == DYNAMIC_API_TAG then
       if api_inbound ~= nil or inbound.listen ~= "127.0.0.1" or inbound.port ~= DYNAMIC_API_PORT
-        or inbound.protocol ~= "dokodemo-door" then return nil end
+        or inbound.protocol ~= "dokodemo-door" then return invalid() end
       api_inbound = inbound
     end
   end
-  if not api_inbound then return nil end
+  if not api_inbound then return invalid() end
 
   local rules = array_values(type(config.routing) == "table" and config.routing.rules or nil)
-  if not rules then return nil end
+  if not rules then return invalid() end
   local api_route, balancer_route = false, false
   for _, rule in ipairs(rules) do
     if type(rule) == "table" and type(rule.inboundTag) == "table"
@@ -461,41 +522,41 @@ function Runtime:_dynamic_runtime()
     end
     if type(rule) == "table" and rule.balancerTag == DYNAMIC_BALANCER_TAG then balancer_route = true end
   end
-  if not api_route or not balancer_route then return nil end
+  if not api_route or not balancer_route then return invalid() end
 
   local balancers = array_values(type(config.routing) == "table" and config.routing.balancers or nil)
-  if not balancers then return nil end
+  if not balancers then return invalid() end
   local balancer
   for _, value in ipairs(balancers) do
     if type(value) == "table" and value.tag == DYNAMIC_BALANCER_TAG then
-      if balancer ~= nil then return nil end
+      if balancer ~= nil then return invalid() end
       balancer = value
     end
   end
-  if not balancer then return nil end
+  if not balancer then return invalid() end
   local selector = array_values(balancer.selector)
-  if not selector or #selector == 0 then return nil end
+  if not selector or #selector == 0 then return invalid() end
   local selected = {}
   for _, tag in ipairs(selector) do
     local section_id = type(tag) == "string" and tag:match("^xc%-node%-(.+)$") or nil
-    if not section_id or #tag > 64 or not schema.safe_section_id(section_id) or selected[tag] then return nil end
+    if not section_id or #tag > 64 or not schema.safe_section_id(section_id) or selected[tag] then return invalid() end
     selected[tag] = true
   end
 
   local outbounds = array_values(config.outbounds)
-  if not outbounds then return nil end
+  if not outbounds then return invalid() end
   local outbound_tags = {}
   local node_outbounds = {}
   for _, outbound in ipairs(outbounds) do
-    if type(outbound) ~= "table" or type(outbound.tag) ~= "string" or outbound_tags[outbound.tag] then return nil end
+    if type(outbound) ~= "table" or type(outbound.tag) ~= "string" or outbound_tags[outbound.tag] then return invalid() end
     outbound_tags[outbound.tag] = true
     if outbound.tag:match("^xc%-node%-") then
-      if #outbound.tag > 64 or not schema.safe_section_id(outbound.tag:sub(9)) or not selected[outbound.tag] then return nil end
+      if #outbound.tag > 64 or not schema.safe_section_id(outbound.tag:sub(9)) or not selected[outbound.tag] then return invalid() end
       node_outbounds[outbound.tag] = true
     end
   end
-  for tag in pairs(selected) do if not node_outbounds[tag] then return nil end end
-  if not outbound_tags.direct or not outbound_tags.block or not outbound_tags[DYNAMIC_API_TAG] then return nil end
+  for tag in pairs(selected) do if not node_outbounds[tag] then return invalid() end end
+  if not outbound_tags.direct or not outbound_tags.block or not outbound_tags[DYNAMIC_API_TAG] then return invalid() end
 
   return { selector = selected, tags = outbound_tags }
 end
@@ -534,7 +595,7 @@ function Runtime:_fast_context(section_id)
   if not old_tag or not dynamic.selector[old_tag] then return nil, result(false, "fast_switch_target_invalid") end
   return {
     global = global, dynamic = dynamic, xray_path = xray_path,
-    target_tag = target_tag, target_node = section_id, old_tag = old_tag
+    target_tag = target_tag, target_node = section_id, old_tag = old_tag, old_node = old_id
   }
 end
 
@@ -577,6 +638,11 @@ function Runtime:_fast_switch_locked(section_id)
     stage_event("fast node switch API precondition failed", "api_precondition", "fast_switch_unavailable", "active_tag_changed", LOG_LEVEL_ERROR)
     return result(false, "fast_switch_unavailable", { selection_state = "unknown", recovery_required = true })
   end
+  local marker_ok = pcall(self._atomic_write, self, FAST_SELECTION_PATH, fast_selection_text(context))
+  if not marker_ok then
+    stage_event("fast node switch marker write failed", "journal", "fast_switch_recovery_required", "marker_write_failed", LOG_LEVEL_ERROR)
+    return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+  end
   if not call_api(self.exec.xray_api_override, context.xray_path, DYNAMIC_BALANCER_TAG, context.target_tag) then
     stage_event("fast node switch API apply failed", "api_apply", "fast_switch_api_failed", "override_rejected", LOG_LEVEL_ERROR)
     local restored = self:_restore_fast_tag(context)
@@ -585,6 +651,7 @@ function Runtime:_fast_switch_locked(section_id)
       stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
       return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
     end
+    self:_checked_remove(FAST_SELECTION_PATH)
     self.selection_state = "consistent"
     return result(false, "fast_switch_api_failed")
   end
@@ -597,6 +664,7 @@ function Runtime:_fast_switch_locked(section_id)
       stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
       return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
     end
+    self:_checked_remove(FAST_SELECTION_PATH)
     self.selection_state = "consistent"
     return result(false, "fast_switch_api_failed", { selection_state = "old", recovery_required = false })
   end
@@ -608,6 +676,7 @@ function Runtime:_fast_switch_locked(section_id)
       stage_event("fast node switch recovery failed", "recovery", "fast_switch_recovery_required", "old_tag_restore_failed", LOG_LEVEL_ERROR)
       return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
     end
+    self:_checked_remove(FAST_SELECTION_PATH)
     self.selection_state = "consistent"
     return result(false, "fast_switch_not_applied", { selection_state = "old", recovery_required = false })
   end
@@ -628,6 +697,7 @@ function Runtime:_fast_switch_locked(section_id)
       return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
     end
     if commit_outcome == "pre_commit_failed" then
+      self:_checked_remove(FAST_SELECTION_PATH)
       self.selection_state = "consistent"
       return result(false, "fast_switch_commit_failed", { selection_state = "old", recovery_required = false })
     end
@@ -638,6 +708,10 @@ function Runtime:_fast_switch_locked(section_id)
   self.selection_mode = "dynamic"
   self.selection_state = "consistent"
   self.runtime_active_node = context.target_node
+  if not self:_checked_remove(FAST_SELECTION_PATH) then
+    self.selection_state = "recovery_required"
+    return result(false, "fast_switch_recovery_required", { node = context.target_node, selection_state = "unknown", recovery_required = true })
+  end
   stage_event("fast node switch active node committed", "active_commit", nil, "selection_committed")
   return result(true, "fast_switched", { node = context.target_node, selection_state = "selected", recovery_required = false })
 end
@@ -653,6 +727,32 @@ function Runtime:_restore_selection_locked()
   end
   local context, error_value = self:_fast_context(global.active_node)
   if error_value then return error_value end
+  local pending = parse_fast_selection(self:_read_optional(FAST_SELECTION_PATH, 512))
+  if self.fs.exists(FAST_SELECTION_PATH) and not pending then
+    self.selection_state = "recovery_required"
+    return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+  end
+  if pending then
+    local read_called, current_tag = pcall(self.exec.xray_api_balancer, context.xray_path, DYNAMIC_BALANCER_TAG)
+    if not read_called then
+      self.selection_state = "recovery_required"
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
+    if global.active_node == pending.target_node and current_tag == pending.target_tag then
+      if not self:_checked_remove(FAST_SELECTION_PATH) then
+        self.selection_state = "recovery_required"
+        return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+      end
+      self.selection_mode = "dynamic"
+      self.selection_state = "consistent"
+      self.runtime_active_node = global.active_node
+      return result(true, "selection_restored", { node = global.active_node, selection_state = "selected", recovery_required = false })
+    end
+    if global.active_node ~= pending.old_node or current_tag ~= pending.old_tag then
+      self.selection_state = "recovery_required"
+      return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+    end
+  end
   local deadline = self.now() + SELECTION_API_TIMEOUT
   for attempt = 1, SELECTION_API_ATTEMPTS do
     if call_api(self.exec.xray_api_override, context.xray_path, DYNAMIC_BALANCER_TAG, context.target_tag) then
@@ -661,6 +761,10 @@ function Runtime:_restore_selection_locked()
         self.selection_mode = "dynamic"
         self.selection_state = "consistent"
         self.runtime_active_node = global.active_node
+        if not self:_checked_remove(FAST_SELECTION_PATH) then
+          self.selection_state = "recovery_required"
+          return result(false, "fast_switch_recovery_required", { selection_state = "unknown", recovery_required = true })
+        end
         return result(true, "selection_restored", { node = global.active_node, selection_state = "selected", recovery_required = false })
       end
     end
@@ -693,6 +797,7 @@ function Runtime:_record_completion(operation, value, requested_node)
     render = { message = "configuration render completed", success_level = LOG_LEVEL_DEBUG },
     render_dynamic = { message = "dynamic configuration rendered", success_level = LOG_LEVEL_DEBUG },
     switch = { message = "node switch completed", success_level = LOG_LEVEL_INFO },
+    apply_access = { message = "access control apply completed", success_level = LOG_LEVEL_INFO },
     fast_switch = { message = "fast node switch completed", success_level = LOG_LEVEL_INFO },
     restore_selection = { message = "node selection restored", success_level = LOG_LEVEL_INFO },
     rollback = { message = "rollback completed", success_level = LOG_LEVEL_INFO },
@@ -828,6 +933,27 @@ function Runtime:_apply_active(active)
   return false, "commit_unknown"
 end
 
+function Runtime:_apply_global(values)
+  if type(self.uci.stage_global) ~= "function" or type(values) ~= "table" then
+    return false, "pre_commit_failed"
+  end
+  local staged_call, staged = pcall(self.uci.stage_global, values)
+  if not staged_call or not action_ok(staged) then
+    pcall(self.uci.revert)
+    return false, "pre_commit_failed"
+  end
+  local commit_call, committed, outcome = pcall(self.uci.commit)
+  if not commit_call then return false, "commit_unknown" end
+  if committed == true and (outcome == "committed" or outcome == "committed_hardening_failed") then
+    return true, outcome
+  end
+  if committed == false and outcome == "pre_commit_failed" then
+    pcall(self.uci.revert)
+    return false, outcome
+  end
+  return false, "commit_unknown"
+end
+
 function Runtime:_readiness(global)
   local address = self.network()
   local socks_port, http_port = global.socks_port, global.http_port
@@ -889,6 +1015,7 @@ function Runtime:_restore_transaction(transaction, old)
       if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then error("old runtime validation failed", 0) end
       self:_atomic_write(RUNTIME_PATH, old.config)
     elseif not self:_checked_remove(RUNTIME_PATH) then error("runtime removal failed", 0) end
+    if old.access and not self:_apply_global(old.access) then error("access recovery failed", 0) end
     if not self:_apply_active(old.active) then error("active recovery failed", 0) end
     if transaction.old_service == "running" and old.config ~= nil then
       if not action_ok(self.exec.restart()) then error("restart recovery failed", 0) end
@@ -951,7 +1078,7 @@ function Runtime:_validate_live(transaction)
   if type(config) ~= "string" or #config ~= transaction.new_size or checksum(config) ~= transaction.new_hash then return false end
   local global = self.uci.get_global()
   if type(global) ~= "table" then return false end
-  local marker_ok, marker = pcall(active_marker, global.active_node)
+  local marker_ok, marker = pcall(marker_for_global, self, global, global.active_node)
   if not marker_ok or #marker ~= transaction.new_active_size or checksum(marker) ~= transaction.new_active_hash then return false end
   local argv = self:_xray_test_argv(RUNTIME_PATH)
   if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) or not action_ok(self.exec.restart()) or self:_readiness(global) then return false end
@@ -1065,10 +1192,12 @@ local function valid_observed_ip(value)
   return units == 8
 end
 
-local function parse_exit_ip_cache(value, active, wall_now)
-  if type(value) ~= "string" or type(active) ~= "string" or type(wall_now) ~= "number" then return nil end
-  local node, observed_text, ip = value:match("^node=([^\n]+)\nobserved_at=([^\n]+)\nip=([^\n]+)\n$")
-  if not node or node ~= active or not schema.safe_section_id(node) or not observed_text:match("^%d+$") then return nil end
+local function parse_exit_ip_cache(value, active, wall_now, config_generation)
+  if type(value) ~= "string" or type(active) ~= "string" or type(wall_now) ~= "number"
+    or type(config_generation) ~= "string" then return nil end
+  local node, cached_generation, observed_text, ip = value:match("^node=([^\n]+)\nconfig=([^\n]+)\nobserved_at=([^\n]+)\nip=([^\n]+)\n$")
+  if not node or node ~= active or cached_generation ~= config_generation or not schema.safe_section_id(node)
+    or not cached_generation:match("^%x%x%x%x%x%x%x%x$") or not observed_text:match("^%d+$") then return nil end
   local observed_at = tonumber(observed_text)
   if not observed_at or observed_at < 0 or observed_at ~= math.floor(observed_at) or tostring(observed_at) ~= observed_text then return nil end
   local age = wall_now - observed_at
@@ -1096,23 +1225,24 @@ function Runtime:_with_exit_context(section_id, fn)
   return called and context_ok and released and action_ok(release_value)
 end
 
-function Runtime:_cached_exit_ip(section_id, wall_now)
+function Runtime:_cached_exit_ip(section_id, wall_now, config_generation)
   local read_ok, value = pcall(self.fs.read, EXIT_IP_CACHE_PATH, 512)
   if not read_ok then return nil end
-  return parse_exit_ip_cache(value, section_id, wall_now)
+  return parse_exit_ip_cache(value, section_id, wall_now, config_generation)
 end
 
-function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior)
+function Runtime:_prepare_transaction(kind, old_config, old_active, new_config, new_active, target, prior, old_marker, new_marker)
   local generation = self.fs.allocate_generation("/etc/xc/rollback")
   if not valid_token(generation) then error("generation allocation failed", 0) end
   if generation == target or generation == prior then error("generation collision", 0) end
   local config_path, active_path = generation_paths(generation)
-  local marker = active_marker(old_active)
+  local marker = old_marker or active_marker(old_active)
+  local next_marker = new_marker or active_marker(new_active)
   self:_atomic_write(config_path, old_config or "")
   self:_atomic_write(active_path, marker)
   return {
     generation = generation, kind = kind, target_generation = target, old_config = old_config,
-    old_marker = marker, new_config = new_config, new_marker = active_marker(new_active),
+    old_marker = marker, new_config = new_config, new_marker = next_marker,
     old_service = self:_service_state(), prior_generation = prior
   }
 end
@@ -1156,7 +1286,8 @@ function Runtime:_switch_locked(section_id)
     old_config = self:_read_optional(RUNTIME_PATH, 1048576)
     local prior_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
     local prior = parse_manifest(prior_text)
-    context = self:_prepare_transaction("switch", old_config, global.active_node, encoded, node_id, nil, prior and prior.generation)
+    context = self:_prepare_transaction("switch", old_config, global.active_node, encoded, node_id, nil, prior and prior.generation,
+      marker_for_global(self, global, global.active_node), marker_for_global(self, global, node_id))
   end, function() return false end)
   if not prepared then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
@@ -1189,6 +1320,78 @@ function Runtime:_switch_locked(section_id)
   return value
 end
 
+function Runtime:_apply_access_locked(values)
+  local normalized, normalize_error = access.normalize(values)
+  if not normalized then return result(false, normalize_error or "access_invalid") end
+  if type(self.uci.stage_global) ~= "function" then return result(false, "internal_error") end
+
+  local global = self.uci.get_global()
+  if type(global) ~= "table" then return result(false, "internal_error") end
+  if global.active_node == nil or global.active_node == "" then return result(false, "active_node_required") end
+  local generation_global, node, load_error = self:_load(global.active_node)
+  if load_error then return load_error end
+  if type(generation_global) ~= "table" or type(node) ~= "table" then return result(false, "generation_failed") end
+  local staged_values = access.uci(normalized)
+  if type(staged_values) ~= "table" then return result(false, "access_invalid") end
+  for key, value in pairs(staged_values) do generation_global[key] = value end
+
+  local config = generator.build(generation_global, node)
+  if type(config) ~= "table" then return result(false, "generation_failed") end
+  local encoded = generator.encode(config, self.json)
+  if type(encoded) ~= "string" then return result(false, "encoding_failed") end
+  self:_atomic_write(CANDIDATE_PATH, encoded)
+  local argv = self:_xray_test_argv(CANDIDATE_PATH)
+  if not argv or not action_ok(self.exec.run(argv, self.now() + VALIDATION_TIMEOUT, self:_xray_test_environment())) then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "internal_error") end
+    return result(false, "validation_failed")
+  end
+
+  local old_config, context
+  local prepared = xpcall(function()
+    old_config = self:_read_optional(RUNTIME_PATH, 1048576)
+    local prior_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
+    local prior = parse_manifest(prior_text)
+    local new_global = shallow_copy(generation_global)
+    for key, value in pairs(staged_values) do new_global[key] = value end
+    context = self:_prepare_transaction("switch", old_config, global.active_node, encoded, node.id, nil, prior and prior.generation,
+      marker_for_global(self, global, global.active_node, true), marker_for_global(self, new_global, node.id, true))
+  end, function() return false end)
+  if not prepared then
+    if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
+    return result(false, "internal_error")
+  end
+
+  self:_write_transaction(context, "install_intent")
+  local ok, value = xpcall(function()
+    self:_install_candidate(context)
+    if not action_ok(self.exec.restart()) then return self:_abort_transaction(context, "restart_failed") end
+    local readiness_error, real_connection = self:_readiness(generation_global)
+    if readiness_error then return self:_abort_transaction(context, readiness_error) end
+    self:_write_transaction(context, "candidate_healthy")
+    local committed, commit_outcome = self:_apply_global(staged_values)
+    if not committed then
+      if commit_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
+      self:_safe_stop()
+      return result(false, "commit_unknown")
+    end
+    self:_write_transaction(context, "uci_committed")
+    local transaction = assert(parse_transaction(self:_read_optional(TRANSACTION_PATH, 1024)))
+    transaction._text = self:_read_optional(TRANSACTION_PATH, 1024)
+    local old = assert(self:_read_generation(transaction))
+    if not self:_complete_switch(transaction, old) then return result(false, "recovery_failed") end
+    return result(true, "access_applied", { node = node.id, commit_outcome = commit_outcome, real_connection = real_connection })
+  end, function() return result(false, "internal_error") end)
+  if not ok or (not value.ok and value.code ~= "commit_unknown" and self.fs.exists(TRANSACTION_PATH)) then
+    local recovered = self:_recover_pending_locked()
+    if not recovered.ok then return result(false, "recovery_failed") end
+  end
+  return value
+end
+
+function Runtime:apply_access(values)
+  return self:_with_lock("apply_access", function() return self:_apply_access_locked(values) end)
+end
+
 function Runtime:switch(section_id)
   return self:_with_lock("switch", function() return self:_switch_locked(section_id) end, section_id)
 end
@@ -1197,12 +1400,12 @@ function Runtime:_rollback_locked()
   local manifest_text = self:_read_optional(ROLLBACK_MANIFEST_PATH, 1024)
   if manifest_text == nil then return result(false, "no_rollback_state") end
   local manifest = parse_manifest(manifest_text)
-  if not manifest or manifest.config_size > 1048576 or manifest.active_size > 256 then return result(false, "no_rollback_state") end
+  if not manifest or manifest.config_size > 1048576 or manifest.active_size > ACCESS_MARKER_MAX then return result(false, "no_rollback_state") end
   local config_path, active_path = generation_paths(manifest.generation)
-  local config, marker = self:_read_optional(config_path, 1048576), self:_read_optional(active_path, 256)
+  local config, marker = self:_read_optional(config_path, 1048576), self:_read_optional(active_path, ACCESS_MARKER_MAX)
   if type(config) ~= "string" or type(marker) ~= "string" or #config ~= manifest.config_size or checksum(config) ~= manifest.config_hash
     or #marker ~= manifest.active_size or checksum(marker) ~= manifest.active_hash then return result(false, "no_rollback_state") end
-  local node_id, marker_ok = decode_active_marker(marker)
+  local node_id, marker_ok, target_access = decode_active_marker(marker, self.json.parse)
   if not marker_ok then return result(false, "no_rollback_state") end
   self:_atomic_write(CANDIDATE_PATH, config)
   local argv = self:_xray_test_argv(CANDIDATE_PATH)
@@ -1215,7 +1418,8 @@ function Runtime:_rollback_locked()
     global = self.uci.get_global()
     if type(global) ~= "table" then error("invalid UCI state", 0) end
     old_config = self:_read_optional(RUNTIME_PATH, 1048576)
-    context = self:_prepare_transaction("rollback", old_config, global.active_node, config, node_id, manifest.generation, manifest.generation)
+    context = self:_prepare_transaction("rollback", old_config, global.active_node, config, node_id, manifest.generation, manifest.generation,
+      marker_for_global(self, global, global.active_node), marker)
   end, function() return false end)
   if not prepared then
     if not self:_checked_remove(CANDIDATE_PATH) then return result(false, "recovery_failed") end
@@ -1228,6 +1432,14 @@ function Runtime:_rollback_locked()
     local readiness_error, real_connection = self:_readiness(global)
     if readiness_error then return self:_abort_transaction(context, readiness_error) end
     self:_write_transaction(context, "candidate_healthy")
+    if target_access then
+      local access_committed, access_outcome = self:_apply_global(target_access)
+      if not access_committed then
+        if access_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
+        self:_safe_stop()
+        return result(false, "commit_unknown")
+      end
+    end
     local committed, commit_outcome = self:_apply_active(node_id)
     if not committed then
       if commit_outcome == "pre_commit_failed" then return self:_abort_transaction(context, "commit_failed") end
@@ -1279,11 +1491,15 @@ function Runtime:status()
     elseif lock_state == "unlocked" and shared_operation ~= "idle" then
       shared_operation = "idle"
     end
-    local dynamic_config = self:_dynamic_runtime()
-    local dynamic_mode = dynamic_config ~= nil or shared_selection_mode == "dynamic"
+    local dynamic_config, dynamic_invalid = self:_dynamic_runtime()
+    local dynamic_mode = dynamic_config ~= nil or shared_selection_mode == "dynamic" or dynamic_invalid == "invalid"
     local runtime_active = self.runtime_active_node or shared_runtime_active or safe_active
     local selection_state = self.selection_state or shared_selection_state
       or (safe_active and (dynamic_mode and "unknown" or "consistent") or (active_state == "invalid" and "invalid" or "unset"))
+    if dynamic_invalid == "invalid" then
+      selection_state = "recovery_required"
+      recovery_required = true
+    end
     if dynamic_mode and service == "running" and dynamic_config and type(self.exec.xray_api_balancer) == "function" then
       local xray_path = selected_xray(self)
       local read_called, current_tag = false, nil
@@ -1309,9 +1525,11 @@ function Runtime:status()
     local can_observe = service == "running" and listeners.socks and safe_active and lock_state == "unlocked"
       and not pending and shared_operation == "idle" and type(self.exec.observe_exit_ip) == "function"
       and type(global.health_url) == "string" and (not dynamic_mode or selection_state == "consistent")
+    local runtime_text = self:_read_optional(RUNTIME_PATH, 1048576)
+    local config_generation = checksum(runtime_text or "")
     if can_observe then
       local wall_now = self.wall_time()
-      local cached = self:_cached_exit_ip(safe_active, wall_now)
+      local cached = self:_cached_exit_ip(safe_active, wall_now, config_generation)
       if cached then
         if not self:_with_exit_context(safe_active, function() exit_ip = cached end) then exit_ip = nil end
       elseif not cached then
@@ -1324,7 +1542,8 @@ function Runtime:status()
               exit_ip = observed_value
               local observed_at = self.wall_time()
               if type(observed_at) == "number" and observed_at >= 0 and observed_at == math.floor(observed_at) then
-                pcall(self._atomic_write, self, EXIT_IP_CACHE_PATH, "node=" .. safe_active .. "\nobserved_at=" .. tostring(observed_at) .. "\nip=" .. observed_value .. "\n")
+                pcall(self._atomic_write, self, EXIT_IP_CACHE_PATH, "node=" .. safe_active .. "\nconfig=" .. config_generation
+                  .. "\nobserved_at=" .. tostring(observed_at) .. "\nip=" .. observed_value .. "\n")
               end
             end)
             if not context_ok then exit_ip = nil end
@@ -1494,7 +1713,7 @@ M.paths = {
   rollback_manifest = ROLLBACK_MANIFEST_PATH,
   transaction = TRANSACTION_PATH, status = STATUS_PATH,
   migration_candidate = MIGRATION_CANDIDATE_PATH, migration_marker = MIGRATION_MARKER_PATH,
-  log = LOG_PATH, log_lock = LOG_LOCK_PATH, exit_ip_cache = EXIT_IP_CACHE_PATH
+  log = LOG_PATH, log_lock = LOG_LOCK_PATH, exit_ip_cache = EXIT_IP_CACHE_PATH, fast_selection = FAST_SELECTION_PATH
 }
 M.unset_active_marker = UNSET_ACTIVE_MARKER
 

@@ -12,7 +12,7 @@ t.test("Makefile exists", function()
 end)
 
 t.test("package release is bumped for the replacement IPK", function()
-  t.contains(read_file("Makefile"), "PKG_RELEASE:=19")
+  t.contains(read_file("Makefile"), "PKG_RELEASE:=20")
 end)
 
 t.test("runtime XC directory is not declared as an opkg conffile", function()
@@ -73,6 +73,7 @@ t.test("CI installs required runtimes and runs the complete host verification", 
   t.contains(aggregate, "node tests/test_status.js")
   t.contains(aggregate, "sh tests/test_check_package.sh")
   t.contains(aggregate, "sh scripts/check-package.sh")
+  t.contains(aggregate, "node tests/test_access_ui.js")
 end)
 
 for _, path in ipairs({

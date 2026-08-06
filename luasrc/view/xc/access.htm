@@ -1,0 +1,117 @@
+<%
+local dispatcher = require "luci.dispatcher"
+local util = require "luci.util"
+%>
+<div id="xc-access-page"
+  data-access-status-url="<%=dispatcher.build_url("admin", "services", "xc", "access-status")%>"
+  data-access-apply-url="<%=dispatcher.build_url("admin", "services", "xc", "access-apply")%>"
+  data-access-token="<%=token%>">
+  <div class="cbi-section">
+    <h3><%:Access control%></h3>
+    <p class="cbi-section-descr"><%:Configure DNS and direct or proxy domain/IP rules. The candidate is validated before it becomes active.%></p>
+  </div>
+  <div class="cbi-section">
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-dns-remote"><%:Remote DNS%></label>
+      <div class="cbi-value-field"><input id="xc-access-dns-remote" type="text" class="cbi-input-text" /></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-dns-cn"><%:China DNS%></label>
+      <div class="cbi-value-field"><input id="xc-access-dns-cn" type="text" class="cbi-input-text" /></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-dns-fallback"><%:Fallback DNS%></label>
+      <div class="cbi-value-field"><input id="xc-access-dns-fallback" type="text" class="cbi-input-text" /></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-direct-domains"><%:Direct domains%></label>
+      <div class="cbi-value-field"><textarea id="xc-access-direct-domains" class="cbi-input-text" rows="5" placeholder="example.com"></textarea></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-proxy-domains"><%:Proxy domains%></label>
+      <div class="cbi-value-field"><textarea id="xc-access-proxy-domains" class="cbi-input-text" rows="5" placeholder="openai.com"></textarea></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-direct-ips"><%:Direct IPs%></label>
+      <div class="cbi-value-field"><textarea id="xc-access-direct-ips" class="cbi-input-text" rows="5" placeholder="192.0.2.0/24"></textarea></div>
+    </div>
+    <div class="cbi-value">
+      <label class="cbi-value-title" for="xc-access-proxy-ips"><%:Proxy IPs%></label>
+      <div class="cbi-value-field"><textarea id="xc-access-proxy-ips" class="cbi-input-text" rows="5" placeholder="198.51.100.0/24"></textarea></div>
+    </div>
+    <div class="cbi-page-actions">
+      <input id="xc-access-apply" type="button" class="cbi-button cbi-button-apply" value="<%:Apply access control%>" />
+      <span id="xc-access-result" class="cbi-value-description"></span>
+    </div>
+  </div>
+</div>
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+  "use strict";
+  var page = document.getElementById("xc-access-page");
+  var result = document.getElementById("xc-access-result");
+  var apply = document.getElementById("xc-access-apply");
+  var fields = ["dns-remote", "dns-cn", "dns-fallback", "direct-domains", "proxy-domains", "direct-ips", "proxy-ips"];
+  var statusUrl = page.getAttribute("data-access-status-url");
+  var applyUrl = page.getAttribute("data-access-apply-url") + "?token=" + encodeURIComponent(page.getAttribute("data-access-token") || "");
+  var loadingText = <%=util.serialize_json(translate("Loading access control"))%>;
+  var validationText = <%=util.serialize_json(translate("Validation failed; the current configuration was kept."))%>;
+  var savedText = <%=util.serialize_json(translate("Access control applied."))%>;
+  var failedText = <%=util.serialize_json(translate("Access control could not be applied."))%>;
+
+  function element(name) { return document.getElementById("xc-access-" + name); }
+  function setBusy(busy) { apply.disabled = busy; }
+  function load() {
+    result.textContent = loadingText;
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var payload;
+      try { payload = JSON.parse(xhr.responseText); } catch (ignored) { payload = null; }
+      if (!payload || payload.ok !== true || !payload.data || !payload.data.config) {
+        result.textContent = failedText;
+        return;
+      }
+      var config = payload.data.config;
+      var values = {
+        "dns-remote": config.dns_remote, "dns-cn": config.dns_cn, "dns-fallback": config.dns_fallback,
+        "direct-domains": (config.direct_domains || []).join("\n"), "proxy-domains": (config.proxy_domains || []).join("\n"),
+        "direct-ips": (config.direct_ips || []).join("\n"), "proxy-ips": (config.proxy_ips || []).join("\n")
+      };
+      fields.forEach(function(name) { element(name).value = typeof values[name] === "string" ? values[name] : ""; });
+      result.textContent = "";
+    };
+    xhr.open("GET", statusUrl + "?_=" + Date.now(), true);
+    xhr.send(null);
+  }
+  function payload() {
+    return {
+      dns_remote: element("dns-remote").value,
+      dns_cn: element("dns-cn").value,
+      dns_fallback: element("dns-fallback").value,
+      direct_domains: element("direct-domains").value,
+      proxy_domains: element("proxy-domains").value,
+      direct_ips: element("direct-ips").value,
+      proxy_ips: element("proxy-ips").value
+    };
+  }
+  apply.onclick = function() {
+    setBusy(true); result.textContent = validationText;
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var response;
+      try { response = JSON.parse(xhr.responseText); } catch (ignored) { response = null; }
+      result.textContent = response && response.ok === true ? savedText : validationText;
+      if (response && response.ok === true) load();
+      setBusy(false);
+    };
+    xhr.open("POST", applyUrl, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.send(JSON.stringify(payload()));
+  };
+  load();
+}());
+//]]>
+</script>

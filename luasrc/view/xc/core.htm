@@ -112,6 +112,8 @@ local util = require "luci.util"
     unavailableAction: <%=util.serialize_json(translate("The interface is not available"))%>,
     completed: <%=util.serialize_json(translate("Operation completed"))%>,
     uploaded: <%=util.serialize_json(translate("The core was validated and installed; it can now be activated."))%>,
+    manualUpgrade: <%=util.serialize_json(translate("A version newer than 26.6.27 must be replaced manually; the current core was kept."))%>,
+    assetsMissing: <%=util.serialize_json(translate("GeoIP and GeoSite assets are missing; install or replace them manually."))%>,
     confirmActivate: <%=util.serialize_json(translate("Confirm activation of this Xray core? The service may restart."))%>,
     confirmRollback: <%=util.serialize_json(translate("Confirm Xray core rollback? The service may restart."))%>,
     confirmRemove: <%=util.serialize_json(translate("Confirm deletion of this inactive Xray core?"))%>
@@ -181,6 +183,8 @@ local util = require "luci.util"
     setText(elements.version, safeVersion(current.version) ? current.version : text.unavailable);
     setText(elements.arch, safeArch(current.arch) ? current.arch : text.unavailable);
     setText(elements.status, currentStatus(status));
+    if (payload.manual_upgrade === true) elements.operation.textContent = text.manualUpgrade;
+    else if (payload.resources && payload.resources.ready !== true) elements.operation.textContent = text.assetsMissing;
     if (elements.system) {
       elements.system.disabled = marker === "system";
       elements.system.value = marker === "system" ? text.current : text.systemActivate;

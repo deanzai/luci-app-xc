@@ -109,6 +109,39 @@ t.test("builds the default Xray log block and preserves every allowed log level"
   end
 end)
 
+t.test("adds validated access control DNS and direct or proxy rules", function()
+  local cfg = assert(generator.build(global({
+    dns_remote = "https://9.9.9.9/dns-query",
+    dns_cn = "114.114.114.114",
+    dns_fallback = "https://1.0.0.1/dns-query",
+    direct_domains = "example.com",
+    proxy_domains = "openai.com",
+    direct_ips = "192.0.2.0/24"
+  }), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  }))
+  t.eq(cfg.dns.servers[1].address, "https://9.9.9.9/dns-query")
+  local direct, proxy, direct_ip
+  for _, rule in ipairs(cfg.routing.rules) do
+    if rule.domain and rule.domain[1] == "domain:example.com" then direct = rule end
+    if rule.domain and rule.domain[1] == "domain:openai.com" then proxy = rule end
+    if rule.ip and rule.ip[1] == "192.0.2.0/24" then direct_ip = rule end
+  end
+  t.eq(direct.outboundTag, "direct")
+  t.eq(proxy.outboundTag, "proxy-selected")
+  t.eq(direct_ip.outboundTag, "direct")
+end)
+
+t.test("rejects invalid access control before generator output is built", function()
+  local cfg, code = generator.build(global({ dns_remote = "file:///tmp/dns" }), {
+    protocol = "vless", server = "vless.invalid", port = 443,
+    uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+  })
+  t.eq(cfg, nil)
+  t.eq(code, "access_dns_invalid")
+end)
+
 t.test("rejects non-string and unknown Xray log levels before a config can be encoded", function()
   for _, level in ipairs({ false, true, 1, {}, "trace" }) do
     local config, err = generator.build(global({ xray_log_level = level }), {
@@ -800,6 +833,18 @@ t.test("rejects dynamic API port conflicts with SOCKS and HTTP inbounds", functi
 
   local default_config = assert(generator.build_dynamic(global(), { node }))
   t.eq(default_config.inbounds[3].port, 10085)
+end)
+
+t.test("dynamic routing keeps default traffic on the balancer when preset routing is disabled", function()
+  local config = assert(generator.build_dynamic(global({ routing_enabled = "0" }), {
+    {
+      id = "dynamic_default", enabled = true, protocol = "vless", server = "dynamic.invalid", port = 443,
+      uuid = UUID_ONE, encryption = "none", transport = "tcp", security = "none"
+    }
+  }))
+  local final = config.routing.rules[#config.routing.rules]
+  t.eq(final.balancerTag, "xc-balancer")
+  t.eq(final.outboundTag, nil)
 end)
 
 t.test("rejects non-finite and oversized dynamic node indexes", function()

@@ -13,7 +13,7 @@ The plugin uses Xray-core as its runtime kernel and manages one self-hosted node
 - **Local import**: Paste share links or upload text/JSON files, preview them, then confirm the import; subscription fetching is not included
 - **Real-connection switching**: Validate the Xray configuration, wait for SOCKS/HTTP listeners, then make one real GET through each local proxy before committing the active node; restore the last known-good configuration on failure
 - **Manual rollback**: Restore the previous runtime configuration from the status area or `/usr/bin/xc rollback`
-- **Core management**: Upload one Xray-core ELF in LuCI and verify SHA-256, device architecture, version output, and the current configuration before activation
+- **Core management**: Manually upload one Xray-core ELF in LuCI and verify SHA-256, device architecture, version output, and the current configuration before activation; the r20 Xray-core/Geo resource version ceiling is `26.6.27`
 - **Core rollback**: Automatically restore the previous core after a failed activation; managed versions never overwrite `/usr/bin/xray`
 - **Status monitoring**: The Settings page shows service state, active node, listeners, and the exit IP observed through the selected node
 - **Log viewer**: One log page merges XC and Xray runtime logs with All/Error/Warning/Info/Debug filtering
@@ -124,30 +124,30 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-The current source package version is `0.1.0-r16`; a typical artifact is:
+The current source package version is `0.1.0-r20`; a typical artifact is:
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r16_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r20_all.ipk
 ```
 
 GitHub Actions builds OpenWrt 21.02, 23.05, and 24.10. The older 21.02 and 23.05
 `luci.mk` may ignore `PKG_RELEASE`, so an SDK output can omit the release suffix. Before
 uploading, CI adds an explicit platform suffix to every IPK so Release assets cannot be
-mistaken for one another. It also normalizes the control metadata version to `0.1.0-r16`
+mistaken for one another. It also normalizes the control metadata version to `0.1.0-r20`
 so opkg can upgrade installations reporting the older `0.1.0-10` version:
 
 ```text
-21.02: luci-app-xc_0.1.0-r16_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r16_all_openwrt-23.05.ipk
-24.10: luci-app-xc_0.1.0-r16_all_openwrt-24.10.ipk
+21.02: luci-app-xc_0.1.0-r20_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r20_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r20_all_openwrt-24.10.ipk
 ```
 
 Translation packages use the LuCI PO version independently and receive the same suffix:
 
 ```text
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-21.02.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-23.05.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-24.10.ipk
 ```
 
 Each platform artifact also contains `SHA256SUMS-openwrt-<version>.txt`. Install only the main
@@ -159,7 +159,7 @@ from the `all` package architecture.
 Back up `/etc/config/xc` and any legacy XC runtime files before installing the IPK built for the target system:
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r16_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r16_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r20_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r20_all.ipk
 ```
 
 When using GitHub Release assets, replace both paths with files carrying the same platform suffix.
@@ -179,11 +179,36 @@ After installation, open LuCI: `Services -> Xray node switching`.
 5. **Probe**: Use “Test” for one node or “Test all” for a batch run. Results are shown in the Latency column.
 6. **Logs**: Filter All, Error, Warning, Info, or Debug and click Refresh. The filter does not change Xray’s configured runtime level.
 
+### Access control
+
+Open `Services → Xray node switching → Access control`. The page accepts separate remote, China, and fallback DNS
+values, plus newline-separated direct/proxy domain and IP rules. Domains may be plain hostnames or use the
+`full:`, `domain:`, or `geosite:` prefixes. IP rules may be single IPv4/IPv6 addresses, CIDRs, or `geoip:` rules.
+The same normalized rule cannot appear in both the direct and proxy lists.
+
+Click `Apply access control` to build a candidate configuration and run Xray `run -test` first. Only after that
+passes does XC restart the service, check listeners and real connections, and commit the access-control settings.
+An active node is required. Validation errors, conflicts, missing assets, or later runtime checks return an error,
+remove the candidate, and keep both the current UCI settings and current working configuration; they do not replace
+the active configuration. This Apply action is separate from ordinary LuCI “Save & Apply” for node and service settings.
+
 ### Manual Xray-core replacement
 
-Open `Services → Xray node switching → Xray core` and select one Xray ELF executable matching the device architecture. The device computes SHA-256 and checks the ELF header, `xray version` output, and the current configuration with `run -test`; only a validated file is installed.
+Open `Services → Xray node switching → Xray core`, choose one Xray ELF executable matching the device architecture,
+and upload it. The device computes SHA-256 automatically and checks the ELF header, `xray version` output, and the
+current configuration with `run -test`; only versions up to `26.6.27` are accepted. A failed validation does not
+activate, install, or overwrite the current core or configuration. A successful upload installs an inactive version
+under the protected version directory; activation is a separate explicit action.
 
-Activating a core uses the same runtime lock as node switching, saves the current core marker, restarts XC, and checks the service, listeners, and health endpoint. A failed activation restores the previous core automatically; if a manual core has no usable previous marker, page rollback safely returns to the system core. The system package core remains `/usr/bin/xray`; managed versions live under `/etc/xc/xray/versions/` and never overwrite an `opkg`-owned file.
+Activating a core uses the same runtime lock as node switching, saves the current core marker, restarts XC, and checks
+the service, listeners, and health endpoint. A failed activation restores the previous core automatically; if a manual
+core has no usable previous marker, page rollback safely returns to the system core. The system package core remains
+`/usr/bin/xray`; managed versions live under `/etc/xc/xray/versions/` and never overwrite an `opkg`-owned file.
+
+GeoIP/GeoSite files are supplied by the target distribution’s resource packages; r20 uses `26.6.27` as the
+compatibility ceiling. XC requires `geoip.dat` and `geosite.dat` together in one asset directory and does not
+download or upgrade them automatically. Resources above that ceiling must be prepared manually and verified with
+`xray run -test` and a service check. Missing resources prevent startup or replacement of the current configuration.
 
 ### SOCKS / HTTP proxy
 

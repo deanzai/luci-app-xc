@@ -483,3 +483,51 @@ msgstr ""
 
 msgid "Confirm activation of the system Xray core? The service may restart."
 msgstr ""
+
+msgid "Access control"
+msgstr ""
+
+msgid "Configure DNS and direct or proxy domain/IP rules. The candidate is validated before it becomes active."
+msgstr ""
+
+msgid "Remote DNS"
+msgstr ""
+
+msgid "China DNS"
+msgstr ""
+
+msgid "Fallback DNS"
+msgstr ""
+
+msgid "Direct domains"
+msgstr ""
+
+msgid "Proxy domains"
+msgstr ""
+
+msgid "Direct IPs"
+msgstr ""
+
+msgid "Proxy IPs"
+msgstr ""
+
+msgid "Apply access control"
+msgstr ""
+
+msgid "Loading access control"
+msgstr ""
+
+msgid "Validation failed; the current configuration was kept."
+msgstr ""
+
+msgid "Access control applied."
+msgstr ""
+
+msgid "Access control could not be applied."
+msgstr ""
+
+msgid "A version newer than 26.6.27 must be replaced manually; the current core was kept."
+msgstr ""
+
+msgid "GeoIP and GeoSite assets are missing; install or replace them manually."
+msgstr ""

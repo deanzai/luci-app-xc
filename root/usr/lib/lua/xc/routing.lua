@@ -1,4 +1,5 @@
 local M = {}
+local access = require "xc.access"
 
 M.ASSET_DIR = "/usr/share/xray"
 M.FALLBACK_ASSET_DIR = "/usr/share/v2ray"
@@ -6,6 +7,7 @@ M.GEOSITE_PATH = M.ASSET_DIR .. "/geosite.dat"
 M.GEOIP_PATH = M.ASSET_DIR .. "/geoip.dat"
 M.FALLBACK_GEOSITE_PATH = M.FALLBACK_ASSET_DIR .. "/geosite.dat"
 M.FALLBACK_GEOIP_PATH = M.FALLBACK_ASSET_DIR .. "/geoip.dat"
+M.MAX_SUPPORTED_VERSION = "26.6.27"
 
 local PRIVATE_CIDRS = {
   "0.0.0.0/8",
@@ -118,6 +120,20 @@ function M.asset_dir(fs)
   return nil
 end
 
+function M.asset_status(fs)
+  local directory = M.asset_dir(fs)
+  local geosite = asset_exists(fs, M.GEOSITE_PATH) or asset_exists(fs, M.FALLBACK_GEOSITE_PATH)
+  local geoip = asset_exists(fs, M.GEOIP_PATH) or asset_exists(fs, M.FALLBACK_GEOIP_PATH)
+  return {
+    directory = directory,
+    geosite = geosite,
+    geoip = geoip,
+    ready = directory ~= nil,
+    supported_version = M.MAX_SUPPORTED_VERSION,
+    manual_upgrade = false
+  }
+end
+
 function M.required_assets(global, fs)
   if type(global) == "table" and not enabled(global.routing_enabled) then return {} end
   local directory = M.asset_dir(fs)
@@ -127,13 +143,31 @@ function M.required_assets(global, fs)
   return { M.GEOSITE_PATH, M.GEOIP_PATH }
 end
 
-function M.dns(global)
+function M.dns(global, access_value)
   if type(global) == "table" and not enabled(global.routing_enabled) then return nil end
+  if type(access_value) ~= "table" then access_value = access.normalize(global or {}) end
+  if type(access_value) ~= "table" then return nil end
   -- Use the top-level DNS tag: it is supported by the old 21.02 core line,
   -- while per-name-server tags only appeared in newer Xray releases.
   return {
     tag = DNS_INBOUND_TAG,
-    servers = copy(DNS_SERVERS),
+    servers = {
+      {
+        address = access_value.dns_remote,
+        domains = copy(DNS_SERVERS[1].domains),
+        skipFallback = true
+      },
+      {
+        address = access_value.dns_cn,
+        domains = copy(DNS_SERVERS[2].domains),
+        skipFallback = true
+      },
+      copy(DNS_SERVERS[3]),
+      {
+        address = access_value.dns_fallback,
+        skipFallback = false
+      }
+    },
     queryStrategy = "UseIPv4",
     disableCache = false,
     disableFallbackIfMatch = true
@@ -149,8 +183,9 @@ local function apply_proxy_target(rule, target)
   return rule
 end
 
-function M.build(global, target)
+function M.build(global, target, access_value)
   local rules = {}
+  if type(access_value) ~= "table" then access_value = access.normalize(global or {}) end
   if type(global) ~= "table" or enabled(global.routing_enabled) then
     rules[#rules + 1] = apply_proxy_target({
       type = "field",
@@ -159,7 +194,15 @@ function M.build(global, target)
     }, target)
   end
   rules[#rules + 1] = { type = "field", ip = copy(PRIVATE_CIDRS), outboundTag = "direct" }
-  if type(global) == "table" and not enabled(global.routing_enabled) then return rules end
+  if type(access_value) == "table" then
+    for _, custom in ipairs(access.rules(access_value, target) or {}) do rules[#rules + 1] = custom end
+  end
+  if type(global) == "table" and not enabled(global.routing_enabled) then
+    if type(target) == "table" and type(target.balancerTag) == "string" and target.balancerTag ~= "" then
+      rules[#rules + 1] = apply_proxy_target({ type = "field", outboundTag = "proxy-selected" }, target)
+    end
+    return rules
+  end
   for _, rule in ipairs(PRESET_RULES) do
     rules[#rules + 1] = apply_proxy_target(copy(rule), target)
   end

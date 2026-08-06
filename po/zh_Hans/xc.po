@@ -485,3 +485,51 @@ msgstr "使用系统核心"
 
 msgid "Confirm activation of the system Xray core? The service may restart."
 msgstr "确认切换到系统 Xray 核心？服务可能会重启。"
+
+msgid "Access control"
+msgstr "访问控制"
+
+msgid "Configure DNS and direct or proxy domain/IP rules. The candidate is validated before it becomes active."
+msgstr "配置 DNS 以及域名/IP 的直连或代理规则。候选配置通过校验后才会生效。"
+
+msgid "Remote DNS"
+msgstr "远程 DNS"
+
+msgid "China DNS"
+msgstr "国内 DNS"
+
+msgid "Fallback DNS"
+msgstr "备用 DNS"
+
+msgid "Direct domains"
+msgstr "直连域名"
+
+msgid "Proxy domains"
+msgstr "代理域名"
+
+msgid "Direct IPs"
+msgstr "直连 IP"
+
+msgid "Proxy IPs"
+msgstr "代理 IP"
+
+msgid "Apply access control"
+msgstr "应用访问控制"
+
+msgid "Loading access control"
+msgstr "正在加载访问控制"
+
+msgid "Validation failed; the current configuration was kept."
+msgstr "校验失败，当前配置保持不变。"
+
+msgid "Access control applied."
+msgstr "访问控制已应用。"
+
+msgid "Access control could not be applied."
+msgstr "访问控制应用失败。"
+
+msgid "A version newer than 26.6.27 must be replaced manually; the current core was kept."
+msgstr "高于 26.6.27 的版本需要手动替换，当前核心保持不变。"
+
+msgid "GeoIP and GeoSite assets are missing; install or replace them manually."
+msgstr "GeoIP 和 GeoSite 资源缺失，请手动安装或替换。"

@@ -13,7 +13,7 @@
 - **本地导入**：粘贴分享链接或上传文本/JSON 文件，先预览，确认后导入；不提供订阅拉取
 - **安全切换**：切换前校验 Xray 配置，启动后等待 SOCKS/HTTP 监听，并经两个本地代理访问真实连接测试 URL；只有两条请求都成功才提交，失败时恢复上一份可用配置
 - **手动回滚**：保留上一份运行配置，可从状态区域或 `/usr/bin/xc rollback` 回滚
-- **核心管理**：可在 LuCI 上传单个 Xray-core ELF，校验 SHA-256、设备架构、版本和当前配置后再激活
+- **核心管理**：可在 LuCI 手动上传单个 Xray-core ELF，校验 SHA-256、设备架构、版本和当前配置后再激活；r20 的 Xray-core/Geo 资源版本上限为 `26.6.27`
 - **核心回滚**：核心激活失败时自动恢复上一个核心；手动版本不会覆盖 `/usr/bin/xray`
 - **状态监控**：设置页内显示服务状态、当前节点、监听端点和经当前节点访问得到的出口 IP
 - **日志查看**：单一日志页合并 XC 插件日志和 Xray 运行日志，支持全部/错误/警告/信息/调试筛选
@@ -122,30 +122,30 @@ git clone https://github.com/deanzai/luci-app-xc.git package/luci-app-xc
 make package/luci-app-xc/compile V=s
 ```
 
-当前源码包版本为 `0.1.0-r16`，常见产物路径为：
+当前源码包版本为 `0.1.0-r20`，常见产物路径为：
 
 ```text
-bin/packages/**/luci-app-xc_0.1.0-r16_all.ipk
+bin/packages/**/luci-app-xc_0.1.0-r20_all.ipk
 ```
 
 GitHub Actions 同时构建 OpenWrt 21.02、23.05 和 24.10。21.02、23.05 的旧版 `luci.mk`
 可能忽略 `PKG_RELEASE`，因此 SDK 原始产物可能使用不带 release 后缀的文件名。CI 会在上传前为每个
 原始 IPK 加上明确的平台后缀，避免 Release 中出现无法判断目标系统的同名文件：
-同时将主包和翻译包的 control 元数据版本规范化为 `0.1.0-r16`，确保可以从旧版
+同时将主包和翻译包的 control 元数据版本规范化为 `0.1.0-r20`，确保可以从旧版
 `0.1.0-10` 正常升级：
 
 ```text
-21.02: luci-app-xc_0.1.0-r16_all_openwrt-21.02.ipk
-23.05: luci-app-xc_0.1.0-r16_all_openwrt-23.05.ipk
-24.10: luci-app-xc_0.1.0-r16_all_openwrt-24.10.ipk
+21.02: luci-app-xc_0.1.0-r20_all_openwrt-21.02.ipk
+23.05: luci-app-xc_0.1.0-r20_all_openwrt-23.05.ipk
+24.10: luci-app-xc_0.1.0-r20_all_openwrt-24.10.ipk
 ```
 
 中文翻译包由 LuCI 的 PO 版本单独生成，并使用相同的平台后缀：
 
 ```text
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-21.02.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-23.05.ipk
-luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-21.02.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-23.05.ipk
+luci-i18n-xc-zh-cn_0.1.0-r20_all_openwrt-24.10.ipk
 ```
 
 每个平台的 CI 资产还包含对应的 `SHA256SUMS-openwrt-<版本>.txt`。安装时只选择与设备
@@ -156,7 +156,7 @@ luci-i18n-xc-zh-cn_0.1.0-r16_all_openwrt-24.10.ipk
 安装前先备份 `/etc/config/xc` 及旧版 XC 运行文件，然后安装对应目标系统编译出的 IPK：
 
 ```sh
-opkg install /tmp/luci-app-xc_0.1.0-r16_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r16_all.ipk
+opkg install /tmp/luci-app-xc_0.1.0-r20_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r20_all.ipk
 ```
 
 如果使用 GitHub Release 资产，请将上面两个文件替换为同一平台后缀的 IPK；中文包不是
@@ -175,11 +175,31 @@ opkg install /tmp/luci-app-xc_0.1.0-r16_all.ipk /tmp/luci-i18n-xc-zh-cn_0.1.0-r1
 5. **测速**：使用“测速”测试单个节点，或使用“全部测速”按配置的并发度批量测试；结果显示在“延迟”列。
 6. **日志**：按全部、错误、警告、信息或调试筛选，点击刷新读取最新内容。筛选不会改变 Xray 的后台日志级别。
 
+### 访问控制
+
+打开 `服务 → Xray node switching → Access control`。页面可分别填写远程 DNS、国内 DNS、备用 DNS，
+以及按行填写直连/代理域名和 IP 规则。域名可使用普通域名或 `full:`、`domain:`、`geosite:` 前缀；
+IP 可填写单个 IPv4/IPv6、CIDR 或 `geoip:` 规则。直连和代理列表不能包含同一条规则。
+
+点击 `Apply access control` 后，插件会先生成候选配置并执行 Xray `run -test`，通过后才重启服务、
+完成监听和真实连接检查，并提交访问控制配置。没有活动节点时不能应用。校验失败、规则冲突、资源缺失
+或后续运行检查失败时，只返回错误提示并清理候选文件，不提交访问控制 UCI，也不覆盖当前有效配置。
+访问控制的 Apply 操作独立于普通节点配置的 LuCI `保存并应用`。
+
 ### Xray-core 手动替换
 
-打开 `服务 → Xray node switching → Xray core`，选择与设备架构匹配的单个 Xray ELF 可执行文件。插件会在设备端计算 SHA-256，并检查 ELF 架构、`xray version` 输出和当前配置的 `run -test`；校验通过后才会写入版本目录。
+打开 `服务 → Xray node switching → Xray core`，选择与设备架构匹配的单个 Xray ELF 可执行文件并上传。
+插件在设备端自动计算 SHA-256，检查 ELF 架构、`xray version` 输出和当前配置的 `run -test`；仅接受不高于
+`26.6.27` 的核心。校验失败不会激活、安装或覆盖当前核心和当前配置；校验通过后只写入受保护的版本目录，
+仍需明确点击激活。
 
-核心激活使用与节点切换相同的运行锁，更新前保存当前核心，重启后检查服务、监听器和真实连接测试。失败时自动恢复上一份核心；如果当前是手动核心但没有可用的 previous 标记，页面“回滚”会安全回到系统核心。系统包核心始终指向 `/usr/bin/xray`，手动版本存放在 `/etc/xc/xray/versions/`，不会改写 `opkg` 管理的文件。
+核心激活使用与节点切换相同的运行锁，更新前保存当前核心，重启后检查服务、监听器和真实连接测试。
+失败时自动恢复上一份核心；如果当前是手动核心但没有可用的 previous 标记，页面“回滚”会安全回到系统核心。
+系统包核心始终指向 `/usr/bin/xray`，手动版本存放在 `/etc/xc/xray/versions/`，不会改写 `opkg` 管理的文件。
+
+GeoIP/GeoSite 文件由目标发行版的资源包提供，r20 按 `26.6.27` 兼容上限准备资源。插件要求同一资源目录
+同时存在 `geoip.dat` 和 `geosite.dat`，不会自动下载或升级资源；高于上限的核心或资源应手动准备并单独
+完成 `xray run -test` 与服务验证。资源缺失时不会启动或替换当前配置。
 
 ### SOCKS / HTTP 代理
 

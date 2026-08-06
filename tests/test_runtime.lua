@@ -17,6 +17,7 @@ local STATUS = "/var/run/xc-status"
 local LOG = "/var/log/xc.log"
 local LOG_LOCK = "/var/lock/xc-log.lock"
 local EXIT_IP_CACHE = "/var/etc/xc/exit-ip-cache"
+local FAST_SELECTION = "/etc/xc/rollback/fast-selection"
 local GEOSITE = "/usr/share/xray/geosite.dat"
 local GEOIP = "/usr/share/xray/geoip.dat"
 local V2RAY_GEOSITE = "/usr/share/v2ray/geosite.dat"
@@ -190,6 +191,12 @@ local function fixture(options)
     clear_active = function()
       event("uci:clear_active")
       global.active_node = nil
+      return true
+    end,
+    stage_global = function(values)
+      event("uci:stage_global")
+      if options.stage_global_ok == false or type(values) ~= "table" then return false end
+      for key, value in pairs(values) do global[key] = value end
       return true
     end,
     commit = function()
@@ -377,8 +384,19 @@ local function fixture(options)
         }, balancers = { { tag = "xc-balancer", selector = { "xc-node-old", "xc-node-new" } } } }
       }
     end
+    if text:match('^{"access_') then
+      local output = {}
+      for key, value in text:gmatch('"(access_[^"]+)":"([^\"]*)"') do
+        value = value:gsub("\\n", "\n"):gsub("\\r", "\r"):gsub('\\"', '"'):gsub("\\\\", "\\")
+        output[key] = value
+      end
+      return output
+    end
     local id, version, arch, size, sha256, uploaded_at = text:match('"id":"([^"]+)".-"version":"([^"]+)".-"arch":"([^"]+)".-"size":(%d+).-"sha256":"([^"]+)".-"uploaded_at":(%d+)')
-    if not id then return nil end
+    if not id then
+      if text == "not-json" then return nil end
+      return {}
+    end
     return { id = id, version = version, arch = arch, size = tonumber(size), sha256 = sha256, uploaded_at = tonumber(uploaded_at) }
   end
   state.runtime = assert(runtime.new({
@@ -436,6 +454,47 @@ t.test("render refuses preset routing when either geo asset is missing", functio
     global = { routing_enabled = "0", active_node = "old", socks_port = 7890, http_port = 10809 }
   })
   t.eq(disabled.runtime:render("new", "/tmp/render.json").ok, true)
+end)
+
+t.test("access rejects conflicting rules before Xray or UCI mutation", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local result = state.runtime:apply_access({ direct_domains = "example.com", proxy_domains = "example.com" })
+  t.eq(result.ok, false)
+  t.eq(result.code, "access_rule_conflict")
+  t.eq(event_index(state.events, "uci:stage_global"), nil)
+  t.eq(event_index(state.events, "exec:run:"), nil)
+  t.eq(event_index(state.events, "uci:commit"), nil)
+end)
+
+t.test("access applies a validated candidate without replacing its rollback base", function()
+  local state = fixture({ files = { [RUNTIME] = "old-runtime" } })
+  local result = state.runtime:apply_access({ direct_domains = "example.com", proxy_domains = "openai.com" })
+  t.eq(result.ok, true)
+  t.eq(result.code, "access_applied")
+  t.eq(state.global.access_direct_domains, "domain:example.com")
+  t.eq(state.files["/etc/xc/rollback/generation-123-1.config"], "old-runtime")
+  t.truthy(event_index(state.events, "uci:stage_global"))
+  t.truthy(event_index(state.events, "exec:run:/usr/bin/xray|run|-test|-format|json|-c|/var/etc/xc/candidate.json"))
+  t.truthy(event_index(state.events, "uci:commit"))
+end)
+
+t.test("access rollback restores the complete previous UCI access configuration", function()
+  local state = fixture({
+    global = {
+      active_node = "old", socks_port = 7890, http_port = 10809,
+      access_dns_remote = "https://9.9.9.9/dns-query", access_dns_cn = "114.114.114.114",
+      access_dns_fallback = "https://1.0.0.1/dns-query", access_direct_domains = "domain:old.example"
+    },
+    files = { [RUNTIME] = "old-runtime" },
+    commit_failures = 1
+  })
+  local result = state.runtime:apply_access({ direct_domains = "new.example" })
+  t.eq(result.ok, false)
+  t.eq(result.code, "commit_failed")
+  t.eq(state.global.access_dns_remote, "https://9.9.9.9/dns-query")
+  t.eq(state.global.access_dns_cn, "114.114.114.114")
+  t.eq(state.global.access_dns_fallback, "https://1.0.0.1/dns-query")
+  t.eq(state.global.access_direct_domains, "domain:old.example")
 end)
 
 t.test("switch accepts v2ray geodata and passes its asset directory to Xray", function()
@@ -518,6 +577,17 @@ t.test("fast switch restores the old live tag after active-node commit failure",
   t.eq(state.global.active_node, "old")
   t.truthy(event_index(state.events, "exec:api_override:xc-node-new"))
   t.truthy(event_index(state.events, "exec:api_override:xc-node-old"))
+end)
+
+t.test("fast switch persists an uncertain commit marker until startup reconciliation", function()
+  local state = fixture({
+    dynamic_config = true, api_current = "xc-node-old",
+    commit_ok = false, commit_outcome = "commit_unknown"
+  })
+  local result = state.runtime:fast_switch("new")
+  t.eq(result.code, "fast_switch_recovery_required")
+  t.truthy(state.files[FAST_SELECTION])
+  t.contains(state.files[FAST_SELECTION], "xc-fast-selection-v1")
 end)
 
 t.test("fast switch reports recovery required when old live tag cannot be restored", function()
@@ -1208,8 +1278,8 @@ end)
 
 t.test("status reuses only a fresh strict same-node exit IP cache", function()
   local wall_now = 1000
-  local valid_cache = "node=old\nobserved_at=941\nip=203.0.113.10\n"
-  local cached = fixture({ shared_files = { [EXIT_IP_CACHE] = valid_cache }, wall_time = function() return wall_now end, exit_ip = "198.51.100.1" })
+  local valid_cache = "node=old\nconfig=" .. checksum("runtime-a") .. "\nobserved_at=941\nip=203.0.113.10\n"
+  local cached = fixture({ shared_files = { [RUNTIME] = "runtime-a", [EXIT_IP_CACHE] = valid_cache }, wall_time = function() return wall_now end, exit_ip = "198.51.100.1" })
   t.eq(cached.runtime:status().exit_ip, "203.0.113.10")
   t.eq(event_index(cached.events, "exec:exit_ip:socks:192.168.6.1:7890"), nil)
   t.truthy(event_index(cached.events, "fs:read:" .. EXIT_IP_CACHE))
@@ -1235,11 +1305,36 @@ t.test("status reuses only a fresh strict same-node exit IP cache", function()
   end
 end)
 
+t.test("status rejects an exit IP cache from a different runtime generation", function()
+  local stale = fixture({
+    shared_files = {
+      [RUNTIME] = "runtime-b",
+      [EXIT_IP_CACHE] = "node=old\nconfig=" .. checksum("runtime-a") .. "\nobserved_at=999\nip=203.0.113.10\n"
+    },
+    wall_time = function() return 1000 end,
+    exit_ip = "198.51.100.3"
+  })
+  t.eq(stale.runtime:status().exit_ip, "198.51.100.3")
+  t.truthy(event_index(stale.events, "exec:exit_ip:socks:192.168.6.1:7890"))
+end)
+
+t.test("status fails closed when a dynamic runtime configuration is corrupted", function()
+  local state = fixture({
+    shared_files = { [RUNTIME] = "not-json" },
+    exit_ip = "198.51.100.4"
+  })
+  local status = state.runtime:status()
+  t.eq(status.selection_mode, "dynamic")
+  t.eq(status.selection_state, "recovery_required")
+  t.eq(status.recovery_required, true)
+  t.eq(status.exit_ip, nil)
+end)
+
 t.test("successful exit observation writes an atomic private node cache", function()
   local state = fixture({ exit_ip = "2001:db8::9\n", wall_time = function() return 1785326499 end })
   local status = state.runtime:status()
   t.eq(status.exit_ip, "2001:db8::9")
-  t.eq(state.files[EXIT_IP_CACHE], "node=old\nobserved_at=1785326499\nip=2001:db8::9\n")
+  t.eq(state.files[EXIT_IP_CACHE], "node=old\nconfig=" .. checksum("") .. "\nobserved_at=1785326499\nip=2001:db8::9\n")
   local temporary = EXIT_IP_CACHE .. ".tmp.123"
   t.truthy(event_index(state.events, "fs:write_temp:" .. temporary))
   t.truthy(event_index(state.events, "fs:chmod:" .. temporary .. ":0600"))
@@ -1323,7 +1418,7 @@ t.test("exit cache commit excludes a switch starting after the final context che
   t.eq(state.competing_switch_started, nil)
   t.eq(state.global.active_node, "old")
   t.eq(status.exit_ip, "203.0.113.22")
-  t.eq(state.files[EXIT_IP_CACHE], "node=old\nobserved_at=1785326400\nip=203.0.113.22\n")
+  t.eq(state.files[EXIT_IP_CACHE], "node=old\nconfig=" .. checksum("") .. "\nobserved_at=1785326400\nip=203.0.113.22\n")
   local locked = assert(event_index(state.events, "fs:lock:" .. LOCK))
   local replaced = assert(event_index(state.events, "fs:rename:" .. EXIT_IP_CACHE .. ".tmp.123:" .. EXIT_IP_CACHE))
   local unlocked = assert(event_index(state.events, MAIN_UNLOCK))
