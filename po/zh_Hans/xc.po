@@ -411,9 +411,6 @@ msgstr "当前核心"
 msgid "Delete"
 msgstr "删除"
 
-msgid "Expected SHA-256 (optional)"
-msgstr "期望 SHA-256（可选）"
-
 msgid "Installed versions"
 msgstr "已安装版本"
 
@@ -426,11 +423,11 @@ msgstr "手动核心"
 msgid "No installed core versions"
 msgstr "暂无已安装核心"
 
-msgid "Note (optional)"
-msgstr "备注（可选）"
-
 msgid "Only a single Xray ELF executable matching this device architecture is accepted."
 msgstr "只接受与当前设备架构匹配的单个 Xray ELF 可执行文件。"
+
+msgid "Plugin version"
+msgstr "插件版本"
 
 msgid "Refresh status"
 msgstr "刷新状态"
@@ -461,6 +458,9 @@ msgstr "上传并校验"
 
 msgid "Upload and validate core"
 msgstr "上传并校验核心"
+
+msgid "Upload progress"
+msgstr "上传进度"
 
 msgid "Validated"
 msgstr "已校验"

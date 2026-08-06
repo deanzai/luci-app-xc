@@ -448,9 +448,8 @@ function action_core_upload()
   end)
   if not handler_ok then core_event(runtime_instance, "core upload completed", { ok = false, code = "core_runtime_unavailable" }); failure("core_runtime_unavailable"); return end
 
-  local form_ok, expected, note = pcall(function()
+  local form_ok = pcall(function()
     http.formvalue("core_file")
-    return http.formvalue("sha256"), http.formvalue("note")
   end)
   if not form_ok or upload_error then
     if upload and not upload_closed then pcall(adapters.fs.close_upload, upload, false) end
@@ -463,7 +462,7 @@ function action_core_upload()
     core_event(runtime_instance, "core upload completed", { ok = false, code = "core_invalid_upload" })
     failure("core_invalid_upload"); return
   end
-  local checked_ok, checked = pcall(core_instance.validate, core_instance, upload.path, expected, note)
+  local checked_ok, checked = pcall(core_instance.validate, core_instance, upload.path)
   if not checked_ok or type(checked) ~= "table" or not checked.ok then
     pcall(adapters.fs.remove, upload.path)
     local code = checked_ok and checked.code or "core_activate_failed"

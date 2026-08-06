@@ -73,10 +73,6 @@ local function parse_version(output)
   return output:match("[Xx]ray%s+([0-9][0-9a-zA-Z%.%-]*)")
 end
 
-local function valid_note(value)
-  return value == nil or (type(value) == "string" and #value <= 256 and not value:find("[%z\1-\31\127]"))
-end
-
 local function read_marker(fs, name)
   local path = core.marker_path(name)
   if not path then return nil, "invalid_marker" end
@@ -134,7 +130,7 @@ function Manager:_validate_path(path)
   return result(true, "core_upload_ready", { size = math.floor(size) })
 end
 
-function Manager:validate(path, expected_sha256, note)
+function Manager:validate(path)
   local checked = self:_validate_path(path)
   if not checked.ok then return checked end
   if type(self.fs.available_space) == "function" then
@@ -143,9 +139,6 @@ function Manager:validate(path, expected_sha256, note)
       return result(false, "core_disk_space_low")
     end
   end
-  if expected_sha256 ~= nil and expected_sha256 ~= "" and not core.safe_sha256(expected_sha256) then return result(false, "core_hash_invalid") end
-  if not valid_note(note) then return result(false, "core_note_invalid") end
-
   local header = self.fs.read_prefix(path, MAX_HEADER)
   local binary_arch = elf_arch(header)
   if not binary_arch then return result(false, "core_invalid_elf") end
@@ -155,8 +148,6 @@ function Manager:validate(path, expected_sha256, note)
   local actual_hash = self.exec.hash_file(path, self.now() + 30)
   if not core.safe_sha256(actual_hash) then return result(false, "core_hash_failed") end
   actual_hash = actual_hash:lower()
-  if expected_sha256 and expected_sha256 ~= "" and actual_hash ~= expected_sha256:lower() then return result(false, "core_hash_mismatch") end
-
   if type(self.fs.chmod) == "function" and self.fs.chmod(path, 700) ~= true then return result(false, "core_invalid_upload") end
   local version = parse_version(self.exec.xray_version(path, self.now() + 5))
   if not version or not version:match("^[0-9][0-9a-zA-Z%.%-]*$") then return result(false, "core_version_invalid") end
@@ -172,7 +163,7 @@ function Manager:validate(path, expected_sha256, note)
 
   local manifest = {
     id = id, version = version:lower(), arch = binary_arch, size = checked.size,
-    sha256 = actual_hash, uploaded_at = self.wall_time(), note = note, validation = validation
+    sha256 = actual_hash, uploaded_at = self.wall_time(), validation = validation
   }
   return result(true, "core_validated", { manifest = manifest })
 end

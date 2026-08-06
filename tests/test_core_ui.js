@@ -19,13 +19,23 @@ assert.strictEqual(model.includes('translate("Xray")'), false,
 
 for (const id of [
   "xc-core-page", "xc-core-current-source", "xc-core-current-version",
-  "xc-core-current-arch", "xc-core-current-sha256", "xc-core-current-status",
-  "xc-core-upload-file", "xc-core-upload-sha256", "xc-core-upload-note",
+  "xc-core-current-arch", "xc-core-current-status",
+  "xc-core-upload-file", "xc-core-upload-progress", "xc-core-upload-progress-text",
   "xc-core-upload", "xc-core-refresh", "xc-core-versions", "xc-core-operation-state"
   ,"xc-core-system-action"
 ]) {
   assert.ok(view.includes('id="' + id + '"'), "missing core UI element " + id);
 }
+
+assert.strictEqual(view.includes('id="xc-core-upload-sha256"'), false,
+  "core upload must not expose an expected SHA-256 field");
+assert.strictEqual(view.includes('id="xc-core-upload-note"'), false,
+  "core upload must not expose a note field");
+assert.strictEqual(view.includes('form.append("sha256"'), false,
+  "core upload must not submit an expected SHA-256 field");
+assert.strictEqual(view.includes('form.append("note"'), false,
+  "core upload must not submit a note field");
+assert.ok(view.includes("xhr.upload.onprogress"), "core upload must report XMLHttpRequest progress");
 
 for (const action of ["core-status", "core-upload", "core-activate", "core-rollback", "core-delete"]) {
   assert.ok(view.includes('data-' + action + '-url='), "missing reserved endpoint " + action);
@@ -87,8 +97,8 @@ function element(tag) {
 function harness() {
   const ids = [
     "xc-core-page", "xc-core-current-source", "xc-core-current-version",
-    "xc-core-current-arch", "xc-core-current-sha256", "xc-core-current-status",
-    "xc-core-upload-file", "xc-core-upload-sha256", "xc-core-upload-note",
+    "xc-core-current-arch", "xc-core-current-status",
+    "xc-core-upload-file", "xc-core-upload-progress", "xc-core-upload-progress-text",
     "xc-core-upload", "xc-core-refresh", "xc-core-versions", "xc-core-operation-state"
     ,"xc-core-system-action"
   ];
@@ -146,7 +156,6 @@ function harness() {
   assert.strictEqual(h.elements["xc-core-current-source"].textContent, "手动核心");
   assert.strictEqual(h.elements["xc-core-current-version"].textContent, "26.6.27");
   assert.strictEqual(h.elements["xc-core-current-arch"].textContent, "aarch64");
-  assert.strictEqual(h.elements["xc-core-current-sha256"].textContent, "a".repeat(64));
   assert.strictEqual(h.elements["xc-core-current-status"].textContent, "运行中");
 }
 
@@ -157,7 +166,6 @@ function harness() {
     status: "error"
   });
   assert.strictEqual(h.elements["xc-core-current-version"].textContent, "不可用");
-  assert.strictEqual(h.elements["xc-core-current-sha256"].textContent, "不可用");
   assert.strictEqual(h.elements["xc-core-current-status"].textContent, "错误");
 }
 
@@ -179,7 +187,7 @@ function harness() {
   assert.strictEqual(actions.length, 4, "version records expose only safe actions");
   assert.strictEqual(actions[0].getAttribute("data-core-action"), "current");
   assert.strictEqual(actions[1].getAttribute("data-core-action"), "rollback");
-  assert.strictEqual(rows[2].children[4].textContent, "已完成配置校验");
+  assert.strictEqual(rows[2].children[3].textContent, "已完成配置校验");
 }
 
 {

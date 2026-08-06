@@ -409,9 +409,6 @@ msgstr ""
 msgid "Delete"
 msgstr ""
 
-msgid "Expected SHA-256 (optional)"
-msgstr ""
-
 msgid "Installed versions"
 msgstr ""
 
@@ -424,10 +421,10 @@ msgstr ""
 msgid "No installed core versions"
 msgstr ""
 
-msgid "Note (optional)"
+msgid "Only a single Xray ELF executable matching this device architecture is accepted."
 msgstr ""
 
-msgid "Only a single Xray ELF executable matching this device architecture is accepted."
+msgid "Plugin version"
 msgstr ""
 
 msgid "Refresh status"
@@ -458,6 +455,9 @@ msgid "Upload and validate"
 msgstr ""
 
 msgid "Upload and validate core"
+msgstr ""
+
+msgid "Upload progress"
 msgstr ""
 
 msgid "Validated"

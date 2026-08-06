@@ -6,6 +6,8 @@ const vm = require("vm");
 
 function loadStatus() {
   const source = fs.readFileSync("luasrc/view/xc/status.htm", "utf8");
+  assert.ok(source.includes("<%:Plugin version%>"), "status page must show plugin version");
+  assert.ok(source.includes("white-space: nowrap"), "runtime status must stay on one line");
   let script = source.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
     .replace(/<%=dispatcher\.build_url\("admin", "services", "xc", "([^"]+)"\)%>/g, "/xc/$1")
     .replace(/<%=token%>/g, "csrf-token")

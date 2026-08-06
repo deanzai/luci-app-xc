@@ -1,11 +1,13 @@
 <%
 local dispatcher = require "luci.dispatcher"
 local util = require "luci.util"
+local version = require "xc.version"
 %>
 
 <div class="cbi-section">
   <h3><%:Runtime status%></h3>
   <div class="table">
+    <div class="tr"><div class="td left" width="33%"><%:Plugin version%></div><div class="td left" id="xc-plugin-version"><%=version.display%></div></div>
     <div class="tr"><div class="td left" width="33%"><%:Service%></div><div class="td left" id="xc-service-state"><em><%:Loading…%></em></div></div>
     <div class="tr"><div class="td left"><%:Active node%></div><div class="td left" id="xc-active-node">-</div></div>
     <div class="tr"><div class="td left"><%:SOCKS listener%></div><div class="td left" id="xc-socks-listener">-</div></div>
@@ -19,6 +21,10 @@ local util = require "luci.util"
   </div>
   <p id="xc-action-result" role="status"></p>
 </div>
+
+<style type="text/css">
+#xc-service-state { white-space: nowrap; }
+</style>
 
 <script type="text/javascript">
 //<![CDATA[

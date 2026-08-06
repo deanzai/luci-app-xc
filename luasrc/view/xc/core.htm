@@ -30,10 +30,6 @@ local util = require "luci.util"
         <div class="td left" id="xc-core-current-arch"><%:Unavailable%></div>
       </div>
       <div class="tr">
-        <div class="td left" width="33%">SHA-256</div>
-        <div class="td left xc-core-hash" id="xc-core-current-sha256"><%:Unavailable%></div>
-      </div>
-      <div class="tr">
         <div class="td left" width="33%"><%:Runtime status%></div>
         <div class="td left xc-core-status xc-core-status-unknown" id="xc-core-current-status"><%:Unknown%></div>
       </div>
@@ -54,13 +50,9 @@ local util = require "luci.util"
         <div class="cbi-value-description"><%:Only a single Xray ELF executable matching this device architecture is accepted.%></div>
       </div>
     </div>
-    <div class="cbi-value">
-      <label class="cbi-value-title" for="xc-core-upload-sha256"><%:Expected SHA-256 (optional)%></label>
-      <div class="cbi-value-field"><input id="xc-core-upload-sha256" name="sha256" type="text" maxlength="64" autocomplete="off" /></div>
-    </div>
-    <div class="cbi-value">
-      <label class="cbi-value-title" for="xc-core-upload-note"><%:Note (optional)%></label>
-      <div class="cbi-value-field"><input id="xc-core-upload-note" name="note" type="text" maxlength="256" autocomplete="off" /></div>
+    <div class="xc-core-upload-progress-wrap" role="status" aria-live="polite">
+      <progress id="xc-core-upload-progress" max="100" value="0" hidden="hidden" aria-label="<%:Upload progress%>"></progress>
+      <span id="xc-core-upload-progress-text"></span>
     </div>
     <div class="cbi-page-actions">
       <input id="xc-core-upload" type="button" class="cbi-button cbi-button-action" value="<%:Upload and validate%>" disabled="disabled" />
@@ -74,7 +66,6 @@ local util = require "luci.util"
         <div class="th"><%:Version%></div>
         <div class="th"><%:Architecture%></div>
         <div class="th"><%:Size%></div>
-        <div class="th">SHA-256</div>
         <div class="th"><%:Validation status%></div>
         <div class="th"><%:Actions%></div>
       </div>
@@ -86,7 +77,6 @@ local util = require "luci.util"
 </div>
 
 <style type="text/css">
-.xc-core-hash { word-break: break-all; font-family: monospace; }
 .xc-core-status-running { color: #278a2a; }
 .xc-core-status-error { color: #c33; }
 .xc-core-status-unknown { color: #777; }
@@ -132,11 +122,10 @@ local util = require "luci.util"
     source: document.getElementById("xc-core-current-source"),
     version: document.getElementById("xc-core-current-version"),
     arch: document.getElementById("xc-core-current-arch"),
-    sha256: document.getElementById("xc-core-current-sha256"),
     status: document.getElementById("xc-core-current-status"),
     file: document.getElementById("xc-core-upload-file"),
-    shaInput: document.getElementById("xc-core-upload-sha256"),
-    note: document.getElementById("xc-core-upload-note"),
+    progress: document.getElementById("xc-core-upload-progress"),
+    progressText: document.getElementById("xc-core-upload-progress-text"),
     upload: document.getElementById("xc-core-upload"),
     versions: document.getElementById("xc-core-versions"),
     operation: document.getElementById("xc-core-operation-state"),
@@ -191,7 +180,6 @@ local util = require "luci.util"
     setText(elements.source, currentSource(marker));
     setText(elements.version, safeVersion(current.version) ? current.version : text.unavailable);
     setText(elements.arch, safeArch(current.arch) ? current.arch : text.unavailable);
-    setText(elements.sha256, safeHash(current.sha256) ? current.sha256.toLowerCase() : text.unavailable);
     setText(elements.status, currentStatus(status));
     if (elements.system) {
       elements.system.disabled = marker === "system";
@@ -201,9 +189,14 @@ local util = require "luci.util"
       (status === "running" || status === "error" ? status : "unknown");
   }
 
-  function request(method, url, body, callback) {
+  function request(method, url, body, callback, progressCallback) {
     if (typeof XMLHttpRequest !== "function") { unavailable(); return; }
     var xhr = new XMLHttpRequest();
+    if (xhr.upload && typeof progressCallback === "function") {
+      xhr.upload.onprogress = function(event) {
+        if (event && event.lengthComputable) progressCallback(event.loaded, event.total);
+      };
+    }
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       var payload = null;
@@ -286,8 +279,7 @@ local util = require "luci.util"
         cell(row, version.version);
         cell(row, version.arch);
         cell(row, String(version.size));
-        cell(row, version.sha256.toLowerCase(), "xc-core-hash");
-         cell(row, version.current === true ? text.current : version.previous === true ? text.rollback : validationText(version.validation));
+        cell(row, version.current === true ? text.current : version.previous === true ? text.rollback : validationText(version.validation));
         var actions = document.createElement("div");
         actions.className = "td xc-core-version-actions";
         if (version.current === true) {
@@ -310,6 +302,19 @@ local util = require "luci.util"
     elements.upload.disabled = !(elements.file && elements.file.files && elements.file.files.length > 0);
   }
 
+  function setUploadProgress(loaded, total) {
+    if (!elements.progress || !elements.progressText) return;
+    if (!total || total < 1) {
+      elements.progress.hidden = true;
+      elements.progressText.textContent = "";
+      return;
+    }
+    var percent = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+    elements.progress.hidden = false;
+    elements.progress.value = percent;
+    elements.progressText.textContent = percent + "%";
+  }
+
   function unavailable() {
     elements.operation.textContent = text.unavailableAction;
   }
@@ -330,10 +335,10 @@ local util = require "luci.util"
     if (elements.upload.disabled || typeof XMLHttpRequest !== "function" || typeof FormData !== "function") { unavailable(); return; }
     var form = new FormData();
     form.append("core_file", elements.file.files[0]);
-    form.append("sha256", elements.shaInput.value || "");
-    form.append("note", elements.note.value || "");
+    setUploadProgress(0, elements.file.files[0].size || 0);
     elements.upload.disabled = true;
     request("POST", page.getAttribute("data-core-upload-url"), form, function(payload) {
+      setUploadProgress(0, 0);
       elements.upload.disabled = false;
       if (!payload || payload.ok !== true) {
         elements.operation.textContent = payload && payload.message ? payload.message : text.unavailableAction;
@@ -343,7 +348,7 @@ local util = require "luci.util"
       elements.file.value = "";
       updateUploadState();
       loadStatus();
-    });
+    }, setUploadProgress);
   };
   elements.refresh.onclick = loadStatus;
   updateUploadState();
