@@ -66,7 +66,7 @@ make package/luci-app-xc/compile V=s
 - **No implicit global `call()`** in controllers — ucode bridge doesn't provide it. Use `call(action_fn)` via `entry()` which returns a callable.
 - **No CRLF** anywhere in source — `check-package.sh` rejects it.
 - **CBI datatype** — 21.02 lacks `url` token; use custom `validate()` for complex inputs.
-- **Config save ≠ node switch** — "Save & Apply" is CBI config management. The "Switch" button triggers a separate runtime transaction (validate → render → restart → health check → commit/rollback).
+- **Config save ≠ fast node switch** — "Save & Apply" is CBI config management and the full switch path (validate → render → restart → health check → commit/rollback). The node page exposes only fast switching for nodes already present in the running balancer.
 - **File permissions** — `/etc/config/xc` 0600, `/etc/xc` 0700, `/etc/xc/rollback` 0700. Enforced in init script and UCI commit.
 - **No secrets in logs** — never log UUIDs, passwords, tokens, raw outbound JSON, or full share links. Log only node internal ID, outcome, stable error codes, and timing.
 - **Translation sync** — every user-visible string uses `_()`. The pot/po catalogs must exactly match the source strings (enforced by check-package.sh). Regenerate after UI text changes.

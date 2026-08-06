@@ -79,6 +79,9 @@ msgstr ""
 msgid "Fast switch failed"
 msgstr ""
 
+msgid "Fast switch target is not applied; save and apply it in Settings first."
+msgstr ""
+
 msgid "Fast switched"
 msgstr ""
 
@@ -287,18 +290,6 @@ msgid "Stop testing"
 msgstr ""
 
 msgid "Stopped"
-msgstr ""
-
-msgid "Switch"
-msgstr ""
-
-msgid "Switch failed"
-msgstr ""
-
-msgid "Switched"
-msgstr ""
-
-msgid "Switching…"
 msgstr ""
 
 msgid "Test"

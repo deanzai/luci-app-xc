@@ -14,19 +14,22 @@ function script(path) {
 }
 
 const nodeTableSource = fs.readFileSync("luasrc/view/xc/node_table.htm", "utf8");
+const settingsSource = fs.readFileSync("luasrc/model/cbi/xc/settings.lua", "utf8");
 assert.ok(nodeTableSource.includes('translate("Test")'), "single-node button uses Test");
 assert.ok(nodeTableSource.includes('value="<%:Test all%>"'), "batch button keeps Test all");
 assert.ok(nodeTableSource.includes('value="<%:Stop testing%>"'), "stop button uses Stop testing");
 assert.ok(nodeTableSource.includes('id="xc-node-controls"'), "node controls share one toolbar");
-assert.ok(nodeTableSource.includes('dispatcher.build_url("admin", "services", "xc", "switch")'), "row switch uses authenticated controller endpoint");
 assert.ok(nodeTableSource.includes('dispatcher.build_url("admin", "services", "xc", "fast-switch")'), "fast row switch uses authenticated controller endpoint");
-assert.ok(nodeTableSource.includes('translate("Switch")'), "inactive node action uses Switch");
+assert.strictEqual(nodeTableSource.includes('dispatcher.build_url("admin", "services", "xc", "switch")'), false, "node rows do not expose full switch");
+assert.strictEqual(nodeTableSource.includes('translate("Switch")'), false, "node rows do not expose full switch text");
 assert.ok(nodeTableSource.includes('translate("Current")'), "active node action uses Current");
 assert.ok(nodeTableSource.includes('translate("Fast switch")'), "inactive node action uses Fast switch");
 assert.ok(nodeTableSource.includes('translate("Fast switching…")'), "fast switch has a pending label");
+assert.ok(nodeTableSource.includes('translate("Fast switch target is not applied; save and apply it in Settings first.")'), "unapplied target explains the settings workflow");
 assert.ok(nodeTableSource.includes("fast_switched"), "row fast switch refreshes active state");
-assert.ok(nodeTableSource.includes("switch_started"), "row switch handles asynchronous completion");
-assert.ok(nodeTableSource.includes("operation"), "row switch follows shared operation state");
+assert.strictEqual(nodeTableSource.includes("switch_started"), false, "node rows do not start full switch transactions");
+assert.strictEqual(nodeTableSource.includes("xc-switch-one"), false, "node rows have no full switch controls");
+assert.ok(settingsSource.includes('local active_node = global:option(ListValue, "active_node"'), "settings retain full active-node selection");
 assert.strictEqual(nodeTableSource.includes("location.reload"), false, "switch does not reload the page");
 
 function xhrHarness() {
@@ -171,19 +174,16 @@ function nodeHarness(concurrency, layout, rowCount, initiallyHidden) {
     const sockets = actionBox.querySelectorAll(".xc-socket");
     assert.strictEqual(probes.length, 1, "row initialization is idempotent");
     assert.strictEqual(fastSwitches.length, 1, "row has exactly one fast switch button");
-    assert.strictEqual(switches.length, 1, "row has exactly one switch button");
+    assert.strictEqual(switches.length, 0, "row has no full switch button");
     assert.strictEqual(sockets.length, 1, "partial initialization restores exactly one socket");
     assert.strictEqual(row.getAttribute("data-xc-section"), "node_" + index);
     assert.deepStrictEqual(actionBox.children.map(child => child.className.indexOf("xc-socket") >= 0 ? "Socket" :
       child.className.indexOf("xc-probe-one") >= 0 ? "Probe" :
-      child.className.indexOf("xc-fast-switch-one") >= 0 ? "Fast switch" :
-      child.className.indexOf("xc-switch-one") >= 0 ? "Switch" : child.value), ["Socket", "Probe", "Fast switch", "Switch", "Edit", "Delete"]);
+      child.className.indexOf("xc-fast-switch-one") >= 0 ? "Fast switch" : child.value), ["Socket", "Probe", "Fast switch", "Edit", "Delete"]);
     row.section = "node_" + index; row.latency = row.querySelector(".xc-latency");
     row.socket = row.querySelector(".xc-socket"); row.button = probes[0];
-    row.fastSwitchButton = fastSwitches[0]; row.switchButton = switches[0];
+    row.fastSwitchButton = fastSwitches[0];
     assert.strictEqual(row.button.value, "Test", "single-node button label");
-    assert.strictEqual(row.switchButton.value, index === 0 ? "Current" : "Switch");
-    assert.strictEqual(row.switchButton.disabled, index === 0);
     assert.strictEqual(row.fastSwitchButton.value, index === 0 ? "Current" : "Fast switch");
     assert.strictEqual(row.fastSwitchButton.disabled, index === 0);
     assert.strictEqual(hasClass(row, "xc-node-active"), index === 0, "only the active row is highlighted");
@@ -285,111 +285,10 @@ for (const respond of [
 
 {
   const h = nodeHarness(3);
-  h.rows[1].switchButton.onclick();
-  assert.strictEqual(h.requests.length, 1);
-  assert.strictEqual(h.requests[0].method, "POST");
-  assert.ok(h.requests[0].url.indexOf("/xc/switch?token=csrf-token") >= 0);
-  assert.strictEqual(JSON.parse(h.requests[0].body).section, "node_1");
-  assert.strictEqual(h.rows[1].switchButton.value, "Switching…");
-  h.rows.forEach(row => assert.strictEqual(row.switchButton.disabled, true, "all switch buttons lock during a switch"));
-  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
-  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), false);
-  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
-  assert.strictEqual(h.rows[0].switchButton.value, "Switch");
-  assert.strictEqual(h.rows[0].switchButton.disabled, false);
-  assert.strictEqual(h.rows[1].switchButton.value, "Current");
-  assert.strictEqual(h.rows[1].switchButton.disabled, true);
-}
-
-{
-  const h = nodeHarness(3);
-  h.rows[1].switchButton.onclick();
-  h.requests[0].respond({ ok: true, data: { code: "switch_started", node: "node_1" } });
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switching…",
-    "an accepted background switch remains pending");
-  assert.strictEqual(h.rows[1].switchButton.value, "Switching…");
-  h.rows.forEach(row => assert.strictEqual(row.switchButton.disabled, true,
-    "all switch buttons stay disabled while operation is active"));
-  h.timers[h.timers.length - 1].callback();
-  assert.strictEqual(h.requests.length, 2);
-  h.requests[1].respond({ ok: true, data: { operation: "switch", recovery_required: false,
-    active_section: "node_0" } });
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switching…");
-  h.timers[h.timers.length - 1].callback();
-  assert.strictEqual(h.requests.length, 3);
-  h.requests[2].respond({ ok: true, data: { operation: "idle", recovery_required: false,
-    active_section: "node_1" } });
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
-  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), true);
-  assert.strictEqual(h.rows[1].switchButton.value, "Current");
-}
-
-{
-  const h = nodeHarness(3, "div", 3, true);
-  h.rows[1].switchButton.onclick();
-  h.requests[0].respond({ ok: true, data: { code: "switch_started", node: "node_1" } });
-  assert.ok(h.timers.some(timer => !timer.cleared),
-    "a background switch keeps polling while the page is hidden");
-  h.timers[h.timers.length - 1].callback();
-  assert.strictEqual(h.requests.length, 2);
-  h.requests[1].respond({ ok: true, data: { operation: "idle", recovery_required: false,
-    active_section: "node_1" } });
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switched");
-  assert.strictEqual(h.rows[1].switchButton.value, "Current");
-}
-
-{
-  const h = nodeHarness(3);
-  h.rows[1].switchButton.onclick();
-  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
-  assert.strictEqual(h.requests.length, 2, "successful switch refreshes active state from the server");
-  assert.strictEqual(h.requests[1].method, "GET");
-  assert.ok(h.requests[1].url.indexOf("/xc/status") >= 0);
-  h.requests[1].respond({ ok: true, data: { active_section: "node_2" } });
-  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), false,
-    "node table follows the committed active node");
-  assert.strictEqual(h.hasClass(h.rows[2], "xc-node-active"), true,
-    "node table highlights the server-reported active node");
-}
-
-{
-  const h = nodeHarness(3);
-  h.rows[1].switchButton.onclick();
-  h.requests[0].respond({ ok: true, data: { code: "switched", node: "node_1" } });
-  const firstRefresh = h.requests[1];
-  h.rows[2].switchButton.onclick();
-  h.requests[2].respond({ ok: true, data: { code: "switched", node: "node_2" } });
-  const secondRefresh = h.requests[3];
-  secondRefresh.respond({ ok: true, data: { active_section: "node_2" } });
-  firstRefresh.respond({ ok: true, data: { active_section: "node_1" } });
-  assert.strictEqual(h.hasClass(h.rows[1], "xc-node-active"), false,
-    "a late refresh from an older switch cannot restore its node");
-  assert.strictEqual(h.hasClass(h.rows[2], "xc-node-active"), true,
-    "the newest switch remains highlighted after a stale response");
-}
-
-for (const respond of [
-  request => request.respond({ ok: false, code: "validation_failed" }, 400),
-  request => request.respondRaw("{malformed", 500)
-]) {
-  const h = nodeHarness(3);
-  h.rows[2].switchButton.onclick(); respond(h.requests[0]);
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switch failed");
-  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), true, "failed switch keeps the prior highlight");
-  assert.strictEqual(h.rows[2].switchButton.value, "Switch");
-  assert.strictEqual(h.rows[2].switchButton.disabled, false);
-}
-
-for (const fail of [request => request.fail(), request => request.expire()]) {
-  const h = nodeHarness(3);
-  h.rows[2].switchButton.onclick();
-  assert.strictEqual(h.requests[0].timeout, 12000, "switch requests have a bounded browser deadline");
-  fail(h.requests[0]);
-  assert.strictEqual(h.controls["xc-switch-state"].textContent, "Switch failed");
-  assert.strictEqual(h.hasClass(h.rows[0], "xc-node-active"), true, "network failure keeps the prior highlight");
-  assert.strictEqual(h.rows[2].switchButton.value, "Switch");
-  assert.strictEqual(h.rows[2].switchButton.disabled, false);
+  h.rows[2].fastSwitchButton.onclick();
+  h.requests[0].respond({ ok: false, code: "fast_switch_target_invalid" }, 400);
+  assert.strictEqual(h.controls["xc-switch-state"].textContent,
+    "Fast switch target is not applied; save and apply it in Settings first.");
 }
 
 for (const respond of [

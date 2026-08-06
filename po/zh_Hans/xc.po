@@ -81,6 +81,9 @@ msgstr "快速切换"
 msgid "Fast switch failed"
 msgstr "快速切换失败"
 
+msgid "Fast switch target is not applied; save and apply it in Settings first."
+msgstr "快速切换目标尚未应用，请先到设置页保存并应用。"
+
 msgid "Fast switched"
 msgstr "已快速切换"
 
@@ -290,18 +293,6 @@ msgstr "停止测速"
 
 msgid "Stopped"
 msgstr "已停止"
-
-msgid "Switch"
-msgstr "切换"
-
-msgid "Switch failed"
-msgstr "切换失败"
-
-msgid "Switched"
-msgstr "已切换"
-
-msgid "Switching…"
-msgstr "切换中…"
 
 msgid "Test"
 msgstr "测速"

@@ -14,7 +14,7 @@ local probe_concurrency = self.probe_concurrency or 3
   #xc-node-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4em; }
   .xc-probe-row .cbi-section-actions > div { display: flex; align-items: center; flex-wrap: nowrap; gap: 0.3em; }
   .xc-probe-row .xc-socket { display: inline-block; margin-right: 0.3em; }
-  .xc-probe-row .xc-probe-one, .xc-probe-row .xc-fast-switch-one, .xc-probe-row .xc-switch-one { font-size: smaller; padding: 0.15em 0.5em; }
+  .xc-probe-row .xc-probe-one, .xc-probe-row .xc-fast-switch-one { font-size: smaller; padding: 0.15em 0.5em; }
   .xc-node-active { box-shadow: inset 0.3em 0 0 #37a169; }
   .xc-node-active > .td { background-color: rgba(55, 161, 105, 0.12); }
   @media (max-width: 768px) {
@@ -25,7 +25,6 @@ local probe_concurrency = self.probe_concurrency or 3
 (function() {
   "use strict";
   var endpoint = '<%=dispatcher.build_url("admin", "services", "xc", "probe")%>?token=<%=token%>';
-  var switchEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "switch")%>?token=<%=token%>';
   var fastSwitchEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "fast-switch")%>?token=<%=token%>';
   var statusEndpoint = '<%=dispatcher.build_url("admin", "services", "xc", "status")%>';
   var activeSection = <%=util.serialize_json(self.active_section or "")%>;
@@ -37,19 +36,15 @@ local probe_concurrency = self.probe_concurrency or 3
   var testingText = <%=util.serialize_json(translate("Testing…"))%>;
   var stoppedText = <%=util.serialize_json(translate("Stopped"))%>;
   var probeText = <%=util.serialize_json(translate("Test"))%>;
-  var switchText = <%=util.serialize_json(translate("Switch"))%>;
   var fastSwitchText = <%=util.serialize_json(translate("Fast switch"))%>;
   var currentText = <%=util.serialize_json(translate("Current"))%>;
-  var switchingText = <%=util.serialize_json(translate("Switching…"))%>;
   var fastSwitchingText = <%=util.serialize_json(translate("Fast switching…"))%>;
-  var switchedText = <%=util.serialize_json(translate("Switched"))%>;
+  var fastSwitchTargetInvalidText = <%=util.serialize_json(translate("Fast switch target is not applied; save and apply it in Settings first."))%>;
   var fastSwitchedText = <%=util.serialize_json(translate("Fast switched"))%>;
-  var switchFailedText = <%=util.serialize_json(translate("Switch failed"))%>;
   var fastSwitchFailedText = <%=util.serialize_json(translate("Fast switch failed"))%>;
   var rows = [], queue = [], inFlight = 0, runId = 0, running = false;
-  var allButton, stopButton, state, switchState, switching = false, switchGeneration = 0;
+  var allButton, stopButton, state, switchState;
   var fastSwitching = false, fastSwitchGeneration = 0, fastSwitchRequest = null;
-  var switchPollTimer = null, switchRequest = null, switchTarget = null, switchPolls = 0;
 
   function color(milliseconds) {
     if (milliseconds < 100) return "green";
@@ -143,15 +138,10 @@ local probe_concurrency = self.probe_concurrency or 3
         if (active) row.classList.add("xc-node-active");
         else row.classList.remove("xc-node-active");
       }
-      var button = row.querySelector(".xc-switch-one");
-      if (button) {
-        button.value = active ? currentText : switchText;
-        button.disabled = switching || fastSwitching || active;
-      }
       var fastButton = row.querySelector(".xc-fast-switch-one");
       if (fastButton) {
         fastButton.value = active ? currentText : fastSwitchText;
-        fastButton.disabled = switching || fastSwitching || active;
+        fastButton.disabled = fastSwitching || active;
       }
     }
   }
@@ -162,7 +152,7 @@ local probe_concurrency = self.probe_concurrency or 3
     function complete(payload) {
       if (settled) return;
       settled = true;
-      if (generation !== switchGeneration || !payload || payload.ok !== true || !payload.data) return;
+      if (generation !== fastSwitchGeneration || !payload || payload.ok !== true || !payload.data) return;
       setActive(payload.data.active_section || null);
     }
     xhr.open("GET", statusEndpoint, true);
@@ -178,45 +168,22 @@ local probe_concurrency = self.probe_concurrency or 3
     xhr.send(null);
   }
 
-  function scheduleSwitchPoll(generation) {
-    if (switchPollTimer !== null) window.clearTimeout(switchPollTimer);
-    switchPollTimer = null;
-    // A detached switch continues while this tab is hidden; keep observing it
-    // so returning to the page does not leave the target stuck on "Switching".
-    if (generation !== switchGeneration || !switching) return;
-    switchPollTimer = window.setTimeout(function() { pollSwitchStatus(generation); }, 1000);
-  }
-
-  function finishSwitch(generation, succeeded, section) {
-    if (generation !== switchGeneration) return;
-    switching = false;
-    switchTarget = null;
-    switchRequest = null;
-    if (succeeded && section) {
-      setActive(section);
-      switchState.textContent = switchedText;
-    } else {
-      setActive(activeSection);
-      switchState.textContent = switchFailedText;
-    }
-  }
-
-  function finishFastSwitch(generation, succeeded, section) {
+  function finishFastSwitch(generation, succeeded, section, code) {
     if (generation !== fastSwitchGeneration) return;
     fastSwitching = false;
     fastSwitchRequest = null;
     if (succeeded && section) {
       setActive(section);
       switchState.textContent = fastSwitchedText;
-      refreshActive(switchGeneration);
+      refreshActive(generation);
     } else {
       setActive(activeSection);
-      switchState.textContent = fastSwitchFailedText;
+      switchState.textContent = code === "fast_switch_target_invalid" ? fastSwitchTargetInvalidText : fastSwitchFailedText;
     }
   }
 
   function fastSwitchNode(row) {
-    if (switching || fastSwitching) return;
+    if (fastSwitching) return;
     var section = row.getAttribute("data-xc-section");
     if (!section || section === activeSection) return;
     var generation = ++fastSwitchGeneration;
@@ -239,94 +206,7 @@ local probe_concurrency = self.probe_concurrency or 3
       if (generation !== fastSwitchGeneration) return;
       if (payload && payload.ok === true && payload.data && payload.data.code === "fast_switched")
         finishFastSwitch(generation, true, section);
-      else finishFastSwitch(generation, false);
-    }
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4) return;
-      var payload = null;
-      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
-      complete(payload);
-    };
-    xhr.onerror = function() { complete(null); };
-    xhr.ontimeout = function() { complete(null); };
-    xhr.send(JSON.stringify({ section: section }));
-  }
-
-  function pollSwitchStatus(generation) {
-    if (generation !== switchGeneration || !switching || switchRequest !== null) return;
-    switchPolls++;
-    if (switchPolls > 120) { finishSwitch(generation, false); return; }
-    var xhr = new XMLHttpRequest();
-    var settled = false;
-    switchRequest = xhr;
-    function complete(payload) {
-      if (settled) return;
-      settled = true;
-      if (switchRequest === xhr) switchRequest = null;
-      if (generation !== switchGeneration) return;
-      if (!payload || payload.ok !== true || !payload.data) {
-        scheduleSwitchPoll(generation); return;
-      }
-      var data = payload.data;
-      if (data.recovery_required === true || data.operation === "interrupted") {
-        finishSwitch(generation, false); return;
-      }
-      if (data.operation && data.operation !== "idle") {
-        switchState.textContent = switchingText;
-        scheduleSwitchPoll(generation); return;
-      }
-      if (data.active_section === switchTarget) {
-        finishSwitch(generation, true, data.active_section);
-      } else if (data.last_error) {
-        finishSwitch(generation, false);
-      } else {
-        scheduleSwitchPoll(generation);
-      }
-    }
-    xhr.open("GET", statusEndpoint, true);
-    xhr.timeout = 12000;
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4) return;
-      var payload = null;
-      try { payload = JSON.parse(xhr.responseText); } catch (ignored) {}
-      complete(payload);
-    };
-    xhr.onerror = function() { complete(null); };
-    xhr.ontimeout = function() { complete(null); };
-    xhr.send(null);
-  }
-
-  function switchNode(row) {
-    if (switching) return;
-    var section = row.getAttribute("data-xc-section");
-    if (!section || section === activeSection) return;
-    var generation = ++switchGeneration;
-    switching = true;
-    switchTarget = section;
-    switchPolls = 0;
-    switchState.textContent = switchingText;
-    setActive(activeSection);
-    var selected = row.querySelector(".xc-switch-one");
-    if (selected) selected.value = switchingText;
-    var xhr = new XMLHttpRequest();
-    xhr.open("POST", switchEndpoint, true);
-    xhr.setRequestHeader("Content-Type", "application/json");
-    // The POST only starts the detached transaction; status polling owns the
-    // longer restart and real-connection-test lifetime.
-    xhr.timeout = 12000;
-    var settled = false;
-    function complete(payload) {
-      if (settled) return;
-      settled = true;
-      if (payload && payload.ok === true && payload.data && payload.data.code === "switched") {
-        finishSwitch(generation, true, section);
-        refreshActive(generation);
-      } else if (payload && payload.ok === true && payload.data && payload.data.code === "switch_started") {
-        switchState.textContent = switchingText;
-        scheduleSwitchPoll(generation);
-      } else {
-        finishSwitch(generation, false);
-      }
+      else finishFastSwitch(generation, false, null, payload && payload.code);
     }
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -353,11 +233,9 @@ local probe_concurrency = self.probe_concurrency or 3
       row.setAttribute("data-xc-section", match[1]);
       var buttons = actions.querySelectorAll(".xc-probe-one");
       var fastSwitchButtons = actions.querySelectorAll(".xc-fast-switch-one");
-      var switchButtons = actions.querySelectorAll(".xc-switch-one");
       var sockets = actions.querySelectorAll(".xc-socket");
       var button = buttons[0] || null;
       var fastSwitchButton = fastSwitchButtons[0] || null;
-      var switchButton = switchButtons[0] || null;
       var socket = sockets[0] || null;
       for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++)
         if (buttons[buttonIndex].parentNode === actions) actions.removeChild(buttons[buttonIndex]);
@@ -365,8 +243,6 @@ local probe_concurrency = self.probe_concurrency or 3
         if (fastSwitchButtons[fastSwitchIndex].parentNode === actions) actions.removeChild(fastSwitchButtons[fastSwitchIndex]);
       for (var socketIndex = 0; socketIndex < sockets.length; socketIndex++)
         if (sockets[socketIndex].parentNode === actions) actions.removeChild(sockets[socketIndex]);
-      for (var switchIndex = 0; switchIndex < switchButtons.length; switchIndex++)
-        if (switchButtons[switchIndex].parentNode === actions) actions.removeChild(switchButtons[switchIndex]);
       if (!socket) {
         var latency = row.querySelector(".xc-latency");
         var cachedSocket = latency ? latency.getAttribute("data-xc-socket") : "";
@@ -387,16 +263,10 @@ local probe_concurrency = self.probe_concurrency or 3
         fastSwitchButton.className = "cbi-button cbi-button-action xc-fast-switch-one";
         fastSwitchButton.value = fastSwitchText;
       }
-      if (!switchButton) {
-        switchButton = document.createElement("input");
-        switchButton.type = "button";
-        switchButton.className = "cbi-button cbi-button-action xc-switch-one";
-      }
       var firstAction = actions.children[0] || null;
       actions.insertBefore(socket, firstAction);
       actions.insertBefore(button, firstAction);
       actions.insertBefore(fastSwitchButton, firstAction);
-      actions.insertBefore(switchButton, firstAction);
       rows.push(row);
     }
     allButton = document.getElementById("xc-probe-all");
@@ -412,14 +282,9 @@ local probe_concurrency = self.probe_concurrency or 3
     for (var index = 0; index < rows.length; index++) (function(row) {
       row.querySelector(".xc-probe-one").onclick = function() { start([row]); };
       row.querySelector(".xc-fast-switch-one").onclick = function() { fastSwitchNode(row); };
-      row.querySelector(".xc-switch-one").onclick = function() { switchNode(row); };
     })(rows[index]);
     setActive(activeSection);
   }
-
-  document.addEventListener("visibilitychange", function() {
-    if (!document.hidden && switching) pollSwitchStatus(switchGeneration);
-  });
 
   window.XCProbeQueue = { start: start, stop: stop };
   if (document.addEventListener) document.addEventListener("DOMContentLoaded", initialize);
