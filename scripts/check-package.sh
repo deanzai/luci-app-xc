@@ -30,6 +30,7 @@ check root/usr/lib/lua/xc/cli.lua
 check root/usr/lib/lua/xc/core.lua
 check root/usr/lib/lua/xc/coremanager.lua
 check root/usr/lib/lua/xc/access.lua
+check root/usr/lib/lua/xc/assetmanager.lua
 check luasrc/controller/xc.lua
 check luasrc/model/cbi/xc/settings.lua
 check luasrc/model/cbi/xc/nodes.lua

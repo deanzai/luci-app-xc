@@ -3,6 +3,7 @@ local access = require "xc.access"
 
 M.ASSET_DIR = "/usr/share/xray"
 M.FALLBACK_ASSET_DIR = "/usr/share/v2ray"
+M.MANAGED_ASSET_DIR = "/etc/xc/xray/assets"
 M.GEOSITE_PATH = M.ASSET_DIR .. "/geosite.dat"
 M.GEOIP_PATH = M.ASSET_DIR .. "/geoip.dat"
 M.FALLBACK_GEOSITE_PATH = M.FALLBACK_ASSET_DIR .. "/geosite.dat"
@@ -112,7 +113,7 @@ end
 
 function M.asset_dir(fs)
   if type(fs) ~= "table" or (type(fs.exists) ~= "function" and type(fs.stat) ~= "function") then return nil end
-  for _, directory in ipairs({ M.ASSET_DIR, M.FALLBACK_ASSET_DIR }) do
+  for _, directory in ipairs({ M.MANAGED_ASSET_DIR, M.ASSET_DIR, M.FALLBACK_ASSET_DIR }) do
     if asset_exists(fs, directory .. "/geosite.dat") and asset_exists(fs, directory .. "/geoip.dat") then
       return directory
     end
@@ -122,8 +123,11 @@ end
 
 function M.asset_status(fs)
   local directory = M.asset_dir(fs)
-  local geosite = asset_exists(fs, M.GEOSITE_PATH) or asset_exists(fs, M.FALLBACK_GEOSITE_PATH)
-  local geoip = asset_exists(fs, M.GEOIP_PATH) or asset_exists(fs, M.FALLBACK_GEOIP_PATH)
+  local geosite, geoip = false, false
+  for _, candidate in ipairs({ M.MANAGED_ASSET_DIR, M.ASSET_DIR, M.FALLBACK_ASSET_DIR }) do
+    geosite = geosite or asset_exists(fs, candidate .. "/geosite.dat")
+    geoip = geoip or asset_exists(fs, candidate .. "/geoip.dat")
+  end
   return {
     directory = directory,
     geosite = geosite,

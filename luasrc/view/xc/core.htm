@@ -8,6 +8,8 @@ local util = require "luci.util"
   data-core-activate-url="<%=dispatcher.build_url("admin", "services", "xc", "core-activate")%>"
   data-core-rollback-url="<%=dispatcher.build_url("admin", "services", "xc", "core-rollback")%>"
   data-core-delete-url="<%=dispatcher.build_url("admin", "services", "xc", "core-delete")%>"
+  data-core-resource-update-url="<%=dispatcher.build_url("admin", "services", "xc", "core-resource-update")%>"
+  data-core-resource-rollback-url="<%=dispatcher.build_url("admin", "services", "xc", "core-resource-rollback")%>"
   data-core-token="<%=token%>">
   <div class="cbi-section">
     <h3><%:Xray core management%></h3>
@@ -38,6 +40,52 @@ local util = require "luci.util"
       <input id="xc-core-system-action" type="button" class="cbi-button cbi-button-action"
         data-core-action="activate" data-core-id="system" value="<%:Use system core%>" disabled="disabled" />
       <input id="xc-core-refresh" type="button" class="cbi-button cbi-button-apply" value="<%:Refresh status%>" />
+    </div>
+  </div>
+
+  <div class="cbi-section xc-core-resources">
+    <h3><%:Core resources%></h3>
+    <p class="cbi-section-descr"><%:Update Xray, GeoIP, and GeoSite independently from a built-in source. Xray updates are installed but not activated.%></p>
+    <div class="table xc-core-resource-table">
+      <div class="tr table-titles">
+        <div class="th"><%:Resource%></div>
+        <div class="th"><%:Download source%></div>
+        <div class="th"><%:Snapshot status%></div>
+        <div class="th"><%:Actions%></div>
+      </div>
+      <div class="tr" data-core-resource-kind="xray">
+        <div class="td"><%:Xray core%></div>
+        <div class="td"><select id="xc-core-resource-xray-source" data-core-resource-source="xray"></select></div>
+        <div class="td" id="xc-core-resource-xray-status"><%:Unknown%></div>
+        <div class="td">
+          <input id="xc-core-resource-xray-update" type="button" class="cbi-button cbi-button-action"
+            data-core-resource-action="update" data-core-resource-kind="xray" value="<%:Update%>" />
+          <input id="xc-core-resource-xray-rollback" type="button" class="cbi-button cbi-button-reset"
+            data-core-resource-action="rollback" data-core-resource-kind="xray" value="<%:Rollback%>" />
+        </div>
+      </div>
+      <div class="tr" data-core-resource-kind="geoip">
+        <div class="td"><%:GeoIP database%></div>
+        <div class="td"><select id="xc-core-resource-geoip-source" data-core-resource-source="geoip"></select></div>
+        <div class="td" id="xc-core-resource-geoip-status"><%:Unknown%></div>
+        <div class="td">
+          <input id="xc-core-resource-geoip-update" type="button" class="cbi-button cbi-button-action"
+            data-core-resource-action="update" data-core-resource-kind="geoip" value="<%:Update%>" />
+          <input id="xc-core-resource-geoip-rollback" type="button" class="cbi-button cbi-button-reset"
+            data-core-resource-action="rollback" data-core-resource-kind="geoip" value="<%:Rollback%>" />
+        </div>
+      </div>
+      <div class="tr" data-core-resource-kind="geosite">
+        <div class="td"><%:GeoSite database%></div>
+        <div class="td"><select id="xc-core-resource-geosite-source" data-core-resource-source="geosite"></select></div>
+        <div class="td" id="xc-core-resource-geosite-status"><%:Unknown%></div>
+        <div class="td">
+          <input id="xc-core-resource-geosite-update" type="button" class="cbi-button cbi-button-action"
+            data-core-resource-action="update" data-core-resource-kind="geosite" value="<%:Update%>" />
+          <input id="xc-core-resource-geosite-rollback" type="button" class="cbi-button cbi-button-reset"
+            data-core-resource-action="rollback" data-core-resource-kind="geosite" value="<%:Rollback%>" />
+        </div>
+      </div>
     </div>
   </div>
 
@@ -81,7 +129,9 @@ local util = require "luci.util"
 .xc-core-status-error { color: #c33; }
 .xc-core-status-unknown { color: #777; }
 .xc-core-version-table .td, .xc-core-version-table .th { vertical-align: middle; }
+.xc-core-resource-table .td, .xc-core-resource-table .th { vertical-align: middle; }
 .xc-core-version-actions input { margin: 0 0.25em 0.25em 0; }
+.xc-core-resource-table input { margin: 0 0.25em 0.25em 0; }
 .xc-core-operation-state:empty { display: none; }
 </style>
 
@@ -117,7 +167,11 @@ local util = require "luci.util"
     confirmActivate: <%=util.serialize_json(translate("Confirm activation of this Xray core? The service may restart."))%>,
     confirmRollback: <%=util.serialize_json(translate("Confirm Xray core rollback? The service may restart."))%>,
     confirmRemove: <%=util.serialize_json(translate("Confirm deletion of this inactive Xray core?"))%>
-    ,confirmSystem: <%=util.serialize_json(translate("Confirm activation of the system Xray core? The service may restart."))%>
+    ,confirmSystem: <%=util.serialize_json(translate("Confirm activation of the system Xray core? The service may restart."))%>,
+    resourceUpdated: <%=util.serialize_json(translate("The resource was updated."))%>,
+    resourceRolledBack: <%=util.serialize_json(translate("The resource was rolled back."))%>,
+    resourceDefault: <%=util.serialize_json(translate("Default snapshot available"))%>,
+    resourceNoDefault: <%=util.serialize_json(translate("No default snapshot"))%>
   };
 
   var elements = {
@@ -132,7 +186,27 @@ local util = require "luci.util"
     versions: document.getElementById("xc-core-versions"),
     operation: document.getElementById("xc-core-operation-state"),
     system: document.getElementById("xc-core-system-action"),
-    refresh: document.getElementById("xc-core-refresh")
+    refresh: document.getElementById("xc-core-refresh"),
+    resources: {
+      xray: {
+        source: document.getElementById("xc-core-resource-xray-source"),
+        status: document.getElementById("xc-core-resource-xray-status"),
+        update: document.getElementById("xc-core-resource-xray-update"),
+        rollback: document.getElementById("xc-core-resource-xray-rollback")
+      },
+      geoip: {
+        source: document.getElementById("xc-core-resource-geoip-source"),
+        status: document.getElementById("xc-core-resource-geoip-status"),
+        update: document.getElementById("xc-core-resource-geoip-update"),
+        rollback: document.getElementById("xc-core-resource-geoip-rollback")
+      },
+      geosite: {
+        source: document.getElementById("xc-core-resource-geosite-source"),
+        status: document.getElementById("xc-core-resource-geosite-status"),
+        update: document.getElementById("xc-core-resource-geosite-update"),
+        rollback: document.getElementById("xc-core-resource-geosite-rollback")
+      }
+    }
   };
   if (elements.system) elements.system.setAttribute("data-core-id", "system");
 
@@ -152,6 +226,10 @@ local util = require "luci.util"
     return typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
   }
 
+  function safeSource(value) {
+    return typeof value === "string" && value.length <= 32 && /^[a-z][a-z0-9_-]*$/.test(value);
+  }
+
   function setText(element, value) {
     if (element) element.textContent = value;
   }
@@ -166,6 +244,32 @@ local util = require "luci.util"
     if (value === "running") return text.running;
     if (value === "error") return text.error;
     return text.unknown;
+  }
+
+  function renderResources(resources) {
+    resources = resources && typeof resources === "object" ? resources : {};
+    var sourceSets = resources.sources && typeof resources.sources === "object" ? resources.sources : {};
+    var selected = resources.selected && typeof resources.selected === "object" ? resources.selected : {};
+    var defaults = resources.defaults && typeof resources.defaults === "object" ? resources.defaults : {};
+    ["xray", "geoip", "geosite"].forEach(function(kind) {
+      var item = elements.resources[kind];
+      if (!item || !item.source) return;
+      clear(item.source);
+      var chosen = null;
+      var values = Array.isArray(sourceSets[kind]) ? sourceSets[kind] : [];
+      values.forEach(function(source) {
+        if (!source || !safeSource(source.id) || typeof source.label !== "string" || source.label.length > 128) return;
+        var option = document.createElement("option");
+        option.value = source.id;
+        option.textContent = source.label;
+        item.source.appendChild(option);
+        if (source.id === selected[kind]) chosen = source.id;
+      });
+      if (chosen === null && item.source.children.length > 0) chosen = item.source.children[0].value;
+      item.source.value = chosen || "";
+      if (item.status) setText(item.status, defaults[kind] === true ? text.resourceDefault :
+        kind === "xray" || defaults[kind] === false ? text.resourceNoDefault : text.unknown);
+    });
   }
 
   function renderStatus(payload) {
@@ -183,6 +287,7 @@ local util = require "luci.util"
     setText(elements.version, safeVersion(current.version) ? current.version : text.unavailable);
     setText(elements.arch, safeArch(current.arch) ? current.arch : text.unavailable);
     setText(elements.status, currentStatus(status));
+    renderResources(payload.resources);
     if (payload.manual_upgrade === true) elements.operation.textContent = text.manualUpgrade;
     else if (payload.resources && payload.resources.ready !== true) elements.operation.textContent = text.assetsMissing;
     if (elements.system) {
@@ -323,6 +428,33 @@ local util = require "luci.util"
     elements.operation.textContent = text.unavailableAction;
   }
 
+  function resourceRequest(kind, action) {
+    var item = elements.resources[kind];
+    if (!item || !item.source || !item.update || !item.rollback) return;
+    item.update.disabled = true;
+    item.rollback.disabled = true;
+    var body = "kind=" + encodeURIComponent(kind);
+    if (action === "update") body += "&source=" + encodeURIComponent(item.source.value || "official");
+    var url = page.getAttribute("data-core-resource-" + action + "-url");
+    request("POST", url, body, function(payload) {
+      item.update.disabled = false;
+      item.rollback.disabled = false;
+      if (!payload || payload.ok !== true) {
+        elements.operation.textContent = payload && payload.message ? payload.message : text.unavailableAction;
+        return;
+      }
+      elements.operation.textContent = action === "update" ? text.resourceUpdated : text.resourceRolledBack;
+      loadStatus();
+    });
+  }
+
+  ["xray", "geoip", "geosite"].forEach(function(kind) {
+    var item = elements.resources[kind];
+    if (!item) return;
+    if (item.update) item.update.onclick = function() { resourceRequest(kind, "update"); };
+    if (item.rollback) item.rollback.onclick = function() { resourceRequest(kind, "rollback"); };
+  });
+
   elements.file.onchange = updateUploadState;
   elements.system.onclick = function() {
     if (elements.system.disabled || typeof XMLHttpRequest !== "function" || !confirm(text.confirmSystem)) return;
@@ -367,7 +499,8 @@ local util = require "luci.util"
       remove: page.getAttribute("data-core-delete-url")
     },
     renderStatus: renderStatus,
-    renderVersions: renderVersions
+    renderVersions: renderVersions,
+    renderResources: renderResources
   };
 }());
 //]]>

@@ -6,6 +6,7 @@ local schema = require "xc.schema"
 local platform = require "xc.platform"
 local runtime_module = require "xc.runtime"
 local coremanager_module = require "xc.coremanager"
+local assetmanager_module = require "xc.assetmanager"
 local importer = require "xc.importer"
 local probe_module = require "xc.probe"
 local logview = require "xc.logview"
@@ -75,7 +76,14 @@ local messages = {
   access_rule_too_long = "An access control rule is too long.",
   access_rule_too_many = "Too many access control rules were supplied.",
   access_dns_invalid = "The access control DNS address is invalid.",
-  access_applied = "Access control was applied."
+  access_applied = "Access control was applied.",
+  asset_invalid = "The selected core resource or source is invalid.",
+  asset_runtime_unavailable = "Core resource management is unavailable on this device.",
+  asset_download_failed = "The core resource download failed; the current resource was kept.",
+  asset_install_failed = "The core resource could not be installed; the current resource was kept.",
+  asset_no_default = "No default resource snapshot is available for rollback.",
+  asset_updated = "The core resource was updated.",
+  asset_rolled_back = "The core resource was rolled back."
 }
 
 local failure_status = {
@@ -96,7 +104,9 @@ local failure_status = {
   core_hash_failed = 502, core_runtime_unavailable = 501, core_in_use = 409, core_delete_failed = 500,
   core_version_too_new = 422,
   access_validation_failed = 400, access_rule_invalid = 400, access_rule_conflict = 409,
-  access_rule_too_long = 400, access_rule_too_many = 400, access_dns_invalid = 400
+  access_rule_too_long = 400, access_rule_too_many = 400, access_dns_invalid = 400,
+  asset_invalid = 400, asset_runtime_unavailable = 501, asset_download_failed = 502,
+  asset_install_failed = 500, asset_no_default = 404
 }
 
 local status_text = {
@@ -180,6 +190,8 @@ function index()
   post_entry({ "admin", "services", "xc", "core-activate" }, "action_core_activate")
   post_entry({ "admin", "services", "xc", "core-rollback" }, "action_core_rollback")
   post_entry({ "admin", "services", "xc", "core-delete" }, "action_core_delete")
+  post_entry({ "admin", "services", "xc", "core-resource-update" }, "action_core_resource_update")
+  post_entry({ "admin", "services", "xc", "core-resource-rollback" }, "action_core_resource_rollback")
   post_entry({ "admin", "services", "xc", "access-apply" }, "action_access_apply")
 end
 
@@ -216,8 +228,13 @@ local function new_backend()
   local runtime_called, runtime_instance = pcall(runtime_module.new, adapters)
   if not runtime_called or not runtime_instance then return nil end
   local core_called, core_instance = pcall(coremanager_module.new, adapters)
-  if not core_called or not core_instance then return adapters, runtime_instance, nil end
-  return adapters, runtime_instance, core_instance
+  if not core_called then core_instance = nil end
+  local asset_called, asset_instance = pcall(assetmanager_module.new, {
+    fs = adapters.fs, exec = adapters.exec, core = core_instance, uci = adapters.uci,
+    now = adapters.now, wall_time = adapters.wall_time
+  })
+  if not asset_called then asset_instance = nil end
+  return adapters, runtime_instance, core_instance, asset_instance
 end
 
 local function record_event(runtime_instance, message, fields, level)
@@ -447,7 +464,7 @@ local function core_result(runtime_instance, value, message)
 end
 
 function action_core_status()
-  local adapters, runtime_instance, core_instance = new_backend()
+  local adapters, runtime_instance, core_instance, asset_instance = new_backend()
   if not core_instance then failure("core_runtime_unavailable"); return end
   local recovered_ok, recovered = pcall(core_instance.recover_pending, core_instance)
   if recovered_ok and type(recovered) == "table" then core_event(runtime_instance, "core recovery", recovered) end
@@ -466,8 +483,73 @@ function action_core_status()
     return
   end
   if not status.ok then core_failure_response(status.code or "core_recovery_required", status); return end
-  status.resources = routing.asset_status(adapters.fs)
+  if type(asset_instance) == "table" and type(asset_instance.status) == "function" then
+    local resources_called, resources = pcall(asset_instance.status, asset_instance)
+    status.resources = resources_called and type(resources) == "table"
+      and resources or routing.asset_status(adapters.fs)
+  else
+    status.resources = routing.asset_status(adapters.fs)
+  end
   success(status)
+end
+
+local function save_asset_source(adapters, kind, source)
+  if type(adapters) ~= "table" or type(adapters.uci) ~= "table"
+    or type(adapters.uci.stage_global) ~= "function" or type(adapters.uci.commit) ~= "function"
+    or type(kind) ~= "string" or type(source) ~= "string" then return false end
+  local values = { [kind .. "_update_source"] = source }
+  local staged_called, staged = pcall(adapters.uci.stage_global, values)
+  if not staged_called or staged ~= true then
+    pcall(adapters.uci.revert)
+    return false
+  end
+  local committed_called, committed = pcall(adapters.uci.commit)
+  if not committed_called or committed ~= true then
+    pcall(adapters.uci.revert)
+    return false
+  end
+  return true
+end
+
+local function asset_result(value)
+  if type(value) ~= "table" then failure("asset_install_failed"); return end
+  if not value.ok then failure(value.code or "asset_install_failed"); return end
+  success({
+    code = value.code,
+    kind = value.kind,
+    source = value.source,
+    version = value.version,
+    default = value.default
+  })
+end
+
+function action_core_resource_update()
+  local valid = require_post()
+  if not valid then return end
+  local adapters, _, _, manager = new_backend()
+  if not manager then failure("asset_runtime_unavailable"); return end
+  local kind = http.formvalue("kind")
+  local source = http.formvalue("source") or "official"
+  local called, value = pcall(function() return manager:update(kind, source) end)
+  if not called or type(value) ~= "table" then failure("asset_install_failed"); return end
+  if not value.ok then asset_result(value); return end
+  local selected = manager:source(kind, value.source)
+  if not selected or not save_asset_source(adapters, kind, selected.id) then
+    failure("commit_failed")
+    return
+  end
+  asset_result(value)
+end
+
+function action_core_resource_rollback()
+  local valid = require_post()
+  if not valid then return end
+  local _, _, _, manager = new_backend()
+  if not manager then failure("asset_runtime_unavailable"); return end
+  local kind = http.formvalue("kind")
+  local called, value = pcall(function() return manager:rollback(kind) end)
+  if not called or type(value) ~= "table" then failure("asset_install_failed"); return end
+  asset_result(value)
 end
 
 function action_core_upload()

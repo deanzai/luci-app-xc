@@ -49,7 +49,7 @@ resolve_xray() {
 
 resolve_asset_dir() {
 	local asset_dir
-	for asset_dir in /usr/share/xray /usr/share/v2ray; do
+  for asset_dir in /etc/xc/xray/assets /usr/share/xray /usr/share/v2ray; do
 		[ -f "$asset_dir/geosite.dat" ] && [ -f "$asset_dir/geoip.dat" ] || continue
 		echo "$asset_dir"
 		return 0
@@ -65,8 +65,8 @@ start_service() {
 	else
 		unset XRAY_LOCATION_ASSET
 	fi
-	mkdir -p /etc/xc/rollback /etc/xc/xray/versions /var/etc/xc /var/log || return 1
-	chmod 0700 /etc/xc /etc/xc/rollback /etc/xc/xray /etc/xc/xray/versions /var/etc/xc || return 1
+  mkdir -p /etc/xc/rollback /etc/xc/xray/versions /etc/xc/xray/assets/default /var/etc/xc /var/log || return 1
+  chmod 0700 /etc/xc /etc/xc/rollback /etc/xc/xray /etc/xc/xray/versions /etc/xc/xray/assets /etc/xc/xray/assets/default /var/etc/xc || return 1
 	chmod 0600 /etc/config/xc || return 1
 	[ "$(uci -q get xc.global.enabled)" = "1" ] || return 0
 	if [ "$XC_RUNTIME_PREPARED" != "1" ]; then

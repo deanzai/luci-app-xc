@@ -364,6 +364,45 @@ t.test("platform does not probe a LuCI fs module through its looping metatable",
   t.eq(called, true)
 end)
 
+t.test("asset download accepts only fixed sources and bounded temporary paths", function()
+  local calls = {}
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    now = function() return 10 end,
+    spawn = function(argv, deadline)
+      calls[#calls + 1] = { argv = argv, deadline = deadline }
+      return true
+    end
+  })
+  local valid = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+  t.eq(adapters.exec.download(valid, "/var/etc/xc/.asset-update-geoip", 67108864, 20), true)
+  t.eq(table.concat(calls[1].argv, "|"), "/usr/bin/curl|--fail|--location|--silent|--show-error|--max-time|10|--connect-timeout|5|--max-filesize|67108864|--output|/var/etc/xc/.asset-update-geoip|" .. valid)
+  t.eq(calls[1].deadline, 20)
+  t.eq(adapters.exec.download("https://example.invalid/geoip.dat", "/var/etc/xc/.asset-update-geoip", 67108864, 20), false)
+  t.eq(adapters.exec.download(valid, "/tmp/asset-update-geoip", 67108864, 20), false)
+  t.eq(#calls, 1)
+end)
+
+t.test("xray extraction fixes the archive member and output path", function()
+  local calls = {}
+  local adapters = platform.new({
+    nixio = {}, fs = {}, cursor = { foreach = function() end }, uci_module = {},
+    jsonc = { parse = function() end, stringify = function() return "{}" end },
+    now = function() return 10 end,
+    extract = function(argv, destination, deadline)
+      calls[#calls + 1] = { argv = argv, destination = destination, deadline = deadline }
+      return true
+    end
+  })
+  t.eq(adapters.exec.extract_xray("/var/etc/xc/.asset-update-xray.zip", "/var/etc/xc/.asset-update-xray", 20), true)
+  t.eq(table.concat(calls[1].argv, "|"), "/usr/bin/unzip|-p|/var/etc/xc/.asset-update-xray.zip|xray")
+  t.eq(calls[1].destination, "/var/etc/xc/.asset-update-xray")
+  t.eq(calls[1].deadline, 20)
+  t.eq(adapters.exec.extract_xray("/tmp/archive.zip", "/var/etc/xc/.asset-update-xray", 20), false)
+  t.eq(#calls, 1)
+end)
+
 t.test("real connection checks use bounded proxy GETs and return measured status", function()
   local calls = {}
   local adapters = platform.new({

@@ -531,3 +531,39 @@ msgstr ""
 
 msgid "GeoIP and GeoSite assets are missing; install or replace them manually."
 msgstr ""
+
+msgid "Core resources"
+msgstr ""
+
+msgid "Update Xray, GeoIP, and GeoSite independently from a built-in source. Xray updates are installed but not activated."
+msgstr ""
+
+msgid "Resource"
+msgstr ""
+
+msgid "Download source"
+msgstr ""
+
+msgid "Snapshot status"
+msgstr ""
+
+msgid "GeoIP database"
+msgstr ""
+
+msgid "GeoSite database"
+msgstr ""
+
+msgid "Update"
+msgstr ""
+
+msgid "The resource was updated."
+msgstr ""
+
+msgid "The resource was rolled back."
+msgstr ""
+
+msgid "Default snapshot available"
+msgstr ""
+
+msgid "No default snapshot"
+msgstr ""

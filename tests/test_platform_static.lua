@@ -13,7 +13,7 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
     "get_global", "get_node", "list_nodes", "set_active", "clear_active", "commit", "revert",
     "acquire_lock", "release_lock", "lock_state", "write_temp", "fsync_dir", "allocate_generation",
     "list_generation_files", "trash_generation", "delete_trashed_generation", "listener_ready", "real_connection_check", "observe_exit_ip",
-    "service_state", "start_switch", "stringify"
+    "service_state", "start_switch", "stringify", "download", "extract_xray"
   }) do t.contains(source, name .. " = function") end
   t.contains(source, "stat_nofollow = function")
   t.contains(source, "nixio.open")
@@ -33,6 +33,12 @@ t.test("platform adapter exposes complete runtime contract without shell interpo
   t.contains(source, 'getsockopt("socket", "error")')
   t.contains(source, "--socks5-hostname")
   t.contains(source, "--proxy")
+  t.contains(source, '"--location"')
+  t.contains(source, '"--max-filesize"')
+  t.contains(source, '"/usr/bin/unzip", "-p"')
+  t.contains(source, '"/bin/busybox", "unzip", "-p"')
+  t.contains(source, '"xray"')
+  t.contains(source, 'path:match("^/var/etc/xc/%.asset%-update%-')
   t.eq(source:find("os.execute", 1, true), nil)
   t.eq(source:find("clock_gettime", 1, true), nil)
   t.eq(source:find(":flock", 1, true), nil)
@@ -211,7 +217,7 @@ t.test("platform provisions private runtime directories on a clean filesystem", 
   })
   t.eq(type(adapters.fs.ensure_layout), "function")
   t.eq(adapters.fs.ensure_layout(), true)
-  for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/var/etc/xc" }) do
+  for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/etc/xc/xray/assets", "/etc/xc/xray/assets/default", "/var/etc/xc" }) do
     t.truthy(entries[path])
     t.contains(table.concat(events, "|"), "chmod:" .. path .. ":700")
   end

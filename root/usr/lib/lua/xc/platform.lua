@@ -182,7 +182,28 @@ local function parse_api_json(value, balancer_tag)
 end
 
 local function valid_asset_dir(path)
-  return path == routing.ASSET_DIR or path == routing.FALLBACK_ASSET_DIR
+  return path == routing.MANAGED_ASSET_DIR or path == routing.ASSET_DIR or path == routing.FALLBACK_ASSET_DIR
+end
+
+local function valid_asset_download_path(path)
+  return type(path) == "string" and (path:match("^/var/etc/xc/%.asset%-update%-geoip$") ~= nil
+    or path:match("^/var/etc/xc/%.asset%-update%-geosite$") ~= nil
+    or path == "/var/etc/xc/.asset-update-xray.zip")
+end
+
+local function valid_xray_extract_paths(archive, destination)
+  return archive == "/var/etc/xc/.asset-update-xray.zip"
+    and destination == "/var/etc/xc/.asset-update-xray"
+end
+
+local function valid_asset_source(url)
+  if type(url) ~= "string" then return false end
+  return url:match("^https://github%.com/XTLS/Xray%-core/releases/download/v26%.6%.27/Xray%-linux%-[%w%-]+%.zip$") ~= nil
+    or url:match("^https://gh%-proxy%.net/https://github%.com/XTLS/Xray%-core/releases/download/v26%.6%.27/Xray%-linux%-[%w%-]+%.zip$") ~= nil
+    or url == "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+    or url == "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+    or url == "https://fastly.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
+    or url == "https://fastly.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat"
 end
 
 -- Keep routing's asset probe on a tiny, explicit adapter.  LuCI's nixio.fs
@@ -322,6 +343,20 @@ function M.new(injected)
     nfs.unlink(temporary)
     if closed ~= true or type(value) ~= "string" or #value > maximum then return nil end
     return value
+  end
+
+  local extract_process = injected.extract or function(argv, destination, deadline)
+    if not valid_argv(argv) or not safe_path(destination) then return false end
+    local reservation = nixio.open(destination, nixio.open_flags("wronly", "creat", "excl") + O_NOFOLLOW, 600)
+    if not reservation or reservation:close() ~= true then
+      if reservation then nfs.unlink(destination) end
+      return false
+    end
+    if not spawn_capture(nixio, argv, destination, deadline, now_process, sleep_process) then
+      nfs.unlink(destination)
+      return false
+    end
+    return true
   end
 
   local function foreach(section_type, callback)
@@ -563,7 +598,8 @@ function M.new(injected)
       return nfs.chmod(upload.path, 600) == true
     end,
     ensure_layout = function()
-      for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/etc/xc/xray", "/etc/xc/xray/versions", "/var/etc/xc" }) do
+      for _, path in ipairs({ "/etc/xc", "/etc/xc/rollback", "/etc/xc/xray", "/etc/xc/xray/versions",
+        "/etc/xc/xray/assets", "/etc/xc/xray/assets/default", "/var/etc/xc" }) do
         if not ensure_directory(path) then return false end
       end
       local config = nfs.stat("/etc/config/xc")
@@ -814,6 +850,24 @@ function M.new(injected)
     start_switch = function(section_id)
       if not schema.safe_section_id(section_id) then return false end
       return background_process({ "/usr/bin/xc", "switch", section_id }) == true
+    end,
+    download = function(url, path, maximum, deadline)
+      if not valid_asset_source(url) or not valid_asset_download_path(path)
+        or type(maximum) ~= "number" or maximum < 1 or maximum > 67108864 then return false end
+      local current = now_process()
+      if type(deadline) ~= "number" or deadline <= current or deadline > current + 300 then return false end
+      local remaining = math.max(1, math.ceil(deadline - current))
+      local argv = { "/usr/bin/curl", "--fail", "--location", "--silent", "--show-error",
+        "--max-time", tostring(remaining), "--connect-timeout", tostring(math.min(remaining, 5)),
+        "--max-filesize", tostring(maximum), "--output", path, url }
+      return spawn_process(argv, deadline) == true
+    end,
+    extract_xray = function(archive, destination, deadline)
+      if not valid_xray_extract_paths(archive, destination) then return false end
+      local current = now_process()
+      if type(deadline) ~= "number" or deadline <= current or deadline > current + 300 then return false end
+      if extract_process({ "/usr/bin/unzip", "-p", archive, "xray" }, destination, deadline) == true then return true end
+      return extract_process({ "/bin/busybox", "unzip", "-p", archive, "xray" }, destination, deadline) == true
     end,
     run = function(argv, deadline, environment)
       if type(argv) ~= "table" or #argv ~= 7 or not valid_xray_path(argv[1]) or argv[2] ~= "run"

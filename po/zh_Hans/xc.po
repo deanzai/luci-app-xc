@@ -533,3 +533,39 @@ msgstr "高于 26.6.27 的版本需要手动替换，当前核心保持不变。
 
 msgid "GeoIP and GeoSite assets are missing; install or replace them manually."
 msgstr "GeoIP 和 GeoSite 资源缺失，请手动安装或替换。"
+
+msgid "Core resources"
+msgstr "核心资源"
+
+msgid "Update Xray, GeoIP, and GeoSite independently from a built-in source. Xray updates are installed but not activated."
+msgstr "可分别从内置源更新 Xray、GeoIP 和 GeoSite。Xray 更新只安装，不会自动激活。"
+
+msgid "Resource"
+msgstr "资源"
+
+msgid "Download source"
+msgstr "下载源"
+
+msgid "Snapshot status"
+msgstr "快照状态"
+
+msgid "GeoIP database"
+msgstr "GeoIP 数据库"
+
+msgid "GeoSite database"
+msgstr "GeoSite 数据库"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "The resource was updated."
+msgstr "资源已更新。"
+
+msgid "The resource was rolled back."
+msgstr "资源已回滚。"
+
+msgid "Default snapshot available"
+msgstr "默认快照可用"
+
+msgid "No default snapshot"
+msgstr "暂无默认快照"

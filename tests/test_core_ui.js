@@ -22,7 +22,9 @@ for (const id of [
   "xc-core-current-arch", "xc-core-current-status",
   "xc-core-upload-file", "xc-core-upload-progress", "xc-core-upload-progress-text",
   "xc-core-upload", "xc-core-refresh", "xc-core-versions", "xc-core-operation-state"
-  ,"xc-core-system-action"
+  ,"xc-core-system-action", "xc-core-resource-xray-source", "xc-core-resource-geoip-source",
+  "xc-core-resource-geosite-source", "xc-core-resource-xray-update", "xc-core-resource-geoip-update",
+  "xc-core-resource-geosite-update"
 ]) {
   assert.ok(view.includes('id="' + id + '"'), "missing core UI element " + id);
 }
@@ -36,8 +38,15 @@ assert.strictEqual(view.includes('form.append("sha256"'), false,
 assert.strictEqual(view.includes('form.append("note"'), false,
   "core upload must not submit a note field");
 assert.ok(view.includes("xhr.upload.onprogress"), "core upload must report XMLHttpRequest progress");
+assert.ok(view.includes('data-core-resource-update-url='), "missing resource update endpoint");
+assert.ok(view.includes('data-core-resource-rollback-url='), "missing resource rollback endpoint");
+assert.strictEqual(view.includes('type="url"'), false, "resource updates must not expose custom URL input");
+assert.ok(view.includes('data-core-resource-kind="xray"'), "missing Xray resource row");
+assert.ok(view.includes('data-core-resource-kind="geoip"'), "missing GeoIP resource row");
+assert.ok(view.includes('data-core-resource-kind="geosite"'), "missing GeoSite resource row");
 
-for (const action of ["core-status", "core-upload", "core-activate", "core-rollback", "core-delete"]) {
+for (const action of ["core-status", "core-upload", "core-activate", "core-rollback", "core-delete",
+  "core-resource-update", "core-resource-rollback"]) {
   assert.ok(view.includes('data-' + action + '-url='), "missing reserved endpoint " + action);
 }
 
@@ -94,13 +103,17 @@ function element(tag) {
   return node;
 }
 
-function harness() {
+function harness(withXhr) {
   const ids = [
     "xc-core-page", "xc-core-current-source", "xc-core-current-version",
     "xc-core-current-arch", "xc-core-current-status",
     "xc-core-upload-file", "xc-core-upload-progress", "xc-core-upload-progress-text",
     "xc-core-upload", "xc-core-refresh", "xc-core-versions", "xc-core-operation-state"
-    ,"xc-core-system-action"
+    ,"xc-core-system-action", "xc-core-resource-xray-source", "xc-core-resource-geoip-source",
+    "xc-core-resource-geosite-source", "xc-core-resource-xray-update", "xc-core-resource-geoip-update",
+    "xc-core-resource-geosite-update", "xc-core-resource-xray-rollback", "xc-core-resource-geoip-rollback",
+    "xc-core-resource-geosite-rollback", "xc-core-resource-xray-status", "xc-core-resource-geoip-status",
+    "xc-core-resource-geosite-status"
   ];
   const elements = {};
   ids.forEach(id => { elements[id] = element(id === "xc-core-upload-file" ? "input" : "div"); });
@@ -109,7 +122,11 @@ function harness() {
   elements["xc-core-page"].setAttribute("data-core-activate-url", "/xc/core-activate");
   elements["xc-core-page"].setAttribute("data-core-rollback-url", "/xc/core-rollback");
   elements["xc-core-page"].setAttribute("data-core-delete-url", "/xc/core-delete");
+  elements["xc-core-page"].setAttribute("data-core-resource-update-url", "/xc/core-resource-update");
+  elements["xc-core-page"].setAttribute("data-core-resource-rollback-url", "/xc/core-resource-rollback");
   let confirmations = 0;
+  const requests = [];
+  const pending = [];
   const document = {
     getElementById(id) { return elements[id] || null; },
     createElement: element,
@@ -129,11 +146,41 @@ function harness() {
   const script = view.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
     .replace(/<%=util\.serialize_json\(translate\("([^"]+)"\)\)%>/g,
       (_, value) => JSON.stringify(translations[value] || value));
-  vm.runInNewContext(script, {
+  function complete(xhr, payload) {
+    xhr.readyState = 4;
+    xhr.responseText = JSON.stringify(payload);
+    if (typeof xhr.onreadystatechange === "function") xhr.onreadystatechange();
+  }
+  function FakeXHR() {
+    this.readyState = 0;
+    this.responseText = "";
+    this.upload = {};
+  }
+  FakeXHR.prototype.open = function(method, url) { this.method = method; this.url = url; };
+  FakeXHR.prototype.setRequestHeader = function() {};
+  FakeXHR.prototype.send = function(body) {
+    requests.push({ method: this.method, url: this.url, body: body, xhr: this });
+    if (this.method === "GET") {
+      complete(this, { ok: true, data: { resources: {
+        sources: {
+          xray: [{ id: "official", label: "Official" }],
+          geoip: [{ id: "official", label: "Official" }, { id: "mirror", label: "Mirror" }],
+          geosite: [{ id: "official", label: "Official" }]
+        }, selected: { xray: "official", geoip: "official", geosite: "official" }, defaults: {}
+      } } });
+    } else pending.push(this);
+  };
+  const context = {
     window, document, JSON, Number, String, Array, Math,
     confirm() { confirmations++; return true; }
-  });
-  return { window, elements, get confirmations() { return confirmations; } };
+  };
+  if (withXhr) context.XMLHttpRequest = FakeXHR;
+  vm.runInNewContext(script, context);
+  return {
+    window, elements, requests,
+    completeNext() { complete(pending.shift(), { ok: true, data: {} }); },
+    get confirmations() { return confirmations; }
+  };
 }
 
 {
@@ -143,6 +190,44 @@ function harness() {
   assert.strictEqual(h.elements["xc-core-system-action"].getAttribute("data-core-id"), "system");
   h.window.XCCoreUI.renderStatus({ current: { source: "system", version: "26.6.27", arch: "aarch64", sha256: "a".repeat(64) } });
   assert.strictEqual(h.elements["xc-core-system-action"].disabled, true, "system core action is disabled when already active");
+}
+
+{
+  const h = harness(true);
+  h.window.XCCoreUI.renderStatus({ resources: {
+    sources: {
+      xray: [{ id: "official", label: "Official" }],
+      geoip: [{ id: "official", label: "Official" }, { id: "mirror", label: "Mirror" }],
+      geosite: [{ id: "official", label: "Official" }]
+    }, selected: { geoip: "mirror" }, defaults: {}
+  }});
+  h.elements["xc-core-resource-geoip-update"].onclick();
+  const request = h.requests[h.requests.length - 1];
+  assert.strictEqual(request.method, "POST");
+  assert.ok(request.url.indexOf("/xc/core-resource-update") === 0);
+  assert.strictEqual(request.body, "kind=geoip&source=mirror");
+  assert.strictEqual(h.elements["xc-core-resource-geoip-update"].disabled, true,
+    "only the selected resource row is locked during update");
+  assert.strictEqual(h.elements["xc-core-resource-geoip-rollback"].disabled, true);
+  assert.strictEqual(h.elements["xc-core-resource-xray-update"].disabled, false);
+  h.completeNext();
+  assert.strictEqual(h.elements["xc-core-resource-geoip-update"].disabled, false);
+}
+
+{
+  const h = harness();
+  h.window.XCCoreUI.renderStatus({ resources: {
+    sources: {
+      xray: [{ id: "official", label: "Official" }, { id: "mirror", label: "Mirror" }],
+      geoip: [{ id: "official", label: "Official" }, { id: "mirror", label: "Mirror" }],
+      geosite: [{ id: "official", label: "Official" }, { id: "mirror", label: "Mirror" }]
+    }, selected: { xray: "official", geoip: "mirror", geosite: "official" },
+    defaults: { geoip: true, geosite: false }
+  }});
+  assert.strictEqual(h.elements["xc-core-resource-geoip-source"].children.length, 2,
+    "GeoIP renders only backend-provided sources");
+  assert.strictEqual(h.elements["xc-core-resource-geoip-source"].value, "mirror");
+  assert.strictEqual(h.elements["xc-core-resource-geoip-status"].textContent, "Default snapshot available");
 }
 
 {

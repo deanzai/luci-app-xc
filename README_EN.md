@@ -205,10 +205,20 @@ the service, listeners, and health endpoint. A failed activation restores the pr
 core has no usable previous marker, page rollback safely returns to the system core. The system package core remains
 `/usr/bin/xray`; managed versions live under `/etc/xc/xray/versions/` and never overwrite an `opkg`-owned file.
 
+The core page also provides three independent resource controls for Xray, GeoIP, and GeoSite. Each resource can use
+the built-in official source or a fixed mirror; it does not provide a custom URL. Clicking Update downloads and replaces
+the managed resource directly. This flow does not perform semantic content, version, hash, or `xray run -test` validation;
+success only means that download and file replacement completed. The Xray download is fixed at `26.6.27` and is installed
+as an inactive version; activate it separately from the installed-version list.
+
+GeoIP and GeoSite each keep one immutable default snapshot created before the first update; later updates do not replace
+that snapshot, and Rollback restores it. Managed resources live under `/etc/xc/xray/assets/`, which takes precedence over
+`/usr/share/xray` and `/usr/share/v2ray` without overwriting those package files.
+
 GeoIP/GeoSite files are supplied by the target distribution’s resource packages; r20 uses `26.6.27` as the
-compatibility ceiling. XC requires `geoip.dat` and `geosite.dat` together in one asset directory and does not
-download or upgrade them automatically. Resources above that ceiling must be prepared manually and verified with
-`xray run -test` and a service check. Missing resources prevent startup or replacement of the current configuration.
+compatibility ceiling. XC requires `geoip.dat` and `geosite.dat` together in one asset directory. After a resource update,
+observe runtime status and restart the service when needed. Missing resources prevent startup or replacement of the current
+configuration.
 
 ### SOCKS / HTTP proxy
 
