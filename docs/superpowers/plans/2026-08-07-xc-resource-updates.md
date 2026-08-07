@@ -4,7 +4,7 @@
 
 **Goal:** 在 Xray core 页签提供 Xray、GeoIP、GeoSite 的内置多源下载、直接替换和默认快照回滚入口。
 
-**Architecture:** `xc.assetmanager` 维护固定资源源、受管路径、默认快照和更新/回滚状态；`xc.routing` 优先使用插件受管 Geo 目录，再回退系统资源目录；`xc.platform` 提供固定参数的下载、Xray 压缩包提取和原子文件操作。控制器只接受资源类型与固定源 ID，页面只渲染后端返回的源选项。
+**Architecture:** `xc.assetmanager` 维护固定资源源、受管路径、默认快照和更新/回滚状态；`xc.routing` 优先使用插件受管 Geo 目录，再回退系统资源目录；`xc.platform` 提供固定参数的下载、Xray 压缩包固定成员提取和原子文件操作。控制器只接受资源类型与固定源 ID，页面只渲染后端返回的源选项。默认源为官方 GitHub release 和固定 GitHub 代理源，均由代码维护，用户不能提交 URL。
 
 **Tech Stack:** Lua 5.1、LuCI、OpenWrt `curl`/BusyBox、现有 Xray core manager、Node 静态 UI 测试、`testlib`。
 
@@ -82,7 +82,7 @@ The test must fail because `xc.assetmanager` is not present.
 
 - [ ] **Step 3: Implement the manager**
 
-Define fixed source records with display name, source ID, URL template, and resource format. Resolve only whitelisted resource/source pairs, derive architecture from the injected adapter for Xray, and never accept a URL parameter. Use injected `download`, `extract_xray`, `copy_file`, `rename`, `remove`, `exists`, `mkdir`, `stat`, and `write_file` functions. Do not inspect downloaded bytes. For Xray, use the fixed release format to extract the `xray` member, derive the manifest metadata required by the existing core manager, and install it as an inactive version; do not activate it. For Geo files, copy the first existing package asset to the immutable default directory, then atomically replace the managed active file. Return bounded stable codes such as `asset_invalid`, `asset_download_failed`, `asset_install_failed`, `asset_no_default`, and `asset_updated`.
+Define fixed source records with display name, source ID, URL template, and resource format. Use `official` for `https://github.com/XTLS/Xray-core/releases/download/v26.6.27/Xray-linux-<arch>.zip` and `mirror` for the same path behind the fixed GitHub proxy prefix; use the corresponding official and fixed-mirror release paths for `geoip.dat` and `geosite.dat`. Resolve only whitelisted resource/source pairs, derive architecture from the injected adapter for Xray, and never accept a URL parameter. Use injected `download`, `extract_xray`, `copy_file`, `rename`, `remove`, `exists`, `mkdir`, `stat`, and `write_file` functions. Do not inspect downloaded bytes. For Xray, extract only the fixed `xray` member, derive size and SHA-256 metadata required by the existing core manager, and install it as an inactive version; this metadata is for lifecycle bookkeeping, not content validation. Do not activate it. For Geo files, copy the first existing package asset to the immutable default directory, then atomically replace the managed active file. Return bounded stable codes such as `asset_invalid`, `asset_download_failed`, `asset_install_failed`, `asset_no_default`, and `asset_updated`.
 
 - [ ] **Step 4: Run the manager tests and verify GREEN**
 
